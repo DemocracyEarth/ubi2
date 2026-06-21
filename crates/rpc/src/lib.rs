@@ -1227,9 +1227,20 @@ async fn new_heads_subscription(
 /// Start the JSON-RPC server on `addr` (HTTP **and** WebSocket share the socket). Returns the
 /// `ServerHandle`; the caller keeps the chain alive and drives `produce_block` on its tick.
 pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<ServerHandle> {
+    // The wallet/explorer runs in the browser at localhost:3000 and fetches this RPC at
+    // 127.0.0.1:8545 — a cross-origin request the browser guards with a CORS preflight. Without
+    // CORS headers every browser `fetch` fails ("Failed to fetch"), even though curl/MetaMask work.
+    // A permissive CORS layer is fine for a local devnet (any origin/method/header). MetaMask makes
+    // its own (non-browser) requests, so it is unaffected either way.
+    let cors = tower_http::cors::CorsLayer::permissive();
+    let http_middleware = tower::ServiceBuilder::new().layer(cors);
+
     // jsonrpsee's default server speaks both HTTP and WS on one socket, so eth_subscribe (WS) and
     // the plain HTTP request/response methods are available on the same `:8545` (spec §M1-T1.3).
-    let server = Server::builder().build(addr).await?;
+    let server = Server::builder()
+        .set_http_middleware(http_middleware)
+        .build(addr)
+        .await?;
     let module = build_module(chain);
     let handle = server.start(module);
     Ok(handle)
