@@ -10,6 +10,7 @@ import {
   type Block,
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, NETWORK } from "./config";
+import { Streams } from "./streams";
 
 type Conn = "connecting" | "ok" | "bad";
 
@@ -176,6 +177,9 @@ export default function Home() {
           </p>
         )}
       </section>
+
+      {/* M2: streaming */}
+      <Streams account={DEV_ACCOUNT} />
 
       <div className="grid-2">
         {/* Explorer */}
