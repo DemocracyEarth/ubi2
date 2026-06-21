@@ -4,7 +4,7 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M1 — EVM RPC + Wallet ([spec](specs/01-evm-rpc-and-wallet.md))
+**Current milestone:** M2 — Streaming primitive · **M1 (EVM RPC + Wallet) shipped in cycle 1 ✅**
 
 | Field | Meaning |
 |---|---|
@@ -14,35 +14,24 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 
 ---
 
-## 🔜 Backlog (M1)
+## 🔜 Backlog
 
-- **M1-T1 · architect** — Finalize the M1 spec from the seed: exact RPC method signatures, account
-  model, and the deterministic balance function. *Accepts:* every M1 acceptance criterion maps to a
-  testable statement; invariants from `specs/00-overview.md` referenced.
-- **M1-T2 · protocol-engineer** — Runtime account model: `verified` flag + `verified_at`; emission of
-  1 UBI/hr; pure `balance(account, t)` (integer/fixed-point, no floats). *Accepts:* unit + property
-  tests show balance is an exact, reproducible function of state + timestamp.
-- **M1-T3 · protocol-engineer** — EVM JSON-RPC server: `eth_chainId`, `eth_blockNumber`,
-  `eth_getBalance`, `eth_call`, `eth_sendRawTransaction`, `eth_subscribe`/pubsub. *Accepts:* a standard
-  EVM client (viem/ethers) gets correct responses; deviations documented.
-- **M1-T4 · protocol-engineer** — Node binary + devnet: genesis, chain id, block/clock tick, one
-  pre-verified dev account. *Accepts:* `cargo run` starts a node serving RPC on a documented port.
-- **M1-T5 · interface-engineer** — TS SDK in `packages/sdk`: typed client + EVM provider glue over the
-  RPC. *Accepts:* SDK reads chainId/blockNumber/balance against a running devnet; typecheck passes.
-- **M1-T6 · interface-engineer** — Wallet/explorer in `apps/wallet`: add-network, **live-ticking**
-  streaming balance, block/tx views. *Accepts:* `pnpm build` passes; balance visibly climbs; verified
-  in-browser with a screenshot.
-- **M1-T7 · qa-engineer** — E2E RPC-contract suite + unit/property tests for balance math.
-  *Accepts:* every M1 criterion has a passing test; report in `docs/reports/`.
-- **M1-T8 · reliability-engineer** — Determinism + balance-reproducibility property/soak tests across
-  random timelines and a node restart. *Accepts:* two nodes agree to the wei; no nondeterminism found.
-- **M1-T9 · security-engineer** — Threat model + audit: tx/signature validation, replay, RPC DoS,
-  integer overflow in balance math. *Accepts:* no open high/critical; report in `docs/reports/`.
-- **M1-T10 · release-engineer** — One-command devnet launch script + CI running build and the three
-  gates. *Accepts:* clean checkout → one command → running devnet; CI green.
+**M2 — Streaming primitive** (next cycle; needs architect spec first)
+- **M2-T1 · architect** — Spec account-to-account streams (1:1 then 1:many) on top of the UBI drip:
+  data model, RPC surface, safety controls. *Accepts:* testable acceptance criteria + invariants.
+- **M2-T? · protocol/interface** — to be decomposed after the spec lands.
+
+**Cycle-1 follow-ups (carried from the gates — address before they bite)**
+- **FU-1 · protocol/security** — Mempool hardening before any multi-node / non-localhost deploy:
+  per-sender pending-balance accounting (security F1) + global/per-sender mempool caps (security F2).
+  *Source:* `docs/reports/security-m1.md`. *Not an M1 blocker (localhost devnet).*
+- **FU-2 · protocol/architect** — Decide the emission-rounding policy (carry remainder vs. document
+  bounded loss) before M2/M5 raise settlement frequency. *Source:* [ADR-0002](specs/adr/0002-emission-rounding-policy.md).
+- **FU-3 · protocol** — State persistence/checkpoint behind the existing `State` trait (M1 is in-memory).
+- **FU-4 · reliability** — Two-node soak once consensus (M3 quorum) exists; metrics/observability.
 
 ## 🏗️ In Progress
-_(none yet — run cycle 1)_
+_(none — cycle 1 closed)_
 
 ## 👀 Review (awaiting gates)
 _(none)_
@@ -52,3 +41,11 @@ _(none)_
 
 ## ✅ Done
 - **M0 · all** — Monorepo + 10-agent loop + seeded specs/roadmap/board scaffolded. *(bootstrap commit)*
+- **M1 — EVM RPC + Wallet · SHIPPED (cycle 1).** All gates green.
+  - **M1-T1 · architect** — Spec finalized (emission arithmetic, `State`/`Verifier` traits, chainId `0x5542`, EIP-155 txs, 2s tick).
+  - **M1-T2/T3/T4 · protocol-engineer** — Rust node + EVM JSON-RPC (HTTP+WS) + devnet; streaming `eth_getBalance`, EIP-155 `eth_sendRawTransaction`, block tick. Orchestrator-verified live.
+  - **M1-T5/T6 · interface-engineer** — TS SDK + Next.js wallet/explorer; balance ticks up via rAF interpolation; "Add to MetaMask" card. Both builds green.
+  - **M1-T7 · qa-engineer** — ✅ PASS: all 5 acceptance criteria → passing tests; 28 cargo tests + E2E script. `docs/reports/qa-m1.md`.
+  - **M1-T8 · reliability-engineer** — ✅ PASS: I2 determinism proven (50k random timelines); no nondeterminism. `docs/reports/reliability-m1.md`.
+  - **M1-T9 · security-engineer** — ✅ PASS: no open High/Critical; signature/replay + balance integrity held under pentest. 2 Medium hardening follow-ups (→ FU-1). `docs/reports/security-m1.md`.
+  - **M1-T10 · release-engineer** — `rust-toolchain.toml` pin, `scripts/devnet.sh`, `.github/workflows/ci.yml`. *(done inline by orchestrator)*

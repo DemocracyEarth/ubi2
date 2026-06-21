@@ -7,12 +7,12 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 
 ---
 
-## M0 — Bootstrap ⬜ → (this commit)
+## M0 — Bootstrap ✅
 **Goal:** a consolidated monorepo, the agent development loop, and seeded specs so the loop can run.
 **Exit criteria:** team of 10 agents in place; `cargo build` green on the skeleton; wallet skeleton
 builds; roadmap/board/specs seeded. **Why now:** nothing else can proceed without a process and a home.
 
-## M1 — EVM RPC + Wallet 🚧 *(current)*
+## M1 — EVM RPC + Wallet ✅ *(shipped cycle 1)*
 **Goal:** a devnet node exposing an **EVM-compatible JSON-RPC** that MetaMask can add as a custom
 network, where a **verified account's balance streams upward at 1 UBI/hour**, plus a wallet + explorer.
 **Why now:** a readable, standards-compatible chain is the integration surface that unblocks every
@@ -24,7 +24,7 @@ later feature; it also forces the deterministic time-based balance model early.
   `eth_sendRawTransaction`, `eth_subscribe`).
 **Spec:** [`specs/01-evm-rpc-and-wallet.md`](specs/01-evm-rpc-and-wallet.md)
 
-## M2 — Streaming primitive ⬜
+## M2 — Streaming primitive 🚧 *(current)*
 **Goal:** account-to-account real-time streams (1:1, then 1:many) on top of the UBI drip, with the
 safety controls (rate limits, collateralization, circuit breakers). **Exit:** a user opens a stream to
 another account and both balances move in real time; safety limits demonstrated. **Depends on:** M1.

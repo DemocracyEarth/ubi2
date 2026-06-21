@@ -13,3 +13,8 @@ path = "src/main.rs"
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
 ubi2-rpc = { path = "../rpc" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+alloy-primitives.workspace = true

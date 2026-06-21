@@ -1,0 +1,48 @@
+name: ci
+
+# Runs the build + the Definition-of-Done test gates on every push / PR.
+# (release task M1-T10). The security/reliability *reports* live in docs/reports/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  chain:
+    name: chain (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (pinned via rust-toolchain.toml)
+        run: rustup show && rustc --version
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test (gates: qa + reliability property tests)
+        run: cargo test --workspace --locked
+      - name: Format + lint
+        run: cargo fmt --all --check && cargo clippy --workspace -- -D warnings
+
+  interfaces:
+    name: interfaces (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r typecheck
