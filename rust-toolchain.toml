@@ -1,0 +1,5 @@
+# Pinned for reproducible builds. The alloy stack transitively requires rustc >= 1.90
+# (ruint MSRV); we pin an explicit stable so CI and contributors match (release task M1-T10).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

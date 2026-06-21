@@ -79,7 +79,31 @@ protection follow EIP-155; document any simplification.
 5. **Reproducibility (I2):** `balance(a, t)` is identical across two node instances and across a restart,
    asserted by property tests over random `(verified_at, t)` timelines.
 
-## Risks / notes for the architect (M1-T1)
-- Lock the base-unit/rate arithmetic (remainder handling) so emission never drifts — this is invariant I2.
-- Decide M1 persistence (in-memory + periodic checkpoint vs. embedded KV); keep it swappable.
-- Keep the `verified` toggle behind an interface the M3 AI proof-of-humanity layer will later implement.
+## M1-T1 — Finalized decisions (architect)
+These lock the open questions so engineering can proceed; changes require an ADR.
+
+1. **Emission arithmetic (I2).** `pending_emission = UBI * elapsed_secs / EMISSION_PERIOD_SECS` in `u128`
+   with truncating division (remainder retained in the formula, not dropped from state). `UBI = 10^18`,
+   `EMISSION_PERIOD_SECS = 3600`. Already implemented in `crates/runtime`. **No floats** anywhere in the
+   balance path. Balance is `settled_balance + pending_emission(now)`; settlement folds pending in and
+   advances `last_settled_at`.
+2. **Persistence.** M1 is **in-memory state** behind a `State` interface (trait), with an optional
+   periodic JSON/bincode checkpoint to disk for restart tests. An embedded KV store is deferred; the
+   trait makes it swappable without touching the RPC or runtime logic.
+3. **Chain id / ports.** Devnet `chainId = 0x5542` (21826), `net_version = "21826"`. JSON-RPC over
+   **HTTP on `127.0.0.1:8545`** (WebSocket for `eth_subscribe` may share the port or use `8546`;
+   engineer's choice, documented).
+4. **Transactions.** Standard **EIP-155 legacy** secp256k1-signed transactions so MetaMask can sign.
+   `eth_sendRawTransaction` RLP-decodes, recovers the sender, verifies the signature + chain id, settles
+   both accounts' emission, applies the value transfer, increments nonce, and includes the tx in the next
+   block. Gas is nominal on devnet (flat `gasPrice`, `eth_estimateGas` returns 21000 for transfers);
+   document this simplification.
+5. **Genesis dev account.** One pre-verified account with a **well-known devnet private key** (documented
+   constant, clearly marked not-a-secret) so tests and the wallet can sign. Verification stays behind a
+   `Verifier` interface the M3 proof-of-humanity layer will implement.
+6. **Blocks.** A fixed-interval tick (e.g. 2s) produces blocks; empty blocks are fine. `eth_blockNumber`,
+   `eth_getBlockByNumber/Hash`, and `newHeads` subscriptions reflect the tick.
+
+## Deferred to later cycles (out of M1)
+Account-to-account streams (M2), real AI PoH (M3), prompt contracts (M4), demurrage/governance (M5),
+multi-node consensus, mempool ordering guarantees beyond FIFO.

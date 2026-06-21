@@ -13,6 +13,21 @@ license = "MIT"
 authors = ["Democracy Earth Foundation"]
 repository = "https://github.com/democracyearth/ubi2"
 
-# Shared dependencies are declared here as the workspace grows (tokio, jsonrpsee, etc.).
-# The M0 skeleton is intentionally dependency-free so `cargo build` is green offline.
+# Shared dependencies for the M1 devnet: async runtime, JSON-RPC transport (HTTP + WS), and the
+# alloy stack for EIP-155 legacy tx RLP decode + secp256k1 signer recovery.
 [workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+alloy-primitives = { version = "0.8", features = ["k256"] }
+alloy-consensus = { version = "0.8", features = ["k256"] }
+alloy-eips = "0.8"
+alloy-rlp = "0.3"
+# Force the `display` feature on derive_more 1.x: alloy-eip7702 0.4.2 (pulled transitively by
+# alloy-eips) uses derive_more::Display but doesn't enable the feature itself, so without this the
+# build fails under feature unification. Harmless otherwise.
+derive_more = { version = "1", features = ["display", "from"] }

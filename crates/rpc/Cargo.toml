@@ -1,6 +1,6 @@
 [package]
 name = "ubi2-rpc"
-description = "ubi2 EVM-compatible JSON-RPC surface."
+description = "ubi2 EVM-compatible JSON-RPC surface (jsonrpsee HTTP + WS)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,20 @@ authors.workspace = true
 
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
+tokio.workspace = true
+jsonrpsee.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-rlp.workspace = true
+derive_more.workspace = true
+
+[dev-dependencies]
+# QA (M1-T7) integration tests: sign EIP-155 legacy txs with the well-known devnet key and drive the
+# live HTTP JSON-RPC like a standard EVM client. k256 is the secp256k1 signer; alloy-rlp re-exported
+# for encode_2718. No extra HTTP crate — the test POSTs raw HTTP/1.1 over tokio TcpStream.
+k256 = { version = "0.13", features = ["ecdsa"] }
