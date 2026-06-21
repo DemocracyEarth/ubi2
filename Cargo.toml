@@ -37,3 +37,8 @@ base64 = "0.22"
 # alloy-eips) uses derive_more::Display but doesn't enable the feature itself, so without this the
 # build fails under feature unification. Harmless otherwise.
 derive_more = { version = "1", features = ["display", "from"] }
+# Browser access: the wallet/explorer runs at localhost:3000 and fetches the RPC at 127.0.0.1:8545
+# (a cross-origin request), so the server must answer CORS preflights. `tower-http`'s CorsLayer is
+# wired into jsonrpsee via `set_http_middleware`. tower 0.4 matches jsonrpsee 0.24's tower.
+tower = "0.4"
+tower-http = { version = "0.6", features = ["cors"] }

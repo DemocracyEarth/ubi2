@@ -37,6 +37,41 @@ function getInjected(): Injected | null {
   return eth ?? null;
 }
 
+/**
+ * Extract a human-readable message from any thrown value. MetaMask/EIP-1193 and viem reject with
+ * plain *objects* (`{ code, message }`, `{ shortMessage }`), not `Error`s — so the old
+ * `String(e)` rendered them as "[object Object]". Dig out the real message instead.
+ */
+function errMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const o = e as Record<string, unknown>;
+    const nested = (o.data as { message?: string } | undefined)?.message;
+    const msg = (o.shortMessage ?? o.message ?? nested) as string | undefined;
+    if (msg) return typeof o.code === "number" ? `${msg} (code ${o.code})` : msg;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      /* fall through */
+    }
+  }
+  return String(e);
+}
+
+/**
+ * Ensure the injected wallet has authorized this dapp and return the account to send from.
+ * `eth_requestAccounts` is what triggers MetaMask's connect prompt — without it, `eth_sendTransaction`
+ * rejects ("unauthorized"), which is the root of the "not connected" / "[object Object]" bug. The call
+ * is idempotent: once connected, it returns the accounts without re-prompting.
+ */
+async function requestFrom(injected: Injected, fallback: string): Promise<string> {
+  const accounts = (await injected.request({ method: "eth_requestAccounts" })) as
+    | string[]
+    | undefined;
+  return accounts?.[0] ?? fallback;
+}
+
 function short(addr: string): string {
   if (!addr || addr.length < 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -100,12 +135,16 @@ function StreamRow({
     try {
       const data = encodeStopStream(stream.id);
       const res = injected
-        ? await sendStreamTx({ data, from: account, provider: injected as never })
+        ? await sendStreamTx({
+            data,
+            from: await requestFrom(injected, account),
+            provider: injected as never,
+          })
         : await sendStreamTx({ data, privateKey: DEV_PRIVATE_KEY, rpcUrl: RPC_URL });
       setNote(`stopStream sent · ${res.hash.slice(0, 10)}…`);
       setTimeout(onStopped, 2200);
     } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
+      setNote(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -127,7 +166,7 @@ function StreamRow({
       });
       setNote("Requested NFT import in wallet.");
     } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
+      setNote(errMessage(e));
     }
   }, [injected, tokenId]);
 
@@ -192,6 +231,7 @@ export function Streams({ account }: { account: string }) {
   const [incoming, setIncoming] = useState<StreamView[]>([]);
   const [tab, setTab] = useState<"incoming" | "outgoing">("incoming");
   const [injected, setInjected] = useState<Injected | null>(null);
+  const [connected, setConnected] = useState<string | null>(null);
 
   // form state
   const [to, setTo] = useState("");
@@ -241,8 +281,9 @@ export function Streams({ account }: { account: string }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error("recipient must be a 0x address");
 
       const data = encodeOpenStream(to, ratePerSec, depositBase);
+      const from = injected ? await requestFrom(injected, account) : account;
       const res = injected
-        ? await sendStreamTx({ data, from: account, provider: injected as never })
+        ? await sendStreamTx({ data, from, provider: injected as never })
         : await sendStreamTx({ data, privateKey: DEV_PRIVATE_KEY, rpcUrl: RPC_URL });
 
       setFormNote({
@@ -254,13 +295,30 @@ export function Streams({ account }: { account: string }) {
       // give the node a tick to mine, then refresh.
       setTimeout(refresh, 2400);
     } catch (e) {
-      setFormNote({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+      setFormNote({ kind: "err", text: errMessage(e) });
     } finally {
       setSubmitting(false);
     }
   }, [to, ratePerHr, deposit, duration, mode, injected, account, refresh]);
 
-  const signerLabel = injected ? "injected wallet" : "devnet dev key";
+  const connect = useCallback(async () => {
+    if (!injected) {
+      setFormNote({ kind: "err", text: "No injected wallet detected — install MetaMask." });
+      return;
+    }
+    try {
+      setConnected(await requestFrom(injected, account));
+      setFormNote(null);
+    } catch (e) {
+      setFormNote({ kind: "err", text: errMessage(e) });
+    }
+  }, [injected, account]);
+
+  const signerLabel = connected
+    ? `MetaMask · ${short(connected)}`
+    : injected
+      ? "MetaMask (not connected)"
+      : "devnet dev key";
 
   return (
     <>
@@ -323,7 +381,12 @@ export function Streams({ account }: { account: string }) {
           {submitting ? "Sending…" : "Open stream"}
         </button>
         <div className="signer">
-          signing with <b>{signerLabel}</b> · from {short(account)}
+          signing with <b>{signerLabel}</b>
+          {injected && !connected && (
+            <button className="ghost" style={{ marginLeft: "0.5rem" }} onClick={connect}>
+              Connect MetaMask
+            </button>
+          )}
         </div>
         {formNote && <div className={`notice ${formNote.kind}`}>{formNote.text}</div>}
       </section>
