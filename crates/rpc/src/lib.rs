@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{keccak256, Address as AlloyAddr, B256, U256};
+use alloy_sol_types::SolCall;
 use jsonrpsee::core::{RpcResult, SubscriptionResult};
 use jsonrpsee::server::{Server, ServerHandle};
 use jsonrpsee::types::error::ErrorObjectOwned;
@@ -40,7 +41,16 @@ use jsonrpsee::{PendingSubscriptionSink, RpcModule};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
-use ubi2_runtime::{apply_transfer, Account, Address, MemState, State};
+use ubi2_runtime::{
+    apply_transfer, open_stream, stop_stream, Account, Address, MemState, State, Stream,
+    StreamStatus,
+};
+
+pub mod streams;
+use streams::{
+    decode_token_id, parse_calldata, render_token_uri, CalldataError, CardData, Side, StreamOp,
+    STREAM_HUB,
+};
 
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
 pub const DEVNET_CHAIN_ID: u64 = 0x5542;
@@ -52,7 +62,7 @@ const GAS_PRICE_WEI: u64 = 1_000_000_000;
 const TRANSFER_GAS: u64 = 21_000;
 
 /// Client version string returned by `web3_clientVersion`.
-const CLIENT_VERSION: &str = "ubi2-node/v0.1.0-m1";
+const CLIENT_VERSION: &str = "ubi2-node/v0.2.0-m2";
 
 /// The EVM JSON-RPC methods M1 implements (kept for documentation / tests).
 pub const M1_METHODS: &[&str] = &[
@@ -78,11 +88,25 @@ pub const M1_METHODS: &[&str] = &[
     "eth_unsubscribe",
 ];
 
+/// M2 stream-read methods (custom `ubi_*` surface; `eth_call`/`eth_sendRawTransaction`/`eth_getBalance`
+/// are M1 methods extended in place to recognize StreamHub). Kept for documentation / tests.
+pub const M2_METHODS: &[&str] = &["ubi_getStream", "ubi_getStreams"];
+
 // ---------------------------------------------------------------------------------------------
 // Block / transaction model
 // ---------------------------------------------------------------------------------------------
 
-/// A transaction as included in a block (the bits an explorer / receipt needs).
+/// One EVM log emitted by a stream op, carried in the tx receipt (spec §"RPC surface": the receipt's
+/// logs include the assigned stream id). Standard `{address, topics, data}` shape.
+#[derive(Clone, Debug)]
+pub struct TxLog {
+    pub address: AlloyAddr,
+    pub topics: Vec<B256>,
+    pub data: Vec<u8>,
+}
+
+/// A transaction as included in a block (the bits an explorer / receipt needs). M2 adds `input`
+/// (StreamHub calldata) and `logs` (stream/NFT events).
 #[derive(Clone, Debug)]
 pub struct StoredTx {
     pub hash: B256,
@@ -93,6 +117,10 @@ pub struct StoredTx {
     pub block_number: u64,
     pub block_hash: B256,
     pub tx_index: u64,
+    /// Raw calldata (`0x` for plain transfers; the StreamHub selector+args otherwise).
+    pub input: Vec<u8>,
+    /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints).
+    pub logs: Vec<TxLog>,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -131,14 +159,143 @@ struct Inner {
     mempool: Vec<PendingTx>,
 }
 
-/// A transfer that passed validation in `eth_sendRawTransaction` and is queued for the next block.
+/// What a queued tx will do when mined. M1 had only value transfers; M2 adds the two StreamHub ops.
+#[derive(Clone, Debug)]
+enum PendingKind {
+    /// Plain value transfer to `to`.
+    Transfer { to: AlloyAddr, value: u128 },
+    /// `openStream` to StreamHub: open `from → to` at `rate`, locking `deposit`.
+    OpenStream {
+        to: AlloyAddr,
+        rate: u128,
+        deposit: u128,
+    },
+    /// `stopStream` to StreamHub: stop stream `id` (signer must be the sender).
+    StopStream { id: u64 },
+}
+
+/// A tx that passed validation in `eth_sendRawTransaction` and is queued for the next block.
 #[derive(Clone, Debug)]
 struct PendingTx {
     hash: B256,
     from: AlloyAddr,
-    to: AlloyAddr,
+    /// The recipient/`to` field of the tx envelope (StreamHub for stream ops; the payee for transfers).
+    tx_to: AlloyAddr,
+    /// Tx value (0 for stream ops — the deposit is a calldata arg, spec D2/Q1).
     value: u128,
     nonce: u64,
+    /// Raw calldata, preserved for the explorer's `input` field.
+    input: Vec<u8>,
+    kind: PendingKind,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stream-op nonce handling + event logs
+// ---------------------------------------------------------------------------------------------
+
+/// Validate and bump the sender's nonce for a stream-op tx, mirroring `apply_transfer`'s replay
+/// protection (stream ops bypass `apply_transfer`, so they enforce the nonce here). Settles the
+/// sender's emission first so `last_settled_at` advances consistently. On a nonce mismatch the state
+/// is left untouched (the runtime op is never reached). Returns `Err(reason)` on mismatch.
+fn consume_nonce(
+    state: &mut dyn State,
+    from: &AlloyAddr,
+    nonce: u64,
+    now: u64,
+) -> Result<(), String> {
+    let mut acct = state.get(&from.into_array()).unwrap_or(Account {
+        address: from.into_array(),
+        ..Default::default()
+    });
+    acct.settle(now);
+    if nonce != acct.nonce {
+        return Err(format!(
+            "invalid nonce: expected {}, got {nonce}",
+            acct.nonce
+        ));
+    }
+    acct.nonce += 1;
+    state.put(acct);
+    Ok(())
+}
+
+/// The `keccak256` event-signature topic for `StreamOpened(uint256,address,address)`. Indexed id in
+/// `topics[1]` so `eth_getTransactionReceipt` carries the assigned stream id (spec §"RPC surface").
+fn stream_opened_topic() -> B256 {
+    keccak256(b"StreamOpened(uint256,address,address)")
+}
+/// Topic for `StreamStopped(uint256,address)`.
+fn stream_stopped_topic() -> B256 {
+    keccak256(b"StreamStopped(uint256,address)")
+}
+/// Topic for ERC-721 `Transfer(address,address,uint256)` (the two mints on open).
+fn transfer_topic() -> B256 {
+    keccak256(b"Transfer(address,address,uint256)")
+}
+
+/// 32-byte big-endian topic for a u64 (left-padded) — used for indexed stream ids.
+fn u64_topic(v: u64) -> B256 {
+    B256::from(U256::from(v))
+}
+/// 32-byte topic for a U256 token id.
+fn u256_topic(v: U256) -> B256 {
+    B256::from(v)
+}
+/// 32-byte topic for an address (left-padded to 32 bytes, EVM-style).
+fn addr_topic(a: &AlloyAddr) -> B256 {
+    let mut b = [0u8; 32];
+    b[12..].copy_from_slice(a.as_slice());
+    B256::from(b)
+}
+
+/// Build the logs emitted by an `openStream`: a `StreamOpened` event plus the two ERC-721 `Transfer`
+/// mints (`0x0 → to` for the recipient token, `0x0 → from` for the sender receipt) — spec D4.
+fn stream_open_logs(id: u64, from: AlloyAddr, to: AlloyAddr) -> Vec<TxLog> {
+    let recipient_token = U256::from(id);
+    let sender_token = U256::from(id) | (U256::from(1u8) << 255);
+    vec![
+        TxLog {
+            address: STREAM_HUB,
+            topics: vec![
+                stream_opened_topic(),
+                u64_topic(id),
+                addr_topic(&from),
+                addr_topic(&to),
+            ],
+            data: Vec::new(),
+        },
+        // Mint the recipient token (id) to `to`.
+        TxLog {
+            address: STREAM_HUB,
+            topics: vec![
+                transfer_topic(),
+                addr_topic(&AlloyAddr::ZERO),
+                addr_topic(&to),
+                u256_topic(recipient_token),
+            ],
+            data: Vec::new(),
+        },
+        // Mint the sender receipt (id | SENDER_FLAG) to `from`.
+        TxLog {
+            address: STREAM_HUB,
+            topics: vec![
+                transfer_topic(),
+                addr_topic(&AlloyAddr::ZERO),
+                addr_topic(&from),
+                u256_topic(sender_token),
+            ],
+            data: Vec::new(),
+        },
+    ]
+}
+
+/// Build the log emitted by a `stopStream`: a `StreamStopped(id, caller)` event.
+fn stream_stop_logs(id: u64, caller: AlloyAddr) -> Vec<TxLog> {
+    vec![TxLog {
+        address: STREAM_HUB,
+        topics: vec![stream_stopped_topic(), u64_topic(id), addr_topic(&caller)],
+        data: Vec::new(),
+    }]
 }
 
 /// Shared node state. Cheaply cloneable (`Arc` inside) so handlers and the tick task share it.
@@ -194,6 +351,24 @@ impl Chain {
         self.inner.lock().unwrap().state.balance(addr, now)
     }
 
+    /// A stream by id (None if unknown). Pure read.
+    pub fn get_stream(&self, id: u64) -> Option<Stream> {
+        self.inner.lock().unwrap().state.get_stream(id)
+    }
+
+    /// `addr`'s outgoing + incoming stream ids (sender, recipient). Pure read.
+    pub fn streams_of(&self, addr: &Address) -> (Vec<u64>, Vec<u64>) {
+        let g = self.inner.lock().unwrap();
+        (g.state.outgoing(addr), g.state.incoming(addr))
+    }
+
+    /// ERC-721 `balanceOf`: number of stream tokens `addr` owns = (# where it is `to`) + (# where it
+    /// is `from`) (D4 — both sides count). Pure read.
+    pub fn nft_balance_of(&self, addr: &Address) -> u64 {
+        let g = self.inner.lock().unwrap();
+        (g.state.outgoing(addr).len() + g.state.incoming(addr).len()) as u64
+    }
+
     /// Produce the next block from the current mempool at `timestamp`. Applies each queued transfer
     /// to state (each transfer re-settles emission at `timestamp`), records the txs, appends the
     /// block, and broadcasts it to `newHeads` subscribers. Called by the node on every clock tick;
@@ -209,24 +384,58 @@ impl Chain {
         for (i, p) in pending.into_iter().enumerate() {
             // Apply against current state. Validation already happened at submit time, but state may
             // have advanced; if it now fails (e.g. nonce raced), drop the tx rather than panic.
-            match apply_transfer(
-                &mut g.state,
-                &p.from.into_array(),
-                &p.to.into_array(),
-                p.value,
-                p.nonce,
-                timestamp,
-            ) {
-                Ok(()) => {
+            let applied: Result<Vec<TxLog>, String> = match &p.kind {
+                PendingKind::Transfer { to, value } => apply_transfer(
+                    &mut g.state,
+                    &p.from.into_array(),
+                    &to.into_array(),
+                    *value,
+                    p.nonce,
+                    timestamp,
+                )
+                .map(|()| Vec::new())
+                .map_err(|e| e.to_string()),
+
+                PendingKind::OpenStream { to, rate, deposit } => {
+                    // Stream ops are signed txs too: enforce + bump the sender nonce, then run the op.
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            open_stream(
+                                &mut g.state,
+                                &p.from.into_array(),
+                                &to.into_array(),
+                                *rate,
+                                *deposit,
+                                timestamp,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|id| stream_open_logs(id, p.from, *to))
+                }
+
+                PendingKind::StopStream { id } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            stop_stream(&mut g.state, *id, &p.from.into_array(), timestamp)
+                                .map_err(|e| e.to_string())
+                        })
+                        .map(|_refund| stream_stop_logs(*id, p.from))
+                }
+            };
+
+            match applied {
+                Ok(logs) => {
                     let tx = StoredTx {
                         hash: p.hash,
                         from: p.from,
-                        to: Some(p.to),
+                        to: Some(p.tx_to),
                         value: U256::from(p.value),
                         nonce: p.nonce,
                         block_number: number,
                         block_hash: hash,
                         tx_index: i as u64,
+                        input: p.input.clone(),
+                        logs,
                     };
                     g.txs.insert(p.hash, tx.clone());
                     stored.push(tx);
@@ -390,13 +599,35 @@ fn tx_to_json(tx: &StoredTx) -> Value {
         "value": hex_u256(tx.value),
         "gas": hex_u64(TRANSFER_GAS),
         "gasPrice": hex_u64(GAS_PRICE_WEI),
-        "input": "0x",
+        "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
         "type": "0x0",
         "chainId": hex_u64(DEVNET_CHAIN_ID),
     })
 }
 
+/// Render a single log into the Ethereum receipt log shape. `logIndex`/`blockHash` etc. are filled in
+/// by `receipt_to_json` (it knows the tx's position).
+fn log_to_json(tx: &StoredTx, log: &TxLog, log_index: usize) -> Value {
+    json!({
+        "address": hex_addr(&log.address),
+        "topics": log.topics.iter().map(hex_b256).collect::<Vec<_>>(),
+        "data": if log.data.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&log.data)) },
+        "blockNumber": hex_u64(tx.block_number),
+        "blockHash": hex_b256(&tx.block_hash),
+        "transactionHash": hex_b256(&tx.hash),
+        "transactionIndex": hex_u64(tx.tx_index),
+        "logIndex": hex_u64(log_index as u64),
+        "removed": false,
+    })
+}
+
 fn receipt_to_json(tx: &StoredTx) -> Value {
+    let logs: Vec<Value> = tx
+        .logs
+        .iter()
+        .enumerate()
+        .map(|(i, l)| log_to_json(tx, l, i))
+        .collect();
     json!({
         "transactionHash": hex_b256(&tx.hash),
         "transactionIndex": hex_u64(tx.tx_index),
@@ -407,7 +638,7 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         "cumulativeGasUsed": hex_u64(TRANSFER_GAS),
         "gasUsed": hex_u64(TRANSFER_GAS),
         "contractAddress": Value::Null,
-        "logs": [],
+        "logs": logs,
         "logsBloom": format!("0x{}", "0".repeat(512)),
         "status": "0x1",
         "effectiveGasPrice": hex_u64(GAS_PRICE_WEI),
@@ -462,26 +693,51 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         .recover_signer()
         .map_err(|e| invalid_params(format!("signature recovery failed: {e}")))?;
 
-    // M1 executes value transfers only: require a `to` (no contract creation) and empty calldata.
+    // Require a `to` (no contract creation on devnet).
     let to = env
         .to()
-        .ok_or_else(|| invalid_params("contract creation not supported on M1"))?;
-    if !env.input().is_empty() {
-        return Err(invalid_params(
-            "calldata not supported on M1 (value transfers only)",
-        ));
-    }
+        .ok_or_else(|| invalid_params("contract creation not supported"))?;
 
-    let value_u256 = env.value();
-    // Balances are u128 base units; reject implausibly huge values that don't fit (they can't be
-    // funded on devnet anyway). U256 → u128 via the low 128 bits + a high-bits guard.
-    let value: u128 = value_u256
-        .try_into()
-        .map_err(|_| invalid_params("value exceeds u128 base-unit range"))?;
     let nonce = env.nonce();
     let hash = *env.tx_hash();
+    let input = env.input().to_vec();
+    let value_u256 = env.value();
 
-    // Validate nonce + balance against current state at *now* (settlement is re-done at block time).
+    // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed only for StreamHub**. A tx to
+    // any other address still must be a plain value transfer (empty calldata).
+    let kind = if to == STREAM_HUB {
+        // Parse the StreamHub selector + ABI args into a stream op (soulbound selectors revert here).
+        match parse_calldata(&input) {
+            Ok(StreamOp::Open { to, rate, deposit }) => {
+                PendingKind::OpenStream { to, rate, deposit }
+            }
+            Ok(StreamOp::Stop { id }) => PendingKind::StopStream { id },
+            Err(CalldataError::Soulbound) => {
+                return Err(execution_reverted("soulbound"));
+            }
+            Err(e) => return Err(invalid_params(format!("StreamHub call: {e}"))),
+        }
+    } else {
+        if !input.is_empty() {
+            return Err(invalid_params(
+                "calldata only supported for StreamHub (value transfers otherwise)",
+            ));
+        }
+        // Balances are u128 base units; reject values that don't fit (unfundable on devnet anyway).
+        let value: u128 = value_u256
+            .try_into()
+            .map_err(|_| invalid_params("value exceeds u128 base-unit range"))?;
+        PendingKind::Transfer { to, value }
+    };
+
+    // The deposit for stream ops is a calldata arg, not msg.value (D2/Q1); the tx value is 0.
+    let value: u128 = match &kind {
+        PendingKind::Transfer { value, .. } => *value,
+        _ => 0,
+    };
+
+    // Validate nonce + (for transfers) spendable balance against current state at *now*. Stream-op
+    // deposit affordability is re-checked at block time by `open_stream` (settlement is re-done then).
     {
         let g = chain.inner.lock().unwrap();
         let now = now_secs();
@@ -499,6 +755,13 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
                 }
             )));
         }
+        if let PendingKind::OpenStream { deposit, .. } = &kind {
+            if settled < *deposit {
+                return Err(invalid_params(format!(
+                    "insufficient balance for deposit: have {settled}, need {deposit}"
+                )));
+            }
+        }
         if settled < value {
             return Err(invalid_params(format!(
                 "insufficient balance: have {settled}, need {value}"
@@ -509,11 +772,128 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     chain.inner.lock().unwrap().mempool.push(PendingTx {
         hash,
         from,
-        to,
+        tx_to: to,
         value,
         nonce,
+        input,
+        kind,
     });
     Ok(hash)
+}
+
+/// JSON-RPC "execution reverted" error (code 3), used for soulbound transfer attempts on StreamHub.
+fn execution_reverted(msg: impl Into<String>) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(3, msg.into(), None::<()>)
+}
+
+// ---------------------------------------------------------------------------------------------
+// ERC-721 view precompile (eth_call → StreamHub) + ubi_* stream-read helpers
+// ---------------------------------------------------------------------------------------------
+
+/// Dispatch an ERC-721 / ERC-165 / ERC-721-Metadata view call against the StreamHub collection,
+/// returning ABI-encoded result bytes (spec D4). Unknown selectors return empty data; soulbound
+/// mutators revert. The two-token scheme is decoded in `ownerOf`/`tokenURI` via `decode_token_id`.
+fn erc721_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned> {
+    use streams::{
+        balanceOfCall, encode_address, encode_bool, encode_string, encode_u256, nameCall,
+        ownerOfCall, supportsInterfaceCall, symbolCall, tokenURICall, IFACE_ERC165, IFACE_ERC721,
+        IFACE_ERC721_METADATA,
+    };
+
+    if data.len() < 4 {
+        return Err(invalid_params("calldata too short for a selector"));
+    }
+    let sel: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    // supportsInterface(bytes4)
+    if sel == supportsInterfaceCall::SELECTOR {
+        let call = supportsInterfaceCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad supportsInterface args: {e}")))?;
+        let id: [u8; 4] = call.interfaceId.0;
+        let yes = id == IFACE_ERC165 || id == IFACE_ERC721 || id == IFACE_ERC721_METADATA;
+        return Ok(encode_bool(yes));
+    }
+    // name()
+    if sel == nameCall::SELECTOR {
+        return Ok(encode_string("ubi2 Streams"));
+    }
+    // symbol()
+    if sel == symbolCall::SELECTOR {
+        return Ok(encode_string("USTREAM"));
+    }
+    // balanceOf(address)
+    if sel == balanceOfCall::SELECTOR {
+        let call = balanceOfCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad balanceOf args: {e}")))?;
+        let n = chain.nft_balance_of(&call.owner.into_array());
+        return Ok(encode_u256(U256::from(n)));
+    }
+    // ownerOf(uint256) — decode the side flag; revert for unknown tokens.
+    if sel == ownerOfCall::SELECTOR {
+        let call = ownerOfCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad ownerOf args: {e}")))?;
+        let (id, side) = decode_token_id(call.tokenId)
+            .ok_or_else(|| execution_reverted("ERC721: invalid token"))?;
+        let stream = chain
+            .get_stream(id)
+            .ok_or_else(|| execution_reverted("ERC721: owner query for nonexistent token"))?;
+        let owner = match side {
+            Side::Incoming => stream.to,
+            Side::Outgoing => stream.from,
+        };
+        return Ok(encode_address(AlloyAddr::from(owner)));
+    }
+    // tokenURI(uint256) — render the on-chain card for the decoded side.
+    if sel == tokenURICall::SELECTOR {
+        let call = tokenURICall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad tokenURI args: {e}")))?;
+        let (id, side) = decode_token_id(call.tokenId)
+            .ok_or_else(|| execution_reverted("ERC721: invalid token"))?;
+        let stream = chain
+            .get_stream(id)
+            .ok_or_else(|| execution_reverted("ERC721Metadata: URI query for nonexistent token"))?;
+        let card = CardData::new(&stream, side, now_secs());
+        return Ok(encode_string(&render_token_uri(&card)));
+    }
+    // Soulbound mutators (transfer/approve) reach eth_call only if a tool simulates them: revert.
+    match parse_calldata(data) {
+        Err(CalldataError::Soulbound) => Err(execution_reverted("soulbound")),
+        // openStream/stopStream are writes, not view calls; everything else is unknown → empty data.
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Parse a stream-id JSON param accepting either a hex quantity (`"0x.."`) or a JSON number.
+fn parse_stream_id_param(v: Option<&Value>) -> RpcResult<u64> {
+    let v = v.ok_or_else(|| invalid_params("missing stream id"))?;
+    if let Some(s) = v.as_str() {
+        return u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
+            .map_err(|_| invalid_params("bad stream id hex"));
+    }
+    v.as_u64().ok_or_else(|| invalid_params("bad stream id"))
+}
+
+/// Render a [`Stream`] into the `StreamView` JSON shape (spec §"RPC surface"): all stored fields plus
+/// the read-time `accrued_now` and `t_end`. `status` is a `{type, ...}` object so `Stopped(at)`
+/// carries its instant.
+fn stream_view_json(s: &Stream, now: u64) -> Value {
+    let status = match s.status {
+        StreamStatus::Active => json!({ "type": "Active" }),
+        StreamStatus::Stopped(at) => json!({ "type": "Stopped", "at": at }),
+        StreamStatus::Completed => json!({ "type": "Completed" }),
+    };
+    json!({
+        "id": s.id,
+        "from": format!("0x{}", hex::encode(&s.from)),
+        "to": format!("0x{}", hex::encode(&s.to)),
+        "rate": hex_u128(s.rate),
+        "deposit": hex_u128(s.deposit),
+        "drawn": hex_u128(s.drawn),
+        "started_at": s.started_at,
+        "status": status,
+        "accrued_now": hex_u128(s.accrued(now)),
+        "t_end": s.t_end(),
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -611,9 +991,67 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
-    // No EVM in M1: read-only calls return empty data. Documented deviation (no contracts until M4).
-    m.register_method("eth_call", |_, _, _| Ok::<_, ErrorObjectOwned>(json!("0x")))
-        .unwrap();
+    // `eth_call`: no general EVM, but the StreamHub address answers the ERC-721 view precompile
+    // (spec D4). Any other target returns `0x` (M1 behavior — no contracts until M4).
+    m.register_method("eth_call", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [callObject, block]"))?;
+        let call = seq
+            .first()
+            .ok_or_else(|| invalid_params("missing call object"))?;
+        let to = call
+            .get("to")
+            .and_then(|v| v.as_str())
+            .and_then(decode_hex)
+            .filter(|b| b.len() == 20);
+        let data = call
+            .get("data")
+            .or_else(|| call.get("input"))
+            .and_then(|v| v.as_str())
+            .and_then(decode_hex)
+            .unwrap_or_default();
+
+        // Only StreamHub is a "contract"; everything else stays `0x`.
+        let is_hub = to.as_deref() == Some(STREAM_HUB.as_slice());
+        if !is_hub {
+            return Ok::<_, ErrorObjectOwned>(json!("0x"));
+        }
+        let out = erc721_call(ctx, &data)?;
+        Ok::<_, ErrorObjectOwned>(json!(format!("0x{}", hex::encode(&out))))
+    })
+    .unwrap();
+
+    // ---- Custom stream reads (ubi_*) ----
+    m.register_method("ubi_getStream", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [id]"))?;
+        let id = parse_stream_id_param(seq.first())?;
+        match ctx.get_stream(id) {
+            Some(s) => Ok::<_, ErrorObjectOwned>(stream_view_json(&s, now_secs())),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    m.register_method("ubi_getStreams", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        let now = now_secs();
+        let (out_ids, in_ids) = ctx.streams_of(&addr);
+        let outgoing: Vec<Value> = out_ids
+            .into_iter()
+            .filter_map(|id| ctx.get_stream(id))
+            .map(|s| stream_view_json(&s, now))
+            .collect();
+        let incoming: Vec<Value> = in_ids
+            .into_iter()
+            .filter_map(|id| ctx.get_stream(id))
+            .map(|s| stream_view_json(&s, now))
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!({ "outgoing": outgoing, "incoming": incoming }))
+    })
+    .unwrap();
 
     m.register_method("eth_sendRawTransaction", |params, ctx, _| {
         let seq: Vec<Value> = params
