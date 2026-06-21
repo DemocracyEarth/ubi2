@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runtime",
+    "crates/rpc",
+    "crates/node",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["Democracy Earth Foundation"]
+repository = "https://github.com/democracyearth/ubi2"
+
+# Shared dependencies are declared here as the workspace grows (tokio, jsonrpsee, etc.).
+# The M0 skeleton is intentionally dependency-free so `cargo build` is green offline.
+[workspace.dependencies]

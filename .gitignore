@@ -1,0 +1,37 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+*.rs.bk
+
+# Node / Next
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Env & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Logs & runtime state
+*.log
+logs/
+checkpoints/
+devnet-data/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Agent loop scratch (reports are committed; scratch is not)
+.agent-scratch/

@@ -1,0 +1,13 @@
+{
+  "name": "ubi2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A UBI blockchain with AI proof-of-humanity, natural-language contracts, and streaming UBI.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "pnpm --filter @ubi2/wallet dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@10.2.1"
+}

@@ -1,0 +1,10 @@
+[package]
+name = "ubi2-rpc"
+description = "ubi2 EVM-compatible JSON-RPC surface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ubi2-runtime = { path = "../runtime" }

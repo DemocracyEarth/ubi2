@@ -1,0 +1,15 @@
+[package]
+name = "ubi2-node"
+description = "ubi2 node binary: networking, block production, devnet wiring."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ubi2-node"
+path = "src/main.rs"
+
+[dependencies]
+ubi2-runtime = { path = "../runtime" }
+ubi2-rpc = { path = "../rpc" }
