@@ -30,6 +30,19 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-3 · protocol** — State persistence/checkpoint behind the existing `State` trait (M1 is in-memory).
 - **FU-4 · reliability** — Two-node soak once consensus (M3 quorum) exists; metrics/observability.
 
+**Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
+- **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
+  with search by hash/address and per-account history. Needs a node-side **address index** first
+  (today `txs` is indexed by hash + block only, not by account) — i.e. a lightweight indexer behind the
+  RPC, then a dedicated explorer UI (or split `apps/explorer` from `apps/wallet`).
+- **UX-1 · interface (+ optional protocol)** — Real-time "dripping" UX. Note: accrual is **already
+  continuous** (balance is a pure function of wall-clock time, not block-gated — the 2s tick only
+  affects tx confirmation, not UBI growth), and the ubi2 wallet already interpolates per-frame via
+  `projectBalance`. Levers left: (a) push freshness over a `newHeads`/balance subscription so the drip
+  re-anchors faster; (b) accept that third-party wallets (MetaMask) poll on their own cadence and can't
+  show a smooth drip — our own UI is where the feel lives. Largely solved; this is polish + a decision
+  on whether to expose a balance-stream subscription.
+
 ## 🏗️ In Progress
 _(none — cycle 1 closed)_
 

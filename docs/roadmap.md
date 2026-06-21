@@ -51,5 +51,7 @@ get verified, receive streaming UBI, and transact via standard wallets. **Depend
 ---
 
 ### Backlog (not yet scheduled)
+Full block explorer + chain indexer (browse all blocks/txs/accounts; needs node-side address index) ·
+real-time "dripping" UX polish (accrual is already continuous — display/subscription level) ·
 AI provider network & token-for-compute · progressive decentralization / parameter ossification ·
 mobile wallet · cross-chain bridge · advanced stream composition (split/merge marketplaces).
