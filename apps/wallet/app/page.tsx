@@ -124,7 +124,8 @@ export default function Home() {
   useEffect(() => {
     const frame = () => {
       const s = sampleRef.current;
-      if (s) setDisplay(formatUbi(projectBalance(s)));
+      // 8 decimals so the streaming drip is visibly moving frame-to-frame (>= the 2-dp floor).
+      if (s) setDisplay(formatUbi(projectBalance(s), 8));
       rafRef.current = requestAnimationFrame(frame);
     };
     rafRef.current = requestAnimationFrame(frame);
@@ -146,7 +147,7 @@ export default function Home() {
       <div className="header">
         <div>
           <h1>
-            ubi<span style={{ color: "var(--accent)" }}>2</span>
+            <span style={{ color: "var(--accent)" }}>UBI</span>
           </h1>
           <p className="tagline">wallet &amp; block explorer · devnet</p>
         </div>
