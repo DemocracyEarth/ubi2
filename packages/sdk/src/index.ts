@@ -1,11 +1,16 @@
 /**
  * @ubi2/sdk — typed JSON-RPC client for the ubi2 chain.
  *
- * Targets the EVM-compatible RPC defined in `docs/specs/01-evm-rpc-and-wallet.md`. Provides a
- * thin typed client over the documented `eth_*` methods plus a client-side streaming-balance
- * helper so UIs can tick a verified account's balance every animation frame without polling the
- * node on every frame. Uses the global `fetch` (Node ≥ 18, browsers).
+ * Targets the EVM-compatible RPC defined in `docs/specs/01-evm-rpc-and-wallet.md` and the M2
+ * streaming surface in `docs/specs/02-streaming.md`. Provides a thin typed client over the
+ * documented `eth_*` methods, a client-side streaming-balance helper so UIs can tick a balance
+ * every animation frame without polling the node on every frame, and the M2 stream/NFT helpers
+ * (calldata encoders, `ubi_getStreams`, on-chain NFT card decoding, and a send helper that works
+ * with either an injected provider or a local private key). Uses the global `fetch` (Node ≥ 18,
+ * browsers).
  */
+
+export * from "./streaming";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;

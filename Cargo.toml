@@ -27,6 +27,12 @@ alloy-primitives = { version = "0.8", features = ["k256"] }
 alloy-consensus = { version = "0.8", features = ["k256"] }
 alloy-eips = "0.8"
 alloy-rlp = "0.3"
+# M2: ABI encode/decode for the StreamHub calldata (`openStream`/`stopStream`) and the ERC-721 view
+# returns. `sol!` derives the 4-byte selectors and `SolCall::abi_decode`/`abi_encode` handle the wire
+# layout, so we never hand-roll ABI offsets (spec §"RPC surface", D4).
+alloy-sol-types = "0.8"
+# M2: base64 for the fully on-chain `tokenURI` data-URI (JSON document + inline SVG image), per D4.
+base64 = "0.22"
 # Force the `display` feature on derive_more 1.x: alloy-eip7702 0.4.2 (pulled transitively by
 # alloy-eips) uses derive_more::Display but doesn't enable the feature itself, so without this the
 # build fails under feature unification. Harmless otherwise.

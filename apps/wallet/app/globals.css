@@ -264,3 +264,228 @@ button.copy:disabled {
     grid-template-columns: 7rem 1fr;
   }
 }
+
+/* ---- M2: streaming form ---- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+}
+.field label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.field input,
+.field select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  padding: 0.6rem 0.75rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent-dim);
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 560px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+button.primary {
+  background: var(--accent);
+  color: #08130d;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.65rem 1.1rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s, opacity 0.15s;
+}
+button.primary:hover {
+  filter: brightness(1.08);
+}
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.ghost {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+button.ghost:hover {
+  border-color: var(--accent-dim);
+}
+button.ghost.danger {
+  color: var(--danger);
+}
+button.ghost.danger:hover {
+  border-color: var(--danger);
+}
+button.ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.notice {
+  font-size: 0.8rem;
+  font-family: var(--mono);
+  word-break: break-all;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-top: 0.85rem;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.notice.ok {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+.notice.err {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* signer toggle */
+.signer {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+.signer b {
+  color: var(--accent);
+}
+
+/* ---- M2: stream rows ---- */
+.stream {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 620px) {
+  .stream {
+    grid-template-columns: 1fr;
+  }
+}
+.stream-card-img {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.stream-card-img svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.stream-body {
+  min-width: 0;
+}
+.stream-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.stream-counter {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+.stream-counter .arrow {
+  color: var(--accent);
+  margin: 0 0.35rem;
+}
+.stream-accrued {
+  font-family: var(--mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  line-height: 1.2;
+}
+.stream-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  margin-top: 0.25rem;
+}
+.stream-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pill {
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.pill.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: rgba(110, 231, 183, 0.08);
+}
+.pill.stopped {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: rgba(251, 191, 36, 0.08);
+}
+.pill.completed {
+  color: var(--muted);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+.tab.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: rgba(110, 231, 183, 0.08);
+}

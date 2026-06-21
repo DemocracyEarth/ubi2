@@ -24,12 +24,17 @@ later feature; it also forces the deterministic time-based balance model early.
   `eth_sendRawTransaction`, `eth_subscribe`).
 **Spec:** [`specs/01-evm-rpc-and-wallet.md`](specs/01-evm-rpc-and-wallet.md)
 
-## M2 — Streaming primitive 🚧 *(current)*
+## M2 — Streaming primitive ✅ *(shipped cycle 2)*
+Delivered: collateralized 1:1 streams via StreamHub system-address txs (MetaMask-signable), live
+net-stream balances, open/stop/refund, and **two ERC-721 stream NFTs per stream** (recipient + sender)
+with a fully on-chain SVG card. 1:many fan-out, uncollateralized stream-through, and transferable streams
+remain deferred. Spec [`02-streaming.md`](specs/02-streaming.md), [ADR-0003](specs/adr/0003-streaming-and-stream-nfts.md).
+Original goal text:
 **Goal:** account-to-account real-time streams (1:1, then 1:many) on top of the UBI drip, with the
 safety controls (rate limits, collateralization, circuit breakers). **Exit:** a user opens a stream to
 another account and both balances move in real time; safety limits demonstrated. **Depends on:** M1.
 
-## M3 — AI Proof-of-Humanity ⬜
+## M3 — AI Proof-of-Humanity 🚧 *(current)*
 **Goal:** the LLM-based verification gate with a verifier quorum; only verified humans begin accruing
 UBI. **Exit:** a human passes verification by quorum and starts streaming; a bot/duplicate is rejected;
 verdict integrity holds against a hostile minority of verifiers. **Depends on:** M1.
@@ -51,5 +56,7 @@ get verified, receive streaming UBI, and transact via standard wallets. **Depend
 ---
 
 ### Backlog (not yet scheduled)
+Full block explorer + chain indexer (browse all blocks/txs/accounts; needs node-side address index) ·
+real-time "dripping" UX polish (accrual is already continuous — display/subscription level) ·
 AI provider network & token-for-compute · progressive decentralization / parameter ossification ·
 mobile wallet · cross-chain bridge · advanced stream composition (split/merge marketplaces).
