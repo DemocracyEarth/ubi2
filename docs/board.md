@@ -16,10 +16,20 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 
 ## 🔜 Backlog
 
-**M3 — AI Proof-of-Humanity** (next cycle; needs architect spec first)
-- **M3-T1 · architect** — Spec the LLM proof-of-humanity gate + verifier quorum: challenge/grade flow,
-  sybil signals, the deterministic-quorum verdict (I1), safe degradation (I4), and how `verified` stops
-  being a genesis flag and becomes earned. *Accepts:* testable acceptance criteria + invariants.
+**M3 — AI Proof-of-Humanity** ([spec](specs/03-proof-of-humanity.md)) — social vouching + AI jury, full uniqueness
+- **M3-T3 · ai-engineer** — `HumanityOracle` impl behind the runtime trait: liveness grading, sybil-cluster
+  analysis, jury adjudication via the latest Claude model; canonical-verdict determinism (temp 0, pinned,
+  structured); offline fixtures (I5). *Accepts:* fixed input → identical `CanonicalVerdict`, fixture-tested.
+- **M3-T4 · protocol-engineer** — RPC: `HumanityHub` system-address tx parsing (`requestVerification`/
+  `vouch`/`challenge`/`submitVerdict`) + `ubi_getHuman`/`getCase`/`getVouches`/`getJurors`/`getPendingCases`.
+- **M3-T5 · interface-engineer** — Wallet apply→liveness→vouch→status flow + vouch/challenge actions +
+  juror/verdict view; SDK helpers. *Accepts:* full flow against devnet; build+typecheck green.
+- **M3-T6 · qa-engineer** — Tests for the 8 M3 acceptance criteria (MockOracle). *Accepts:* each → passing test.
+- **M3-T7 · reliability-engineer** — Quorum-verdict determinism + emission reproducibility under `Verified`
+  gating + lifecycle state-machine consistency. *Accepts:* two nodes agree; no nondeterminism.
+- **M3-T8 · security-engineer** — Threat model + pentest: juror collusion, vouch farms/sybil, challenge
+  griefing, oracle prompt-injection, replay, privacy leakage. *Accepts:* no open High/Critical.
+- **M3-T9 · release-engineer** — Seed-set bootstrap script + CI green. *(likely inline)*
 
 **Follow-ups carried from the gates — address before they bite**
 - **FU-1 · protocol/security** — Mempool/registry hardening before any multi-node / non-localhost deploy:
@@ -49,7 +59,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-_(none — cycle 2 closed)_
+- **M3-T2 · protocol-engineer** — On-chain substrate: `Human` registry + `HumanStatus`, vouch graph +
+  constraints, `Case`/`Juror` registries, the verification lifecycle state machine, signed-verdict tally
+  + quorum, `Verified` gating of emission, and the `HumanityOracle` trait seam + `MockOracle` for tests. *(cycle 3)*
 
 ## 👀 Review (awaiting gates)
 _(none)_
@@ -58,6 +70,8 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **M3-T1 · architect** — M3 proof-of-humanity spec: social vouching + AI-jury quorum, on-chain lifecycle,
+  `HumanityOracle` trait + determinism (I1), privacy (I6), 8 acceptance criteria. *(cycle 3 — [spec](specs/03-proof-of-humanity.md))*
 - **M2 — Streaming primitive · SHIPPED (cycle 2).** All gates green. ([spec](specs/02-streaming.md), [ADR-0003](specs/adr/0003-streaming-and-stream-nfts.md))
   - **M2-T1 · architect** — Spec: collateralized 1:1 streams, StreamHub system-address txs (EVM-signable), live net-stream balances (I2), open/stop/refund, **two ERC-721 stream NFTs** with on-chain SVG card.
   - **M2-T2/T3 · protocol-engineer** — Stream runtime + StreamHub RPC (tx parsing, `ubi_getStream(s)`) + ERC-721 precompile (`ownerOf`/`tokenURI`/…) minting recipient + sender NFTs with the on-chain card. Orchestrator-verified live.
