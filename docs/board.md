@@ -52,8 +52,8 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-- **M3-T6/T7/T8 · qa / reliability / security** — Running the three Definition-of-Done gates on the
-  combined M3 diff (substrate + oracle + RPC + wallet). *(cycle 3)*
+- **M3-T8-fix · protocol-engineer** — Harden `challenge()` against the security HIGH (Finding A) + bundle
+  Finding B / F-REL-1 / F-REL-2 / Finding D, then re-gate. *(cycle 3)*
 
 ## 👀 Review (awaiting gates)
 - **M3-T2/T3/T4/T5 · protocol / ai / interface** — Full M3 implementation, **orchestrator-verified** (120
@@ -67,7 +67,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   - **T5 wallet/SDK**: a "Proof of Humanity" card (status, vouches, apply/vouch/challenge, pending cases) + SDK helpers.
 
 ## ⛔ Blocked
-_(none)_
+- **M3-T8 · security gate FAIL (HIGH, Finding A)** — `lifecycle.rs::challenge` ignores `_challenger` (no
+  auth), needs no bond, has no per-subject cap/cooldown; an Open challenge stalls `finalize_registration`
+  forever → any address (gas only) blocks any human from verifying/streaming and flips Verified→Challenged.
+  PoC `crates/runtime/tests/sec_m3_poc.rs` + live tx on devnet. Fix in progress (M3-T8-fix). Do not advance on red.
+  *Source:* [`docs/reports/security-m3.md`](reports/security-m3.md).
 
 ## ✅ Done
 - **M3-T1 · architect** — M3 proof-of-humanity spec: social vouching + AI-jury quorum, on-chain lifecycle,
