@@ -1733,7 +1733,7 @@ fn erc721_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned> 
     }
     // name()
     if sel == nameCall::SELECTOR {
-        return Ok(encode_string("ubi2 Streams"));
+        return Ok(encode_string("UBI Streams"));
     }
     // symbol()
     if sel == symbolCall::SELECTOR {

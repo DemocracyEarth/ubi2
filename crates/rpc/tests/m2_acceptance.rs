@@ -497,7 +497,7 @@ async fn nft_two_tokens_owner_and_token_uri() {
     let json = String::from_utf8(json_bytes).unwrap();
     let meta: serde_json::Value = serde_json::from_str(&json).expect("tokenURI JSON parses");
     assert!(
-        meta["name"].as_str().unwrap().contains("ubi2 Stream"),
+        meta["name"].as_str().unwrap().contains("UBI Stream"),
         "has name"
     );
     assert!(meta["attributes"].is_array(), "has attributes array");
@@ -726,12 +726,12 @@ async fn erc721_collection_metadata_and_eth_call_soulbound() {
     assert!(!bogus, "supportsInterface(0xdeadbeef) must be false");
     println!("[nft] supportsInterface: ERC165/ERC721/ERC721Metadata = true, bogus = false");
 
-    // name()/symbol() == the collection identity ("ubi2 Streams" / "USTREAM").
+    // name()/symbol() == the collection identity ("UBI Streams" / "USTREAM").
     let out = eth_call_hub(addr, nameCall {}.abi_encode()).await;
     let name = nameCall::abi_decode_returns(&out, true).unwrap()._0;
     let out = eth_call_hub(addr, symbolCall {}.abi_encode()).await;
     let symbol = symbolCall::abi_decode_returns(&out, true).unwrap()._0;
-    assert_eq!(name, "ubi2 Streams", "collection name");
+    assert_eq!(name, "UBI Streams", "collection name");
     assert_eq!(symbol, "USTREAM", "collection symbol");
     println!("[nft] name()='{name}', symbol()='{symbol}'");
 
