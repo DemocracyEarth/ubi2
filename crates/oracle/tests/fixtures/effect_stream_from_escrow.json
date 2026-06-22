@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_effect_stream",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"ops\":[{\"op\":\"open_stream\",\"to\":\"0x0202020202020202020202020202020202020202\",\"rate\":\"1\",\"deposit\":\"36000\"}]}"
+    }
+  ]
+}

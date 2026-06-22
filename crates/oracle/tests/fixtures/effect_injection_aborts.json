@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_effect_injection_abort",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"ops\":[{\"op\":\"abort\",\"reason_hash\":\"0x7562693a636f6e74726163742d696e7465727072657465722d61626f72742e\"}]}"
+    }
+  ]
+}

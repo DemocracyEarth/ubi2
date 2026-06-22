@@ -135,8 +135,25 @@ pub struct OutputFormat {
 }
 
 impl MessagesRequest {
-    /// Build the pinned request for a given system prompt + framed user content.
+    /// Build the pinned request for a given system prompt + framed user content, using the
+    /// proof-of-humanity verdict schema. Equivalent to [`MessagesRequest::build_with_schema`] with
+    /// [`schema::json_schema`].
     pub fn build(model: &str, system: String, user: String) -> Self {
+        Self::build_with_schema(model, system, user, schema::json_schema())
+    }
+
+    /// Build the pinned request for a given system prompt + framed user content with an **explicit**
+    /// structured-output JSON-schema. Used by the M4 [`ClaudeInterpreter`](crate::ClaudeInterpreter),
+    /// which constrains generation to the canonical *effect* schema (the closed `Op` list) rather than
+    /// the verdict schema — same temperature-0, pinned-model, closed-shape determinism, different
+    /// closed shape. Both consensus paths share this one builder so the request invariants (temperature
+    /// 0, `json_schema` format, `additionalProperties:false`) are guaranteed identical.
+    pub fn build_with_schema(
+        model: &str,
+        system: String,
+        user: String,
+        schema: serde_json::Value,
+    ) -> Self {
         Self {
             model: model.to_string(),
             max_tokens: MAX_TOKENS,
@@ -149,7 +166,7 @@ impl MessagesRequest {
             output_config: OutputConfig {
                 format: OutputFormat {
                     kind: "json_schema",
-                    schema: schema::json_schema(),
+                    schema,
                 },
             },
         }

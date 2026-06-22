@@ -22,16 +22,24 @@ use std::collections::HashMap;
 
 pub mod humanity;
 pub use humanity::{
-    select_jury, tally, CanonicalVerdict, Case, CaseId, CaseKind, CaseStatus, Confidence,
-    GraphView, Hash, Human, HumanStatus, HumanityOracle, Juror, MockOracle, Tally, Verdict, Vouch,
-    CHALLENGE_WINDOW, FALSE_CHALLENGE_SLASH, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH,
-    VOUCH_CAPACITY,
+    quorum_tally, select_jury, tally, CanonicalVerdict, Case, CaseId, CaseKind, CaseStatus,
+    Confidence, GraphView, Hash, Human, HumanStatus, HumanityOracle, Juror, MockOracle, QuorumEq,
+    QuorumOutcome, Tally, Verdict, Vouch, CHALLENGE_WINDOW, FALSE_CHALLENGE_SLASH, JURY_SIZE,
+    MIN_VOUCHES, QUORUM, SYBIL_SLASH, VOUCH_CAPACITY,
 };
 
 pub mod lifecycle;
 pub use lifecycle::{
     challenge, finalize_registration, register_juror, request_verification, revoke,
     seed_verified_human, submit_verdict, system_challenge, vouch, LifecycleError, LivenessEvidence,
+};
+
+pub mod contracts;
+pub use contracts::{
+    contract_address, deploy_contract, fund_contract, invoke_contract, submit_effect,
+    CanonicalEffect, ContractError, ContractId, ContractInterpreter, ContractStateView,
+    ContractStatus, EffectError, ExecCase, ExecCaseId, ExecStatus, MockInterpreter, Op,
+    PromptContract, CONTRACT_HUB,
 };
 
 /// Ethereum-style 20-byte address (H160).
@@ -389,6 +397,29 @@ pub trait State: Send + Sync {
             edges: self.vouch_edges(),
         }
     }
+
+    // ---- M4: prompt-contract registry (spec 04 §"Data model") ----
+    //
+    // All registry reads return owned snapshots and all listing reads return **sorted** vectors, so
+    // no consensus-affecting path ever depends on hash-iteration order (invariant I1).
+
+    /// Read a prompt contract by id, if it exists.
+    fn get_contract(&self, id: ContractId) -> Option<PromptContract>;
+    /// Insert or replace a prompt contract.
+    fn put_contract(&mut self, contract: PromptContract);
+    /// Reserve and return the next sequential [`ContractId`], advancing the counter.
+    fn next_contract_id(&mut self) -> ContractId;
+    /// Snapshot of all prompt contracts, sorted by id (deterministic order — I1).
+    fn contracts(&self) -> Vec<PromptContract>;
+
+    /// Read an exec case by id, if it exists.
+    fn get_exec_case(&self, id: ExecCaseId) -> Option<ExecCase>;
+    /// Insert or replace an exec case.
+    fn put_exec_case(&mut self, case: ExecCase);
+    /// Reserve and return the next sequential [`ExecCaseId`], advancing the counter.
+    fn next_exec_case_id(&mut self) -> ExecCaseId;
+    /// Snapshot of all exec cases, sorted by id (deterministic order — I1).
+    fn exec_cases(&self) -> Vec<ExecCase>;
 }
 
 /// In-memory account + stream store (M1 default, extended for M2). Deterministic given the same
@@ -421,6 +452,16 @@ pub struct MemState {
     /// `(challenger, subject)` pairs whose challenge cleared a `Human` verdict — the false-challenge
     /// cooldown set (security finding A). Membership bars a re-file by that challenger on that subject.
     cleared_challenges: std::collections::HashSet<(Address, Address)>,
+
+    // ---- M4: prompt-contract registry ----
+    /// Prompt contracts, keyed by id.
+    contracts: HashMap<ContractId, PromptContract>,
+    /// Sequential contract-id counter — the id the next `deploy_contract` will receive.
+    next_contract_id: ContractId,
+    /// Exec cases, keyed by id.
+    exec_cases: HashMap<ExecCaseId, ExecCase>,
+    /// Sequential exec-case-id counter.
+    next_exec_case_id: ExecCaseId,
 }
 
 impl MemState {
@@ -582,6 +623,42 @@ impl State for MemState {
             .map(|j| j.address)
             .collect();
         v.sort_unstable();
+        v
+    }
+
+    // ---- M4: prompt-contract registry ----
+
+    fn get_contract(&self, id: ContractId) -> Option<PromptContract> {
+        self.contracts.get(&id).cloned()
+    }
+    fn put_contract(&mut self, contract: PromptContract) {
+        self.contracts.insert(contract.id, contract);
+    }
+    fn next_contract_id(&mut self) -> ContractId {
+        let id = self.next_contract_id;
+        self.next_contract_id += 1;
+        id
+    }
+    fn contracts(&self) -> Vec<PromptContract> {
+        let mut v: Vec<PromptContract> = self.contracts.values().cloned().collect();
+        v.sort_by_key(|c| c.id);
+        v
+    }
+
+    fn get_exec_case(&self, id: ExecCaseId) -> Option<ExecCase> {
+        self.exec_cases.get(&id).cloned()
+    }
+    fn put_exec_case(&mut self, case: ExecCase) {
+        self.exec_cases.insert(case.id, case);
+    }
+    fn next_exec_case_id(&mut self) -> ExecCaseId {
+        let id = self.next_exec_case_id;
+        self.next_exec_case_id += 1;
+        id
+    }
+    fn exec_cases(&self) -> Vec<ExecCase> {
+        let mut v: Vec<ExecCase> = self.exec_cases.values().cloned().collect();
+        v.sort_by_key(|c| c.id);
         v
     }
 }

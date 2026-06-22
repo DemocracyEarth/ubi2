@@ -1,11 +1,23 @@
-//! ubi2 AI proof-of-humanity oracle (M3-T3) — a **Claude-backed** [`HumanityOracle`].
+//! ubi2 AI oracle — Claude-backed implementations of the runtime's two AI seams.
 //!
-//! This crate fills the AI seam the runtime exposes (`ubi2_runtime::HumanityOracle`) with a live
-//! implementation, [`ClaudeOracle`], that calls the Anthropic Messages API at **temperature 0** with a
-//! **pinned model id** and a **grammar-constrained structured-output schema**, then maps the result to
-//! the runtime's canonical effect ([`ubi2_runtime::CanonicalVerdict`]). The deterministic on-chain
-//! lifecycle, registries, tally, and the `MockOracle` all live in `crates/runtime`; this crate adds
-//! *only* the probabilistic edge, behind the trait, kept cleanly separable.
+//! This crate fills the AI seams the runtime exposes with live implementations that call the Anthropic
+//! Messages API at **temperature 0** with a **pinned model id** and a **grammar-constrained
+//! structured-output schema**, then map the result to the runtime's canonical effect:
+//!
+//!   * **Proof-of-humanity (M3-T3):** [`ClaudeOracle`] implements `ubi2_runtime::HumanityOracle`,
+//!     mapping graded evidence to a [`ubi2_runtime::CanonicalVerdict`].
+//!   * **Prompt-contract interpretation (M4-T3):** [`ClaudeInterpreter`] implements
+//!     `ubi2_runtime::ContractInterpreter`, mapping `(contract text, state snapshot, trigger)` to a
+//!     [`ubi2_runtime::CanonicalEffect`] (a bounded, typed state delta — the closed `Op` list, never
+//!     prose or code). The contract text and trigger are treated as **untrusted, attacker-controlled
+//!     data** (prompt-injection-resistant fencing); the model is fenced to the canonical effect schema
+//!     and fails closed to an `Abort` on any ambiguity (see [`interpreter`] / [`contract_prompt`] /
+//!     [`effect_schema`]).
+//!
+//! Both implementations share the same model-invocation layer (the pinned, temperature-0 request and
+//! the swappable [`client::Transport`] seam). The deterministic on-chain lifecycle, registries, tally,
+//! `MockOracle`, and `MockInterpreter` all live in `crates/runtime`; this crate adds *only* the
+//! probabilistic edge, behind the runtime traits, kept cleanly separable.
 //!
 //! # Invariant map
 //! * **I1 (deterministic consensus over non-deterministic AI).** Every consensus-path call is
@@ -70,14 +82,49 @@
 //!
 //! The juror daemon then calls [`juror_verdict`] per open case and builds a [`SubmitVerdictTx`]
 //! (see [`juror`] for the full watch → grade → submit design).
+//!
+//! # Node wiring (the prompt-contract interpreter)
+//! The interpreter seam selects exactly the same way (the runtime trait is the only coupling). The node
+//! depends on `ubi2-oracle` for the live [`ClaudeInterpreter`] and on `ubi2-runtime` for the
+//! deterministic `MockInterpreter`:
+//!
+//! ```ignore
+//! use ubi2_runtime::{ContractInterpreter, MockInterpreter};
+//! use ubi2_oracle::ClaudeInterpreter;
+//! use std::sync::Arc;
+//!
+//! // On the devnet / in CI we run the deterministic MockInterpreter (every node converges by
+//! // construction, no network). With ANTHROPIC_API_KEY set, an interpreter/juror daemon (FU-7) runs
+//! // the live ClaudeInterpreter off the consensus path and submits effects via submitEffect.
+//! let interpreter: Arc<dyn ContractInterpreter> = match ClaudeInterpreter::from_env() {
+//!     Ok(live) => {
+//!         tracing::info!(model = %live.model(), "prompt-contracts: live Claude interpreter");
+//!         Arc::new(live)
+//!     }
+//!     Err(e) => {
+//!         tracing::warn!(error = %e, "ANTHROPIC_API_KEY unset; using deterministic MockInterpreter");
+//!         Arc::new(MockInterpreter::default())
+//!     }
+//! };
+//! // The runtime re-validates every emitted op against escrow/authority and commits only on quorum;
+//! // a fooled or failing interpreter is bounded to a fail-closed Abort (I4/I6).
+//! ```
 
 pub mod client;
+pub mod contract_prompt;
+pub mod effect_schema;
+pub mod interpreter;
 pub mod juror;
 pub mod oracle;
 pub mod prompt;
 pub mod schema;
 
 pub use client::{ClaudeConfig, HttpTransport, OracleError, Transport, DEFAULT_MODEL};
+pub use effect_schema::{
+    effect_json_schema, EffectDecodeError, OpTag, StructuredEffect, StructuredOp,
+    EFFECT_OUTPUT_NAME,
+};
+pub use interpreter::{abort_effect, ClaudeInterpreter, ABORT_REASON};
 pub use juror::{juror_verdict, SubmitVerdictTx};
 pub use oracle::{abort_verdict, ClaudeOracle};
 pub use schema::{ConfidenceTag, StructuredVerdict, VerdictTag};
