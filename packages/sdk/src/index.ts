@@ -14,6 +14,7 @@ export * from "./streaming";
 export * from "./humanity";
 export * from "./contracts";
 export * from "./explorer";
+export * from "./oracle";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;

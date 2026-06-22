@@ -375,6 +375,56 @@ export async function sendStreamTx(opts: SendStreamOptions): Promise<SendResult>
   throw new Error("sendStreamTx: provide either `provider` or `privateKey`");
 }
 
+/** Options for `sendTransferTx` — a plain UBI value transfer. */
+export interface SendTransferOptions {
+  /** Recipient address. */
+  to: string;
+  /** Amount in base units (18 decimals). */
+  value: bigint;
+  /** Sender address. Required for the injected-provider path. */
+  from?: string;
+  /** An injected EIP-1193 provider (e.g. `window.ethereum`). */
+  provider?: EIP1193Provider;
+  /** A local private key (devnet/tests). */
+  privateKey?: Hex;
+  /** RPC URL (required for the private-key path). */
+  rpcUrl?: string;
+}
+
+/**
+ * Send a plain UBI value transfer (no calldata).
+ * Uses `eth_sendTransaction` with the injected provider, or a signed raw tx with a local key.
+ */
+export async function sendTransferTx(opts: SendTransferOptions): Promise<SendResult> {
+  const valueHex = `0x${opts.value.toString(16)}` as Hex;
+
+  if (opts.provider) {
+    if (!opts.from) throw new Error("sendTransferTx: `from` is required with an injected provider");
+    const hash = (await opts.provider.request({
+      method: "eth_sendTransaction",
+      params: [{ from: opts.from as Hex, to: opts.to as Hex, value: valueHex, data: "0x" }],
+    })) as Hex;
+    return { hash };
+  }
+
+  if (opts.privateKey) {
+    if (!opts.rpcUrl) throw new Error("sendTransferTx: `rpcUrl` is required with a private key");
+    const account = privateKeyToAccount(opts.privateKey);
+    const chain = ubi2Chain(opts.rpcUrl);
+    const wallet = createWalletClient({ account, chain, transport: http(opts.rpcUrl) });
+    const hash = await wallet.sendTransaction({
+      to: opts.to as Hex,
+      value: opts.value,
+      data: "0x",
+      gas: 21000n,
+      gasPrice: 1_000_000_000n, // 1 gwei — exact devnet gas price
+    });
+    return { hash };
+  }
+
+  throw new Error("sendTransferTx: provide either `provider` or `privateKey`");
+}
+
 // --- Convenience: rate / deposit conversions for the UI -----------------------------------
 
 /** Convert a "UBI per hour" rate (as a decimal string or number) to base-units-per-second. */

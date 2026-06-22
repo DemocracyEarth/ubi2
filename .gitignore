@@ -26,6 +26,7 @@ secrets/
 logs/
 checkpoints/
 devnet-data/
+.ubi2-devnet/
 
 # OS / editor
 .DS_Store
