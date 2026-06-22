@@ -346,6 +346,13 @@ impl Chain {
         self.inner.lock().unwrap().state.put(account);
     }
 
+    /// Migrate `addr` to a `Verified` human in the M3 registry, with `verified_at` (unix seconds) as
+    /// the emission epoch (M3 spec criterion 5: the genesis dev account is `Verified` for devnet
+    /// continuity). Seeds the M1/M2 account cache too, so emission/streaming are unchanged.
+    pub fn seed_verified_human(&self, addr: &Address, verified_at: u64) {
+        ubi2_runtime::seed_verified_human(&mut self.inner.lock().unwrap().state, addr, verified_at);
+    }
+
     /// Live balance of `addr` at `now` (base units). Pure read of `(state, now)` — invariant I2.
     pub fn balance(&self, addr: &Address, now: u64) -> u128 {
         self.inner.lock().unwrap().state.balance(addr, now)

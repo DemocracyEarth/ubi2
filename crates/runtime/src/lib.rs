@@ -20,6 +20,19 @@
 
 use std::collections::HashMap;
 
+pub mod humanity;
+pub use humanity::{
+    select_jury, tally, CanonicalVerdict, Case, CaseId, CaseKind, CaseStatus, Confidence,
+    GraphView, Hash, Human, HumanStatus, HumanityOracle, Juror, MockOracle, Tally, Verdict, Vouch,
+    CHALLENGE_WINDOW, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH, VOUCH_CAPACITY,
+};
+
+pub mod lifecycle;
+pub use lifecycle::{
+    challenge, finalize_registration, register_juror, request_verification, revoke,
+    seed_verified_human, submit_verdict, vouch, LifecycleError, LivenessEvidence,
+};
+
 /// Ethereum-style 20-byte address (H160).
 pub type Address = [u8; 20];
 
@@ -312,6 +325,56 @@ pub trait State: Send + Sync {
     fn nonce(&self, addr: &Address) -> u64 {
         self.get(addr).map(|a| a.nonce).unwrap_or(0)
     }
+
+    // ---- M3: proof-of-humanity registry (spec 03 §"On-chain state") ----
+    //
+    // All registry reads return owned snapshots and all index reads return **sorted** vectors, so no
+    // consensus-affecting path ever depends on hash-iteration order (invariant I1).
+
+    /// Read a human record by address, if it exists. `None` ⇒ the address is `Unverified`.
+    fn get_human(&self, addr: &Address) -> Option<Human>;
+    /// Insert or replace a human record.
+    fn put_human(&mut self, human: Human);
+    /// Snapshot of all human records, **sorted by address** (deterministic order — I1).
+    fn humans(&self) -> Vec<Human>;
+
+    /// Record a vouch edge, keeping the forward (`vouches_out`) and reverse (`vouchers_of`) indexes in
+    /// sync. Idempotent on the indexes: re-recording an existing `(voucher, vouchee)` pair must not
+    /// duplicate it.
+    fn put_vouch(&mut self, vouch: Vouch);
+    /// Vouchees `addr` has vouched **for** (forward edge), sorted by address. Pure read.
+    fn vouches_out(&self, addr: &Address) -> Vec<Address>;
+    /// Vouchers that have vouched **for** `addr` (reverse edge), sorted by address. Pure read.
+    fn vouchers_of(&self, addr: &Address) -> Vec<Address>;
+    /// All vouch edges in the graph, sorted by `(voucher, vouchee)`. For [`GraphView`] / sybil scan.
+    fn vouch_edges(&self) -> Vec<(Address, Address)>;
+
+    /// Read a case by id, if it exists.
+    fn get_case(&self, id: CaseId) -> Option<Case>;
+    /// Insert or replace a case.
+    fn put_case(&mut self, case: Case);
+    /// Reserve and return the next sequential [`CaseId`], advancing the counter. Called once per case.
+    fn next_case_id(&mut self) -> CaseId;
+    /// Ids of all cases with `status == Open`, sorted ascending. For RPC `getPendingCases`. Pure read.
+    fn open_cases(&self) -> Vec<CaseId>;
+    /// Snapshot of all cases, sorted by id. For the explorer / debugging.
+    fn cases(&self) -> Vec<Case>;
+
+    /// Read a juror by address, if registered.
+    fn get_juror(&self, addr: &Address) -> Option<Juror>;
+    /// Insert or replace a juror.
+    fn put_juror(&mut self, juror: Juror);
+    /// Addresses of all `active` jurors, **sorted ascending** (the deterministic candidate pool that
+    /// [`select_jury`] draws from — I1). Pure read.
+    fn active_jurors(&self) -> Vec<Address>;
+
+    /// Build a deterministic [`GraphView`] (sorted edges) for the AI sybil scan. Pure read (I1/I6:
+    /// only the graph topology — addresses + edges — is exposed, never any PII).
+    fn graph_view(&self) -> GraphView {
+        GraphView {
+            edges: self.vouch_edges(),
+        }
+    }
 }
 
 /// In-memory account + stream store (M1 default, extended for M2). Deterministic given the same
@@ -327,6 +390,20 @@ pub struct MemState {
     incoming: HashMap<Address, Vec<StreamId>>,
     /// Sequential id counter — the id the next `open_stream` will receive.
     next_id: StreamId,
+
+    // ---- M3: proof-of-humanity registry ----
+    /// Human records, keyed by address.
+    humans: HashMap<Address, Human>,
+    /// Forward vouch index: voucher → vouchees it has vouched for.
+    vouches_out: HashMap<Address, Vec<Address>>,
+    /// Reverse vouch index: vouchee → vouchers that vouched for it.
+    vouchers_of: HashMap<Address, Vec<Address>>,
+    /// Case registry, keyed by id.
+    cases: HashMap<CaseId, Case>,
+    /// Sequential case-id counter — the id the next case will receive.
+    next_case_id: CaseId,
+    /// Juror registry, keyed by address.
+    jurors: HashMap<Address, Juror>,
 }
 
 impl MemState {
@@ -381,6 +458,95 @@ impl State for MemState {
 
     fn streams(&self) -> Vec<Stream> {
         self.streams.values().copied().collect()
+    }
+
+    // ---- M3: proof-of-humanity registry ----
+
+    fn get_human(&self, addr: &Address) -> Option<Human> {
+        self.humans.get(addr).cloned()
+    }
+    fn put_human(&mut self, human: Human) {
+        self.humans.insert(human.address, human);
+    }
+    fn humans(&self) -> Vec<Human> {
+        let mut v: Vec<Human> = self.humans.values().cloned().collect();
+        v.sort_by_key(|h| h.address);
+        v
+    }
+
+    fn put_vouch(&mut self, vouch: Vouch) {
+        // Idempotent on both indexes: only append a `(voucher, vouchee)` pair the first time.
+        let out = self.vouches_out.entry(vouch.voucher).or_default();
+        if !out.contains(&vouch.vouchee) {
+            out.push(vouch.vouchee);
+        }
+        let rev = self.vouchers_of.entry(vouch.vouchee).or_default();
+        if !rev.contains(&vouch.voucher) {
+            rev.push(vouch.voucher);
+        }
+    }
+    fn vouches_out(&self, addr: &Address) -> Vec<Address> {
+        let mut v = self.vouches_out.get(addr).cloned().unwrap_or_default();
+        v.sort_unstable();
+        v
+    }
+    fn vouchers_of(&self, addr: &Address) -> Vec<Address> {
+        let mut v = self.vouchers_of.get(addr).cloned().unwrap_or_default();
+        v.sort_unstable();
+        v
+    }
+    fn vouch_edges(&self) -> Vec<(Address, Address)> {
+        let mut edges: Vec<(Address, Address)> = self
+            .vouches_out
+            .iter()
+            .flat_map(|(voucher, vouchees)| vouchees.iter().map(move |v| (*voucher, *v)))
+            .collect();
+        edges.sort_unstable();
+        edges
+    }
+
+    fn get_case(&self, id: CaseId) -> Option<Case> {
+        self.cases.get(&id).cloned()
+    }
+    fn put_case(&mut self, case: Case) {
+        self.cases.insert(case.id, case);
+    }
+    fn next_case_id(&mut self) -> CaseId {
+        let id = self.next_case_id;
+        self.next_case_id += 1;
+        id
+    }
+    fn open_cases(&self) -> Vec<CaseId> {
+        let mut v: Vec<CaseId> = self
+            .cases
+            .values()
+            .filter(|c| matches!(c.status, CaseStatus::Open))
+            .map(|c| c.id)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+    fn cases(&self) -> Vec<Case> {
+        let mut v: Vec<Case> = self.cases.values().cloned().collect();
+        v.sort_by_key(|c| c.id);
+        v
+    }
+
+    fn get_juror(&self, addr: &Address) -> Option<Juror> {
+        self.jurors.get(addr).copied()
+    }
+    fn put_juror(&mut self, juror: Juror) {
+        self.jurors.insert(juror.address, juror);
+    }
+    fn active_jurors(&self) -> Vec<Address> {
+        let mut v: Vec<Address> = self
+            .jurors
+            .values()
+            .filter(|j| j.active)
+            .map(|j| j.address)
+            .collect();
+        v.sort_unstable();
+        v
     }
 }
 

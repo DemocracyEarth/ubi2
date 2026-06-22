@@ -75,6 +75,11 @@ async fn main() -> anyhow::Result<()> {
         settled_balance: 0,
         nonce: 0,
     });
+    // M3 (spec criterion 5): migrate the dev account to a `Verified` human in the proof-of-humanity
+    // registry, so `ubi_getHuman` reports it Verified and the M3 lifecycle treats it as a founder
+    // (it can vouch outward). The account cache above already gates emission; this keeps the two in
+    // sync at genesis.
+    chain.seed_verified_human(&dev_addr.into_array(), genesis_time);
 
     let handle = serve(addr, chain.clone()).await?;
 

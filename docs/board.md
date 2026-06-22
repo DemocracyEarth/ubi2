@@ -59,12 +59,16 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-- **M3-T2 · protocol-engineer** — On-chain substrate: `Human` registry + `HumanStatus`, vouch graph +
-  constraints, `Case`/`Juror` registries, the verification lifecycle state machine, signed-verdict tally
-  + quorum, `Verified` gating of emission, and the `HumanityOracle` trait seam + `MockOracle` for tests. *(cycle 3)*
+- **M3-T3 · ai-engineer** — `ClaudeOracle`: real LLM `HumanityOracle` (liveness grading, sybil analysis,
+  jury adjudication) with canonical-verdict determinism + offline fixtures; juror-submission design. *(cycle 3)*
+- **M3-T4 · protocol-engineer** — RPC: `HumanityHub` system-address tx parsing + `ubi_*` reads + block-time
+  lifecycle application (MockOracle stand-in in the node so the devnet verifies end-to-end). *(cycle 3)*
 
 ## 👀 Review (awaiting gates)
-_(none)_
+- **M3-T2 · protocol-engineer** — On-chain PoH substrate (registries, deterministic lifecycle, quorum tally,
+  vouch graph, `Verified` emission gating, genesis migration, `HumanityOracle` trait + `MockOracle`).
+  **Orchestrator-verified:** 78 tests (15 new M3), fmt + clippy clean; happy-path verify→stream, sybil→revoke,
+  quorum determinism/escalate (5k-iter property test) all proven. *(cycle 3)*
 
 ## ⛔ Blocked
 _(none)_
