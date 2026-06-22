@@ -192,6 +192,8 @@ fn r1_quorum_determinism_extended_property() {
             }
             let subj = addr(50);
             seed_verified_human(&mut s, &subj, 0);
+            // `addr(1)` seeded Verified so it may file the challenge (security finding A challenger gate).
+            seed_verified_human(&mut s, &addr(1), 0);
             let case = challenge(&mut s, &addr(1), &subj, [1u8; 32], entropy, 0).unwrap();
             let jury = s.get_case(case).unwrap().jury.clone();
             for j in &jury {
@@ -242,6 +244,9 @@ fn r1_split_reproducibly_escalates() {
         }
         let subj = addr(50);
         seed_verified_human(&mut s, &subj, 0);
+        // `addr(1)` seeded Verified so it may challenge (security finding A challenger gate). This test
+        // asserts the CASE status (Escalated), which is unchanged; finding B only restores the SUBJECT.
+        seed_verified_human(&mut s, &addr(1), 0);
         let case = challenge(&mut s, &addr(1), &subj, [1u8; 32], 42, 0).unwrap();
         let jury = s.get_case(case).unwrap().jury.clone();
         let verdicts = [v1, v2, v3];
@@ -557,10 +562,29 @@ fn r3_all_prerequisite_failures_are_fail_closed() {
         assert_eq!(r.unwrap_err(), LifecycleError::SelfVouch);
     }
 
-    // --- challenge: subject Unverified ---
+    // --- challenge: unverified CHALLENGER is rejected (security finding A — fail-closed) ---
     {
         let mut s = MemState::new();
         seed_jurors(&mut s, JURY_SIZE as u8);
+        seed_verified_human(&mut s, &addr(50), 0); // valid (Verified) target
+        let r = challenge(&mut s, &addr(1), &addr(50), [1u8; 32], 0, 0);
+        assert_eq!(
+            r.unwrap_err(),
+            LifecycleError::ChallengerNotVerified,
+            "an unverified challenger is rejected before any case is opened"
+        );
+        assert_eq!(
+            s.open_cases().len(),
+            0,
+            "no case created for bad challenger"
+        );
+    }
+
+    // --- challenge: subject Unverified (with a valid Verified challenger) ---
+    {
+        let mut s = MemState::new();
+        seed_jurors(&mut s, JURY_SIZE as u8);
+        seed_verified_human(&mut s, &addr(1), 0); // verified challenger so the subject check fires
         let r = challenge(&mut s, &addr(1), &addr(50), [1u8; 32], 0, 0);
         assert!(matches!(
             r.unwrap_err(),
@@ -578,6 +602,7 @@ fn r3_all_prerequisite_failures_are_fail_closed() {
         let mut s = MemState::new();
         seed_jurors(&mut s, JURY_SIZE as u8);
         seed_verified_human(&mut s, &addr(50), 0);
+        seed_verified_human(&mut s, &addr(1), 0); // verified challenger (finding A gate)
         let case = challenge(&mut s, &addr(1), &addr(50), [1u8; 32], 0, 0).unwrap();
         let before = s.get_case(case).unwrap().votes.len();
         let r = submit_verdict(&mut s, case, &addr(255), human_v(), 0);
@@ -640,17 +665,13 @@ fn r3_all_prerequisite_failures_are_fail_closed() {
     }
 }
 
-/// R3-b: Revoke → re-register round-trip. A Revoked address can call `request_verification`
-/// again (Revoked is an accepted starting state). However, FINDING F-REL-1: the vouch-edge indexes
-/// (`vouches_out` / `vouchers_of` in `MemState`) are **not** cleared when a subject re-registers.
-/// This means the same voucher that vouched in the first lifecycle gets `DuplicateVouch` on
-/// the second attempt. This test documents the actual behaviour so it is visible in CI.
-///
-/// Impact: a revoked-and-re-registered subject can only receive fresh vouches from vouchers who
-/// did NOT vouch for them in a previous lifecycle. In practice the founder set would be exhausted
-/// after one revoke-and-reregister cycle for that subject. See docs/reports/reliability-m3.md.
+/// R3-b: Revoke → re-register round-trip. A Revoked address can call `request_verification` again
+/// (Revoked is an accepted starting state). F-REL-1 is now FIXED: `revoke`/re-register clear the
+/// `MemState` vouch-edge indexes (`vouches_out` / `vouchers_of`), so a voucher who vouched in the
+/// first lifecycle can re-vouch the re-registered subject without hitting `DuplicateVouch`. (This test
+/// previously pinned the bug — expecting `DuplicateVouch`; it now asserts the fix.)
 #[test]
-fn r3_revoke_then_reregister_vouch_index_not_cleared() {
+fn r3_revoke_then_reregister_vouch_index_cleared() {
     let founders = [addr(1), addr(2)];
     let oracle = MockOracle::default();
     let mut s = MemState::new();
@@ -659,11 +680,22 @@ fn r3_revoke_then_reregister_vouch_index_not_cleared() {
     // First lifecycle: get to Verified.
     full_lifecycle_verified(&mut s, addr(50), &founders, &oracle);
     assert_eq!(s.balance(&addr(50), 1_000 + EMISSION_PERIOD_SECS), UBI);
+    // The first-lifecycle vouch edges exist.
+    assert!(s.vouches_out(&founders[0]).contains(&addr(50)));
+    assert!(s.vouchers_of(&addr(50)).contains(&founders[0]));
 
-    // Revoke.
+    // Revoke clears the subject's vouch edges (F-REL-1 fix).
     revoke(&mut s, &addr(50));
     assert_eq!(s.get_human(&addr(50)).unwrap().status, HumanStatus::Revoked);
     assert_eq!(s.balance(&addr(50), 1_000 + 1_000_000), 0);
+    assert!(
+        !s.vouches_out(&founders[0]).contains(&addr(50)),
+        "F-REL-1: revoke clears the forward vouch edge"
+    );
+    assert!(
+        s.vouchers_of(&addr(50)).is_empty(),
+        "F-REL-1: revoke clears the reverse vouch index"
+    );
 
     // Re-register — must succeed (Revoked is a valid starting state).
     let _case = req_verify(&mut s, &oracle, &addr(50), [8u8; 32], 99, 20).unwrap();
@@ -673,19 +705,14 @@ fn r3_revoke_then_reregister_vouch_index_not_cleared() {
         "re-registration transitions to Pending"
     );
 
-    // FINDING F-REL-1: vouch from the same founder that vouched in the first lifecycle is rejected
-    // with DuplicateVouch because the vouch-edge index is not cleared on revoke/re-register.
-    let r = vouch(&mut s, &founders[0], &addr(50), 20);
-    assert_eq!(
-        r.unwrap_err(),
-        LifecycleError::DuplicateVouch,
-        "F-REL-1: vouch index not cleared on re-register — same voucher gets DuplicateVouch"
-    );
-
-    // However, a brand-new voucher (who never vouched before) CAN vouch successfully.
-    let new_voucher = addr(10);
-    seed_verified_human(&mut s, &new_voucher, 0);
-    vouch(&mut s, &new_voucher, &addr(50), 20).unwrap();
+    // F-REL-1 FIX: the SAME founder that vouched in the first lifecycle can re-vouch now.
+    vouch(&mut s, &founders[0], &addr(50), 20)
+        .expect("prior voucher may re-vouch after re-register");
+    assert!(s
+        .get_human(&addr(50))
+        .unwrap()
+        .vouches_in
+        .contains(&founders[0]));
 }
 
 /// R3-b': A Revoked address can re-register and receive NEW vouches from vouchers who did not
@@ -1288,12 +1315,15 @@ fn r10_escalated_case_does_not_change_status() {
     // verified_at is still present (emission was not cleared).
     let va = s.get_human(&addr(50)).unwrap().verified_at;
     assert_ne!(va, 0, "R10: escalation must not clear verified_at");
-    // The status before and after the (non-escalating) pre-challenge was Verified; after opening
-    // the challenge it is Challenged; after escalation it remains Challenged (innocence preserved).
+    // The status before the challenge was Verified; after opening the challenge it is Challenged.
+    // Security finding B: an escalation against a previously-Verified human FAIL-SAFE restores
+    // Verified — only a Sybil quorum may strip an established human (presumption of innocence). The R10
+    // invariant (escalation never REVOKES / clears emission) is preserved and strengthened; previously
+    // this asserted the subject was left stuck Challenged.
     assert_eq!(
         status_after,
-        HumanStatus::Challenged,
-        "R10: escalation leaves subject Challenged (not Revoked, not Verified-yet)"
+        HumanStatus::Verified,
+        "R10: escalation fail-safe restores a previously-Verified human to Verified (finding B)"
     );
-    let _ = before_status;
+    assert_eq!(before_status, HumanStatus::Verified);
 }

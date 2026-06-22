@@ -1,13 +1,106 @@
 # Security gate — M3 AI Proof-of-Humanity (board M3-T8)
 
-- **Branch/commit:** `m3-proof-of-humanity` @ `bd669d2`
+- **Branch/commit:** `m3-proof-of-humanity` @ `68013b5` (re-gate; original gate at `bd669d2`)
 - **Gate:** Security (defender / red-team, this project only)
-- **Verdict:** **FAIL** — one open **HIGH** finding (A) on the M3 diff.
-- **Devnet used:** `127.0.0.1:38545` (security port), killed after the run.
-- **PoCs:** `crates/runtime/tests/sec_m3_poc.rs` (5 tests, all green) + live RPC txs below.
+- **Verdict (RE-GATE 2026-06-22):** **PASS** — Finding A (HIGH) **CLOSED**, Finding B (MEDIUM)
+  **CLOSED**. No open High/Critical remains on the M3 diff.
+- **Devnet used:** `127.0.0.1:38545` (security port), killed after the run (port confirmed closed).
+- **PoCs:** `crates/runtime/tests/sec_m3_poc.rs` (10 tests, all green) + fresh live RPC attacks below.
+- **Workspace:** `cargo test --workspace` = **157 passed, 0 failed**; `cargo fmt --all --check` clean;
+  `cargo clippy --workspace --all-targets -- -D warnings` clean.
 
-PASS only if no open High/Critical remains on the M3 diff. Finding A is High and open, so the
-gate is **FAIL**. Findings B–D are follow-ups; remediating A (and ideally B) clears the gate.
+PASS only if no open High/Critical remains on the M3 diff. After the protocol-engineer's fix the
+HIGH (A) and the MEDIUM (B) are both closed and independently re-verified (in-process PoCs + live
+devnet attacks). The gate is now **PASS**. C remains the documented M3 juror trust model (M5
+hardening track); D is now **wired live** (`sweep_sybil_scan` in `produce_block`).
+
+---
+
+## RE-GATE 2026-06-22 — outcome (the gating section; the original findings are preserved below)
+
+### Finding A (HIGH) — CLOSED. Challenge-spam DoS is fixed (authenticated + capped + cooled-down).
+
+The fix lives in `crates/runtime/src/lifecycle.rs::challenge_inner` (three fail-closed, deterministic
+rules) + the new `FALSE_CHALLENGE_SLASH` and `(challenger, subject)` cooldown set. Re-verified three
+ways:
+
+1. **In-process PoC** (`sec_m3_poc.rs::poc_a_challenge_spam_blocks_finalize_indefinitely`, green):
+   the unverified attacker is rejected `ChallengerNotVerified`; a single Verified challenger's
+   50-round refile loop now accepts **exactly 1** challenge (the rest are `ChallengeOnCooldown`); the
+   legit victim then **finalizes and streams**. The unbounded DoS loop is dead.
+2. **Live devnet (:38545), fresh attacks** — all three rules fire at block apply time and the
+   offending tx is **dropped with no case opened / no receipt** (node WARN log captured each time):
+   - unverified attacker `0x11Ea…0150` (Anvil #9, not a juror/human) → tx dropped
+     `challenger is not a verified human`; the targeted Verified human stayed `Verified`, zero
+     pending cases, no receipt. (A.1)
+   - a Verified challenger (the dev founder) opened **one** Challenge case against a Pending applicant;
+     a second concurrent challenge → dropped `subject already has an open challenge`, still exactly one
+     Open case. (A.2)
+   - the jury cleared the case `Human` (2-of-3 quorum); a re-file by the same challenger → dropped
+     `challenger already cleared a challenge on this subject`, zero Open challenges remain. (A.3)
+3. **False-challenge incentive** — a cleared-`Human` challenge slashes the challenger's reputation by
+   `FALSE_CHALLENGE_SLASH = 50` (integer, deterministic). Reputation is display-only in M3 (it gates no
+   lifecycle decision), so the self-slash is a pure disincentive with no exploitable side effect.
+
+A committed-`Human` challenge never blocked `finalize_registration` (`has_pending_or_upheld_challenge`
+returns false for `Committed(Human)`); only the perpetual **re-filing** did, and that is now bounded to
+one attempt per `(challenger, subject)`. A genuine sybil is still revoked by a `Sybil` quorum
+(`genuine_sybil_quorum_still_revokes`, green) — the hardening blocks only spam.
+
+### Finding B (MEDIUM) — CLOSED. Escalation no longer strips an established human.
+
+`submit_verdict` now fail-safe restores a `Challenged` (always-previously-`Verified`) subject to
+`Verified` on an `Escalated` outcome of a `Challenge` case, re-syncing the emission cache with the
+original `verified_at`. Re-verified:
+
+- **In-process PoC** (`poc_b_…`, green): challenge → `Challenged`; jury splits → `Escalated`; victim is
+  restored to `Verified` and a subsequent `vouch` from the victim **succeeds** (vouch authority kept).
+- **Live devnet** — a Verified human under a split jury (`Human/High`, `Sybil/High`, `Uncertain/Low`)
+  → case `Escalated`, `ubi_getHuman` flips back to `Verified`, and `eth_getBalance` keeps climbing
+  (emission preserved). Only a `Sybil` quorum strips an established human now.
+
+The restore is correctly guarded (`if kind == Challenge && h.status == Challenged`): `Challenged` only
+ever arises from challenging a previously-`Verified` human, and a Pending applicant under challenge
+stays `Pending` — so escalation can never auto-promote a Pending applicant (I4 preserved).
+
+### Finding D (LOW) — CLOSED (now wired live). AC6 sybil auto-challenge fires in `produce_block`.
+
+`crates/rpc/src/lib.rs::sweep_sybil_scan` runs each block (before `sweep_finalize`): for each
+address-sorted `Pending` subject it runs `oracle.analyze_sybil` over `graph_view()` and auto-files a
+`system_challenge` (reserved `HUMANITY_HUB` opener; verified-challenger gate waived; same one-open /
+cooldown caps; keccak `(subject, block_hash)` evidence commitment — I6-safe). Confirmed by
+`m3_qa::ac6_rpc_sybil_cluster_auto_challenge_and_revoke` (green): the node opens the case itself
+(visible in `ubi_getPendingCases`) and the flagged cluster is revoked, never streaming UBI.
+
+### Regression / new-issue scan — no new High/Critical introduced.
+
+- **Determinism (I1/I2/I4/I6) preserved.** All lifecycle ops stay pure functions of `(state)`:
+  integer reputation slashes (no floats); the cooldown set uses membership-only `contains`/`insert`
+  (no iteration on any output path); `clear_vouch_edges` uses order-independent `retain`;
+  `liveness_passed`/`registration_opened_at` `rfind` over the id-sorted `cases()`; the sybil sweep
+  scans address-sorted `Pending` over the sorted `graph_view`. On-chain types still hold only
+  commitments. The two PoC suites and the 23-test reliability suite (property tests, 10k–50k iters)
+  re-confirm two-node byte-agreement.
+- **`clear_vouch_edges` does not corrupt unrelated edges** — removing subject `S` drops only edges
+  touching `S`; a founder's `(F → A)` vouch to a *different* applicant `A` survives (verified by
+  semantic check + `reregister_allows_prior_voucher_to_revouch`, green).
+- **Cooldown is not a sybil-immunity weapon (LOW residual, accepted).** The cooldown is per-
+  `(challenger, subject)`; a different verified human (or the system scan) can still challenge a real
+  sybil, so no permanent shield exists. The one exception — if a jury is *fooled* into clearing a
+  system-opened challenge `Human`, the node will not auto-re-file that subject — depends on the jury
+  being compromised, which is **outside M3's honest-majority threat model** (documented Finding C). A
+  human can always still challenge it. Defense-in-depth limitation, not a regression. Track for M5
+  (juror staking/rotation).
+- **Reputation slash is not a cross-account grief.** The slash hits only the *challenger* who filed
+  (never the subject or a third party), and reputation gates nothing in M3 — no exploitable effect.
+- **Cooldown-set growth is bounded** by jury throughput (each entry requires a Verified challenger +
+  a full quorum-committed `Human`), so it is not a memory-exhaustion DoS.
+
+### Gate decision (re-gate): **PASS.**
+
+No open High/Critical on the M3 diff. A and B are closed and independently re-verified (in-process +
+live). D is wired live. C remains the documented, accepted M3 juror trust model (M5 hardening). The
+`orchestrator` may mark M3-T8 Done.
 
 ---
 
@@ -166,7 +259,7 @@ CI).
 
 ---
 
-## Gate decision
+## Gate decision (original — superseded by the RE-GATE 2026-06-22 section at the top)
 
 **FAIL.** Finding A (HIGH) is open: an unauthenticated, free, uncapped challenge can deny any human
 their verification/UBI indefinitely (live-confirmed). Remediate A (challenger gating + bond +
@@ -174,3 +267,9 @@ per-subject cap/cooldown, and don't let an open/re-filed challenge stall finaliz
 strongly recommend fixing B (stuck-`Challenged` recovery) in the same change. C is the documented M3
 juror trust model (M5 hardening); D is a defense-in-depth/criterion-6 gap for QA + a later wire-up.
 Re-run this gate after the A/B fix.
+
+> **UPDATE (re-gate `68013b5`, 2026-06-22): RESOLVED → PASS.** The protocol-engineer applied the
+> challenger gating + one-open cap + per-`(challenger, subject)` cooldown + false-challenge slash (A)
+> and the escalation fail-safe restore (B). Both are independently re-verified (10 in-process PoCs +
+> fresh live `:38545` attacks); D is now wired into `produce_block`. Workspace 157/157 green, fmt +
+> clippy clean. No open High/Critical remains. See the **RE-GATE** section at the top of this file.

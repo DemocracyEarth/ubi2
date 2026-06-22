@@ -43,9 +43,10 @@ use tokio::sync::broadcast;
 
 use ubi2_runtime::{
     apply_transfer, challenge as lc_challenge, finalize_registration, open_stream,
-    request_verification, stop_stream, submit_verdict, vouch as lc_vouch, Account, Address, Case,
-    CaseKind, CaseStatus, Confidence, Human, HumanStatus, HumanityOracle, Juror, LivenessEvidence,
-    MemState, MockOracle, State, Stream, StreamStatus, Verdict,
+    request_verification, stop_stream, submit_verdict, system_challenge as lc_system_challenge,
+    vouch as lc_vouch, Account, Address, Case, CaseKind, CaseStatus, Confidence, Human,
+    HumanStatus, HumanityOracle, Juror, LivenessEvidence, MemState, MockOracle, State, Stream,
+    StreamStatus, Verdict,
 };
 
 pub mod streams;
@@ -455,6 +456,64 @@ fn sweep_finalize(state: &mut dyn State, now_block: u64, verified_at_secs: u64) 
     logs
 }
 
+/// AI sybil-cluster auto-challenge sweep (security finding D / acceptance criterion 6). For each
+/// `Pending` subject (address-sorted, so order-independent — I1), run the node's `oracle.analyze_sybil`
+/// over the deterministic [`graph_view`](State::graph_view) (sorted edges). When the oracle flags the
+/// cluster `Sybil`, auto-file a `system_challenge` against the subject so the jury path adjudicates it
+/// before it can finalize. Skips a subject that already has an open challenge (one-open-per-subject) or
+/// is on cooldown — `system_challenge` enforces both and we ignore those benign errors. Deterministic:
+/// sorted scan, sorted graph, `block_entropy` seed; with the devnet `MockOracle` no model is called.
+fn sweep_sybil_scan(
+    state: &mut dyn State,
+    oracle: &dyn HumanityOracle,
+    block_hash: B256,
+    now_block: u64,
+) -> Vec<TxLog> {
+    let pending: Vec<Address> = state
+        .humans()
+        .into_iter()
+        .filter(|h| h.status == HumanStatus::Pending)
+        .map(|h| h.address)
+        .collect();
+    let mut logs = Vec::new();
+    for subject in pending {
+        let graph = state.graph_view();
+        if oracle.analyze_sybil(&graph, &subject).verdict != Verdict::Sybil {
+            continue;
+        }
+        // The evidence ref commits to "the AI sybil scan flagged this subject's cluster at this block"
+        // (I6: only a commitment on-chain, never the graph/PII). Deterministic from consensus values.
+        let evidence_ref = keccak256(
+            [
+                b"sybil-scan".as_slice(),
+                subject.as_slice(),
+                block_hash.as_slice(),
+            ]
+            .concat(),
+        )
+        .0;
+        let entropy = block_entropy(block_hash, now_block);
+        match lc_system_challenge(
+            state,
+            &HUMANITY_HUB.into_array(),
+            &subject,
+            evidence_ref,
+            entropy,
+            now_block,
+        ) {
+            Ok(case_id) => {
+                if let Some(case) = state.get_case(case_id) {
+                    logs.push(case_opened_log(&case));
+                }
+            }
+            // Benign: subject already has an open challenge, or the system opener is on cooldown for
+            // this subject (a prior scan already cleared Human). No mutation occurred — skip.
+            Err(_) => continue,
+        }
+    }
+    logs
+}
+
 /// Shared node state. Cheaply cloneable (`Arc` inside) so handlers and the tick task share it.
 #[derive(Clone)]
 pub struct Chain {
@@ -748,13 +807,21 @@ impl Chain {
             }
         }
 
+        // M3 AI sybil-cluster auto-challenge sweep (AC6 / security finding D): before finalizing, run
+        // the node's oracle over the deterministic vouch graph for each Pending subject and auto-file a
+        // `system_challenge` on any flagged sybil cluster — so a vouch farm is challenged (and must
+        // clear the jury) before it can finalize, even when no human happens to challenge it. Runs
+        // BEFORE the finalize sweep so a freshly-opened challenge blocks finalize in the same block.
+        let scan_logs = sweep_sybil_scan(&mut g.state, &*oracle, hash, number);
+
         // M3 auto-finalize sweep: any `Pending` human whose challenge window has cleared (and which
         // satisfies liveness + MIN_VOUCHES + no open/upheld challenge) is finalized to `Verified` so
         // emission starts. `number` is the window clock (block HEIGHT); `timestamp` is the emission
         // epoch stamped on `verified_at` (unix SECONDS) — the two intentionally-distinct clocks.
         // Eligibility is checked deterministically by `finalize_registration` (it returns an error and
         // mutates nothing on any unmet condition — I4), so the sweep only commits clean cases.
-        let sweep_logs = sweep_finalize(&mut g.state, number, timestamp);
+        let mut sweep_logs = scan_logs;
+        sweep_logs.extend(sweep_finalize(&mut g.state, number, timestamp));
         if !sweep_logs.is_empty() {
             // Carry the StatusChanged logs in a synthetic system tx so they appear in the block + a
             // receipt (the tx hash is derived from the block hash so it's stable and unique per block).

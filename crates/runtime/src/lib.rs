@@ -24,13 +24,14 @@ pub mod humanity;
 pub use humanity::{
     select_jury, tally, CanonicalVerdict, Case, CaseId, CaseKind, CaseStatus, Confidence,
     GraphView, Hash, Human, HumanStatus, HumanityOracle, Juror, MockOracle, Tally, Verdict, Vouch,
-    CHALLENGE_WINDOW, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH, VOUCH_CAPACITY,
+    CHALLENGE_WINDOW, FALSE_CHALLENGE_SLASH, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH,
+    VOUCH_CAPACITY,
 };
 
 pub mod lifecycle;
 pub use lifecycle::{
     challenge, finalize_registration, register_juror, request_verification, revoke,
-    seed_verified_human, submit_verdict, vouch, LifecycleError, LivenessEvidence,
+    seed_verified_human, submit_verdict, system_challenge, vouch, LifecycleError, LivenessEvidence,
 };
 
 /// Ethereum-style 20-byte address (H160).
@@ -348,6 +349,19 @@ pub trait State: Send + Sync {
     fn vouchers_of(&self, addr: &Address) -> Vec<Address>;
     /// All vouch edges in the graph, sorted by `(voucher, vouchee)`. For [`GraphView`] / sybil scan.
     fn vouch_edges(&self) -> Vec<(Address, Address)>;
+    /// Remove every vouch edge touching `subject` (as voucher OR vouchee) from both the forward and
+    /// reverse indexes (reliability finding F-REL-1). Called on `revoke`/re-register so a re-registered
+    /// subject can be re-vouched by its prior vouchers. Deterministic: a set difference over sorted
+    /// indexes, no hash-iteration ordering leaks (the indexes are returned sorted by their readers).
+    fn clear_vouch_edges(&mut self, subject: &Address);
+
+    /// Record that `challenger`'s challenge against `subject` cleared a `Human` verdict (security
+    /// finding A cooldown). After this, `challenge` rejects a re-file by the same challenger against
+    /// the same subject (`ChallengeOnCooldown`) so a false challenger cannot stall finalization by
+    /// re-filing. Idempotent.
+    fn record_challenge_cleared(&mut self, challenger: &Address, subject: &Address);
+    /// Has `challenger` already cleared a `Human`-verdict challenge against `subject`? Pure read.
+    fn challenge_cleared(&self, challenger: &Address, subject: &Address) -> bool;
 
     /// Read a case by id, if it exists.
     fn get_case(&self, id: CaseId) -> Option<Case>;
@@ -404,6 +418,9 @@ pub struct MemState {
     next_case_id: CaseId,
     /// Juror registry, keyed by address.
     jurors: HashMap<Address, Juror>,
+    /// `(challenger, subject)` pairs whose challenge cleared a `Human` verdict — the false-challenge
+    /// cooldown set (security finding A). Membership bars a re-file by that challenger on that subject.
+    cleared_challenges: std::collections::HashSet<(Address, Address)>,
 }
 
 impl MemState {
@@ -503,6 +520,25 @@ impl State for MemState {
             .collect();
         edges.sort_unstable();
         edges
+    }
+    fn clear_vouch_edges(&mut self, subject: &Address) {
+        // Drop the subject's own forward/reverse buckets entirely.
+        self.vouches_out.remove(subject);
+        self.vouchers_of.remove(subject);
+        // And drop the subject wherever it appears inside another account's buckets.
+        for vouchees in self.vouches_out.values_mut() {
+            vouchees.retain(|v| v != subject);
+        }
+        for vouchers in self.vouchers_of.values_mut() {
+            vouchers.retain(|v| v != subject);
+        }
+    }
+
+    fn record_challenge_cleared(&mut self, challenger: &Address, subject: &Address) {
+        self.cleared_challenges.insert((*challenger, *subject));
+    }
+    fn challenge_cleared(&self, challenger: &Address, subject: &Address) -> bool {
+        self.cleared_challenges.contains(&(*challenger, *subject))
     }
 
     fn get_case(&self, id: CaseId) -> Option<Case> {

@@ -302,10 +302,11 @@ async fn ac6_rpc_sybil_cluster_auto_challenge_and_revoke() {
     send_ok(addr, raw).await;
     chain.produce_block(now_secs());
 
-    // 3. Node's sybil scanner reads the graph and asks the oracle.
-    //    This mirrors the "AI sybil scan auto-files a challenge on flagged vouch-clusters" lifecycle
-    //    step.  The oracle is scripted Sybil for this subject, so the flag is raised.
-    //    Build the GraphView from the known vouch edges (dev → subject, voucher2 → subject).
+    // 3. The NODE's own sybil-scan (security finding D / AC6 live path) already ran inside the
+    //    produce_block above: `sweep_sybil_scan` reads the deterministic graph view, asks the oracle
+    //    (scripted Sybil for this subject), and AUTO-FILES a `system_challenge` against the flagged
+    //    cluster — no human had to challenge it. We confirm the oracle precondition, then discover the
+    //    auto-filed Challenge case from `ubi_getPendingCases` (no manual challenge tx needed anymore).
     let graph = GraphView {
         edges: {
             let mut e = vec![
@@ -324,56 +325,18 @@ async fn ac6_rpc_sybil_cluster_auto_challenge_and_revoke() {
     );
     println!("[ac6] analyze_sybil flagged subject as Sybil ({:?})", flag);
 
-    // 4. The node auto-files a challenge on behalf of the system (nonce=0 on DEV account is used
-    //    here; in a real node this would be a system-signed tx).  challenge() is the public write.
-    let evidence_ref = B256::from([0xFFu8; 32]);
-    let raw = sign_tx(
-        &DEV_PRIVKEY,
-        HUMANITY_HUB,
-        0,
-        challengeCall {
-            subject,
-            evidenceRef: evidence_ref,
-        }
-        .abi_encode(),
-        1, // nonce=1 because the dev account already sent vouch at nonce=0
-    );
-    let ch_hash = send_ok(addr, raw).await;
-    chain.produce_block(now_secs());
-
-    // Confirm the challenge case was opened (the challenge tx produced a CaseOpened log).
-    // A Pending subject does not flip to "Challenged" in status (only Verified subjects do),
-    // but a Challenge Case is opened against them — verifying the auto-challenge buildability (AC6).
-    let receipt = rpc(
-        addr,
-        "eth_getTransactionReceipt",
-        serde_json::json!([ch_hash]),
-    )
-    .await;
-    let logs = receipt["result"]["logs"].as_array().expect("logs");
-    assert!(
-        !logs.is_empty(),
-        "auto-filed challenge tx produced at least one log (CaseOpened)"
-    );
-    let case_id = u64::from_str_radix(
-        logs[0]["topics"][1]
-            .as_str()
-            .unwrap()
-            .strip_prefix("0x")
-            .unwrap(),
-        16,
-    )
-    .unwrap();
-    println!("[ac6] auto-challenge landed → case #{case_id} opened");
-
-    // Confirm the case is Open (Pending challenge) — accessible via ubi_getPendingCases.
+    // 4. Find the auto-filed Challenge case the node opened against the subject (it is Open and
+    //    visible via ubi_getPendingCases). The node's defense fired on its own — AC6 holds live.
     let pending_resp = rpc(addr, "ubi_getPendingCases", serde_json::json!([])).await;
     let open_cases = pending_resp["result"].as_array().expect("pending cases");
-    assert!(
-        open_cases.iter().any(|c| c["id"].as_u64() == Some(case_id)),
-        "auto-filed challenge case appears in ubi_getPendingCases"
+    let case_id = open_cases
+        .iter()
+        .find(|c| c["subject"].as_str() == Some(subj_hex.as_str()))
+        .and_then(|c| c["id"].as_u64())
+        .expect("node auto-filed a challenge case against the flagged sybil cluster (AC6)");
+    println!(
+        "[ac6] node auto-filed challenge → case #{case_id} open and visible in ubi_getPendingCases"
     );
-    println!("[ac6] case #{case_id} is open and visible in ubi_getPendingCases");
 
     // 5. Two jurors deliver Sybil (QUORUM=2).
     let raw = sign_tx(

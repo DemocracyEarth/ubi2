@@ -45,6 +45,11 @@ pub const CHALLENGE_WINDOW: u64 = 5;
 /// reputation"). Integer; `reputation` is `i64` so it may go negative.
 pub const SYBIL_SLASH: i64 = 100;
 
+/// Reputation penalty applied to a challenger whose challenge the jury rules `Human` (a false
+/// challenge — security finding A). Disincentivizes challenge-spam: every cleared challenge costs the
+/// challenger reputation. Integer; deterministic (no float, no nondeterministic iteration).
+pub const FALSE_CHALLENGE_SLASH: i64 = 50;
+
 // ---------------------------------------------------------------------------------------------
 // Canonical verdict — the only thing the chain ever commits from the AI layer (I1).
 // ---------------------------------------------------------------------------------------------
@@ -316,6 +321,10 @@ pub type CaseId = u64;
 pub struct Case {
     pub id: CaseId,
     pub subject: Address,
+    /// Who opened the case. For a `Challenge` this is the (Verified) challenger whose reputation is
+    /// slashed if the jury rules `Human` (security finding A). For a `Registration`/system-opened case
+    /// it is the subject itself (no external challenger), so a false-challenge slash never applies.
+    pub challenger: Address,
     pub kind: CaseKind,
     /// Content-addressed evidence all jurors see identically (I1). For a `Registration` case this is
     /// the liveness commitment; for a `Challenge`, the challenger's evidence.

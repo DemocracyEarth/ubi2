@@ -7,7 +7,8 @@ use ubi2_runtime::{
     challenge, finalize_registration, register_juror, request_verification, revoke, submit_verdict,
     vouch, CanonicalVerdict, CaseId, CaseStatus, Confidence, HumanStatus, HumanityOracle,
     LifecycleError, LivenessEvidence, MemState, MockOracle, State, Verdict, CHALLENGE_WINDOW,
-    EMISSION_PERIOD_SECS, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH, UBI, VOUCH_CAPACITY,
+    EMISSION_PERIOD_SECS, FALSE_CHALLENGE_SLASH, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH, UBI,
+    VOUCH_CAPACITY,
 };
 
 type Address = [u8; 20];
@@ -244,10 +245,20 @@ fn upheld_human_challenge_restores_verified() {
     );
     let status = jury_votes(&mut s, case, human_v());
     assert!(matches!(status, CaseStatus::Committed(v) if v.verdict == Verdict::Human));
-    // Restored, still streaming, vouchers not slashed.
+    // Restored, still streaming, vouchers not SYBIL-slashed (the subject is human).
     assert_eq!(s.get_human(&subject).unwrap().status, HumanStatus::Verified);
     assert_eq!(s.balance(&subject, vsecs + EMISSION_PERIOD_SECS), UBI);
-    assert_eq!(s.get_human(&founders[0]).unwrap().reputation, 0);
+    // Security finding A: the CHALLENGER (here founders[0], who filed the false challenge) is slashed
+    // FALSE_CHALLENGE_SLASH for the cleared-Human verdict, and is barred from re-filing on this subject.
+    assert_eq!(
+        s.get_human(&founders[0]).unwrap().reputation,
+        -FALSE_CHALLENGE_SLASH
+    );
+    assert_eq!(
+        challenge(&mut s, &founders[0], &subject, [10u8; 32], 6, 30).unwrap_err(),
+        LifecycleError::ChallengeOnCooldown,
+        "a false challenger cannot re-file against the same subject (finding A cooldown)"
+    );
 }
 
 // =================================================================================================
@@ -265,7 +276,8 @@ fn quorum_determinism_identical_verdicts_commit() {
     // Build the same case in two independent states and tally — both commit Sybil identically.
     let run = || -> CaseStatus {
         let mut s = MemState::new();
-        bootstrap(&mut s, JURY_SIZE as u8, &[]);
+        // `addr(1)` seeded Verified so it may challenge (security finding A challenger gate).
+        bootstrap(&mut s, JURY_SIZE as u8, &[addr(1)]);
         let subj = addr(50);
         // Seed subject as a Verified human so it can be challenged.
         ubi2_runtime::seed_verified_human(&mut s, &subj, 0);
@@ -288,7 +300,8 @@ fn quorum_determinism_identical_verdicts_commit() {
 #[test]
 fn quorum_split_escalates() {
     let mut s = MemState::new();
-    bootstrap(&mut s, JURY_SIZE as u8, &[]);
+    // `addr(1)` seeded Verified so it may challenge (security finding A challenger gate).
+    bootstrap(&mut s, JURY_SIZE as u8, &[addr(1)]);
     let subj = addr(50);
     ubi2_runtime::seed_verified_human(&mut s, &subj, 0);
     let case = challenge(&mut s, &addr(1), &subj, [3u8; 32], 88, 0).unwrap();
@@ -305,8 +318,10 @@ fn quorum_split_escalates() {
         submit_verdict(&mut s, case, j, *v, 0).unwrap();
     }
     assert_eq!(s.get_case(case).unwrap().status, CaseStatus::Escalated);
-    // Escalated challenge ⇒ subject NOT revoked (no auto-grant either way — I4).
-    assert_eq!(s.get_human(&subj).unwrap().status, HumanStatus::Challenged);
+    // Escalated challenge ⇒ case escalated (no Sybil quorum). Security finding B: an escalation against
+    // a previously-Verified human FAIL-SAFE restores Verified — only a Sybil quorum may strip an
+    // established human. (Previously the subject was left stuck Challenged.)
+    assert_eq!(s.get_human(&subj).unwrap().status, HumanStatus::Verified);
 }
 
 /// Property test (I1): for many random juries and a fixed deterministic oracle, two independently-built
@@ -344,6 +359,8 @@ fn property_quorum_is_deterministic_across_nodes() {
             }
             let subj = addr(50);
             ubi2_runtime::seed_verified_human(&mut s, &subj, 0);
+            // `addr(1)` seeded Verified so it may challenge (security finding A challenger gate).
+            ubi2_runtime::seed_verified_human(&mut s, &addr(1), 0);
             let case = challenge(&mut s, &addr(1), &subj, [1u8; 32], entropy, 0).unwrap();
             let jury = s.get_case(case).unwrap().jury.clone();
             for j in &jury {
@@ -454,7 +471,9 @@ fn no_jurors_fails_closed() {
 #[test]
 fn submit_verdict_authorization() {
     let mut s = MemState::new();
-    bootstrap(&mut s, JURY_SIZE as u8, &[]);
+    // `addr(1)` is seeded Verified so it may file the challenge (security finding A: challenger must be
+    // a Verified human; previously the challenger was unchecked).
+    bootstrap(&mut s, JURY_SIZE as u8, &[addr(1)]);
     let subj = addr(50);
     ubi2_runtime::seed_verified_human(&mut s, &subj, 0);
     let case = challenge(&mut s, &addr(1), &subj, [1u8; 32], 42, 0).unwrap();

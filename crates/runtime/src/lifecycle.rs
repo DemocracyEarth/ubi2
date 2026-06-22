@@ -22,8 +22,8 @@
 
 use crate::humanity::{
     select_jury, tally, CanonicalVerdict, Case, CaseId, CaseKind, CaseStatus, Hash, Human,
-    HumanStatus, HumanityOracle, Juror, Tally, Verdict, Vouch, CHALLENGE_WINDOW, JURY_SIZE,
-    MIN_VOUCHES, QUORUM, SYBIL_SLASH, VOUCH_CAPACITY,
+    HumanStatus, HumanityOracle, Juror, Tally, Verdict, Vouch, CHALLENGE_WINDOW,
+    FALSE_CHALLENGE_SLASH, JURY_SIZE, MIN_VOUCHES, QUORUM, SYBIL_SLASH, VOUCH_CAPACITY,
 };
 use crate::{Account, Address, State};
 
@@ -46,6 +46,16 @@ pub enum LifecycleError {
     VoucheeNotPending,
     /// `challenge` subject is `Unverified`/`Revoked` (nothing to challenge).
     NotChallengeable(HumanStatus),
+    /// `challenge` from an address that is not a `Verified` human (security finding A — fail-closed:
+    /// only verified humans may challenge, so spam costs an established identity + reputation).
+    ChallengerNotVerified,
+    /// `challenge` against a subject that already has an `Open` challenge (security finding A — at most
+    /// one outstanding challenge per subject; a second is rejected while one is `Open`).
+    ChallengeAlreadyOpen,
+    /// `challenge` re-filed by the same challenger against the same subject after a prior challenge by
+    /// that challenger already cleared `Human` (security finding A — cooldown: a false challenger may
+    /// not re-file against a subject it already failed to unseat).
+    ChallengeOnCooldown,
     /// `submit_verdict` for an unknown case id.
     NoSuchCase(CaseId),
     /// `submit_verdict` from an address not on the case's selected jury.
@@ -78,6 +88,11 @@ impl std::fmt::Display for LifecycleError {
             DuplicateVouch => write!(f, "duplicate vouch"),
             VoucheeNotPending => write!(f, "vouchee has no open registration"),
             NotChallengeable(s) => write!(f, "subject is not challengeable ({s:?})"),
+            ChallengerNotVerified => write!(f, "challenger is not a verified human"),
+            ChallengeAlreadyOpen => write!(f, "subject already has an open challenge"),
+            ChallengeOnCooldown => {
+                write!(f, "challenger already cleared a challenge on this subject")
+            }
             NoSuchCase(id) => write!(f, "no such case: {id}"),
             NotOnJury => write!(f, "submitter is not on this case's jury"),
             CaseClosed => write!(f, "case is already committed or escalated"),
@@ -117,6 +132,7 @@ fn jury_seed(case_id: CaseId, entropy: u64) -> u64 {
 fn open_case(
     state: &mut dyn State,
     subject: Address,
+    challenger: Address,
     kind: CaseKind,
     evidence_ref: Hash,
     entropy: u64,
@@ -131,6 +147,7 @@ fn open_case(
     let case = Case {
         id,
         subject,
+        challenger,
         kind,
         evidence_ref,
         jury,
@@ -180,8 +197,16 @@ pub fn request_verification(
         }
     }
 
+    // F-REL-1: clear any stale vouch edges from a prior lifecycle so prior vouchers can re-vouch the
+    // re-registered subject (a Revoked subject's old `(voucher, subject)` edges would otherwise trip
+    // `DuplicateVouch`). Deterministic set-removal; safe to call when there are none.
+    state.clear_vouch_edges(subject);
+
+    // A Registration case has no external challenger; the subject is recorded as its own opener so the
+    // false-challenge slash (which only fires on Challenge cases) never applies here.
     let case_id = open_case(
         state,
+        *subject,
         *subject,
         CaseKind::Registration,
         evidence.liveness_ref,
@@ -254,14 +279,73 @@ pub fn vouch(
 /// A `Pending` applicant or a `Verified` human may be challenged; `Unverified`/`Revoked` cannot.
 /// A `Verified` subject transitions to `Challenged` (it keeps streaming until a quorum upholds the
 /// challenge — innocent until proven, I4). Returns the Challenge case id.
+///
+/// Anti-spam policy (security finding A — all fail-closed, all deterministic functions of state):
+///   1. **Verified challenger only.** `challenger` must be a `Verified` human; an unverified address
+///      (incl. unknown / `Pending` / `Challenged` / `Revoked`) is rejected `ChallengerNotVerified`.
+///      Spam now costs an established identity, not just gas.
+///   2. **One open challenge per subject.** If the subject already has an `Open` Challenge case, a
+///      second is rejected `ChallengeAlreadyOpen`. A subject can never be buried under concurrent
+///      challenges.
+///   3. **Per-(challenger, subject) cooldown.** Once a challenger's challenge against a subject clears
+///      a `Human` verdict, that challenger may not re-file against that subject (`ChallengeOnCooldown`).
+///      A false challenger gets exactly one shot, so it cannot stall finalization by re-filing — and
+///      it is reputation-slashed for the false challenge (see [`submit_verdict`]). A *self*-challenge
+///      escape hatch is not needed: the subject is recorded as the opener of its own Registration case
+///      only, never of a Challenge case.
+///
+/// The challenger is stamped on the case so the false-challenge slash can find it when the jury rules
+/// `Human`.
 pub fn challenge(
     state: &mut dyn State,
-    _challenger: &Address,
+    challenger: &Address,
     subject: &Address,
     evidence_ref: Hash,
     entropy: u64,
     now: u64,
 ) -> Result<CaseId, LifecycleError> {
+    challenge_inner(state, challenger, subject, evidence_ref, entropy, now, true)
+}
+
+/// The node's own deterministic sybil-cluster defense (security finding D / AC6): the AI sybil scan
+/// flagged `subject`'s vouch cluster, so the runtime auto-files a challenge. Same anti-spam policy as
+/// [`challenge`] (one open per subject, per-`(opener, subject)` cooldown) **except** the verified-
+/// challenger gate is waived — the opener is a reserved system address, not an external actor, so it
+/// has no identity to verify. It is still stamped as the case `challenger`, so a `Human` verdict slashes
+/// nothing of value (the system address holds no reputation worth slashing) and records the cooldown.
+pub fn system_challenge(
+    state: &mut dyn State,
+    system: &Address,
+    subject: &Address,
+    evidence_ref: Hash,
+    entropy: u64,
+    now: u64,
+) -> Result<CaseId, LifecycleError> {
+    challenge_inner(state, system, subject, evidence_ref, entropy, now, false)
+}
+
+/// Shared challenge body. `require_verified_challenger` distinguishes an external [`challenge`] (must
+/// be a Verified human) from the node's [`system_challenge`] defense (no identity to verify). All
+/// other constraints — challengeable subject, one open per subject, per-`(opener, subject)` cooldown —
+/// are identical and deterministic.
+#[allow(clippy::too_many_arguments)]
+fn challenge_inner(
+    state: &mut dyn State,
+    challenger: &Address,
+    subject: &Address,
+    evidence_ref: Hash,
+    entropy: u64,
+    now: u64,
+    require_verified_challenger: bool,
+) -> Result<CaseId, LifecycleError> {
+    // (1) Fail-closed: an external challenger must be a Verified human (waived for system defense).
+    if require_verified_challenger {
+        match state.get_human(challenger) {
+            Some(h) if h.status == HumanStatus::Verified => {}
+            _ => return Err(LifecycleError::ChallengerNotVerified),
+        }
+    }
+
     let status = state
         .get_human(subject)
         .map(|h| h.status)
@@ -271,9 +355,20 @@ pub fn challenge(
         other => return Err(LifecycleError::NotChallengeable(other)),
     }
 
+    // (2) At most one Open challenge per subject.
+    if has_open_challenge(state, subject) {
+        return Err(LifecycleError::ChallengeAlreadyOpen);
+    }
+
+    // (3) Cooldown: this challenger already failed to unseat this subject (cleared Human) — no re-file.
+    if state.challenge_cleared(challenger, subject) {
+        return Err(LifecycleError::ChallengeOnCooldown);
+    }
+
     let case_id = open_case(
         state,
         *subject,
+        *challenger,
         CaseKind::Challenge,
         evidence_ref,
         entropy,
@@ -294,9 +389,15 @@ pub fn challenge(
 /// once. When the tally commits or escalates, the case's effect is applied:
 ///   * a committed **Sybil** ⇒ the subject is `Revoked` and every voucher's reputation is slashed;
 ///   * a committed **Human** on a `Challenge` ⇒ the subject is upheld (restored to `Verified` if it
-///     was `Challenged`); on a `Registration` ⇒ recorded (finalization happens via
-///     [`finalize_registration`]);
-///   * a split / `Uncertain` ⇒ the case is `Escalated` (no state change to the subject — I4).
+///     was `Challenged`), the **challenger's reputation is slashed** for the false challenge, and a
+///     per-`(challenger, subject)` cooldown is recorded so it cannot re-file (security finding A); on
+///     a `Registration` ⇒ recorded (finalization happens via [`finalize_registration`]);
+///   * an **escalation** (split / `Uncertain`) on a `Challenge` against a previously-`Verified`
+///     subject ⇒ **fail-safe restore to `Verified`** (security finding B): a challenge must be UPHELD
+///     by a `Sybil` quorum to strip an established human; mere escalation/uncertainty must not. A
+///     `Challenged` status only ever arises from a challenge on a once-`Verified` human, so restoring
+///     it on escalation re-grants its vouch authority (presumption of innocence). A `Registration`
+///     escalation leaves the `Pending` subject untouched (I4 — never auto-grant on uncertainty).
 ///
 /// Returns the resulting [`CaseStatus`].
 pub fn submit_verdict(
@@ -324,15 +425,17 @@ pub fn submit_verdict(
     let status = case.status;
     let kind = case.kind;
     let subject = case.subject;
+    let challenger = case.challenger;
     state.put_case(case);
 
-    // Apply the committed/escalated effect to the subject.
-    if let CaseStatus::Committed(v) = status {
-        match v.verdict {
+    match status {
+        // A quorum agreed on a canonical verdict.
+        CaseStatus::Committed(v) => match v.verdict {
             Verdict::Sybil => revoke(state, &subject),
             Verdict::Human => {
-                // A challenge cleared in the subject's favor: restore a Challenged human to Verified.
+                // A challenge cleared in the subject's favor.
                 if kind == CaseKind::Challenge {
+                    // Restore a Challenged human to Verified.
                     if let Some(mut h) = state.get_human(&subject) {
                         if h.status == HumanStatus::Challenged {
                             h.status = HumanStatus::Verified;
@@ -340,11 +443,32 @@ pub fn submit_verdict(
                             state.put_human(h);
                         }
                     }
+                    // False challenge: slash the challenger's reputation and bar it from re-filing
+                    // against this subject (security finding A). The slash is integer + deterministic.
+                    if let Some(mut ch) = state.get_human(&challenger) {
+                        ch.reputation = ch.reputation.saturating_sub(FALSE_CHALLENGE_SLASH);
+                        state.put_human(ch);
+                    }
+                    state.record_challenge_cleared(&challenger, &subject);
                 }
             }
             // A committed Uncertain can't happen — the tally escalates it (see `tally`).
             Verdict::Uncertain => {}
+        },
+        // Split / Uncertain. For a Challenge against a previously-Verified (now Challenged) human,
+        // fail-safe restore Verified — only a Sybil quorum may strip an established human (finding B).
+        CaseStatus::Escalated => {
+            if kind == CaseKind::Challenge {
+                if let Some(mut h) = state.get_human(&subject) {
+                    if h.status == HumanStatus::Challenged {
+                        h.status = HumanStatus::Verified;
+                        sync_account_verified(state, &subject, true, h.verified_at);
+                        state.put_human(h);
+                    }
+                }
+            }
         }
+        CaseStatus::Open => {}
     }
     let _ = now;
     Ok(status)
@@ -419,8 +543,13 @@ pub fn revoke(state: &mut dyn State, subject: &Address) {
         }
         h.status = HumanStatus::Revoked;
         h.verified_at = 0;
+        h.vouches_in.clear();
         state.put_human(h);
     }
+    // F-REL-1: drop the subject's vouch-edge indexes so a re-registered subject can be re-vouched by
+    // its prior vouchers (the denormalized `vouches_in` was cleared above; this clears the MemState
+    // forward/reverse indexes too). Deterministic set-removal.
+    state.clear_vouch_edges(subject);
     // Stop emission to the base unit: settle accrued, then clear the verified cache (I2). We do NOT
     // re-credit; the human simply stops accruing from now on.
     sync_account_verified(state, subject, false, 0);
@@ -439,23 +568,39 @@ fn apply_tally(case: &mut Case) {
     }
 }
 
-/// Has the subject's open Registration case committed a `Human` verdict (liveness passed)?
+/// Has the subject's **most-recent** Registration case committed a `Human` verdict (liveness passed)?
+///
+/// F-REL-2: a re-registered subject has more than one Registration case; only the latest (highest
+/// case id) reflects the current lifecycle's liveness grading. Scanning *any* historical case would
+/// let a stale `Human` verdict from a prior lifecycle satisfy the gate. `cases()` is sorted by id, so
+/// taking the last matching case is deterministic.
 fn liveness_passed(state: &dyn State, subject: &Address) -> bool {
-    state.cases().iter().any(|c| {
-        c.subject == *subject
-            && c.kind == CaseKind::Registration
-            && matches!(c.status, CaseStatus::Committed(v) if v.verdict == Verdict::Human)
-    })
+    state
+        .cases()
+        .into_iter()
+        .rfind(|c| c.subject == *subject && c.kind == CaseKind::Registration)
+        .map(|c| matches!(c.status, CaseStatus::Committed(v) if v.verdict == Verdict::Human))
+        .unwrap_or(false)
 }
 
-/// Block height the subject's Registration case opened at (the window clock), if any.
+/// Block height the subject's **most-recent** Registration case opened at (the window clock), if any.
+/// Uses the latest case (highest id) so a re-registered subject's window is measured from the current
+/// lifecycle's registration, not a stale prior one (consistent with F-REL-2's `liveness_passed`).
 fn registration_opened_at(state: &dyn State, subject: &Address) -> Option<u64> {
     state
         .cases()
         .into_iter()
-        .filter(|c| c.subject == *subject && c.kind == CaseKind::Registration)
+        .rfind(|c| c.subject == *subject && c.kind == CaseKind::Registration)
         .map(|c| c.opened_at)
-        .min()
+}
+
+/// Is there an `Open` Challenge case against the subject? (Used to enforce one-open-per-subject.)
+fn has_open_challenge(state: &dyn State, subject: &Address) -> bool {
+    state.cases().iter().any(|c| {
+        c.subject == *subject
+            && c.kind == CaseKind::Challenge
+            && matches!(c.status, CaseStatus::Open)
+    })
 }
 
 /// Is there an Open challenge, or a committed `Sybil` (upheld) challenge, against the subject?
