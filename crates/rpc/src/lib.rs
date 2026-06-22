@@ -268,6 +268,21 @@ struct PendingTx {
     kind: PendingKind,
 }
 
+/// The amount a queued tx debits from its sender's *spendable* balance when mined: its `value` (a
+/// transfer amount, or a `fundContract` escrow funding — both carried in `PendingTx.value`) plus,
+/// for an `openStream`, the locked `deposit` (a calldata arg, so it lives outside `value` and is 0
+/// in `value`). Every other op moves no sender value, so it debits 0. Used by `ingest_raw_tx` to
+/// sum a sender's still-pending mempool commitments for the cumulative affordability check (M2-F2 /
+/// cycle-1 FU-1): the runtime debits all of these from the one balance at block time, so admission
+/// must weigh them together, not each against the full live balance in isolation. Saturating add so
+/// an absurd sum fails closed (over-rejects) rather than wrapping.
+fn spendable_debit(value: u128, kind: &PendingKind) -> u128 {
+    value.saturating_add(match kind {
+        PendingKind::OpenStream { deposit, .. } => *deposit,
+        _ => 0,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Stream-op nonce handling + event logs
 // ---------------------------------------------------------------------------------------------
@@ -1654,8 +1669,10 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         _ => 0,
     };
 
-    // Validate nonce + (for transfers) spendable balance against current state at *now*. Stream-op
-    // deposit affordability is re-checked at block time by `open_stream` (settlement is re-done then).
+    // Validate nonce + spendable-balance affordability against current state at *now*, accounting
+    // for this sender's other still-pending mempool txs (see the cumulative check below). The
+    // runtime re-checks and re-settles authoritatively at block time and fails closed; this submit
+    // gate exists so the wallet gets a synchronous rejection instead of a silently dropped tx.
     {
         let g = chain.inner.lock().unwrap();
         let now = now_secs();
@@ -1673,16 +1690,35 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
                 }
             )));
         }
-        if let PendingKind::OpenStream { deposit, .. } = &kind {
-            if settled < *deposit {
-                return Err(invalid_params(format!(
-                    "insufficient balance for deposit: have {settled}, need {deposit}"
-                )));
-            }
-        }
-        if settled < value {
+        // Affordability is cumulative across the sender's still-pending txs, not just this one:
+        // every queued transfer `value`, `openStream` `deposit`, and `fundContract` funding will be
+        // debited from the same spendable balance when the block is mined. Checking each op against
+        // the live balance in isolation admitted N full-balance opens — all but the first then got
+        // silently dropped by the runtime's fail-closed insufficient-balance check at block time
+        // (only a WARN, no receipt, a misleading accepted hash to the wallet). M2-F2 / cycle-1 FU-1.
+        // Mirror the pending-nonce accounting above: sum what this sender has already committed in
+        // the mempool and reject when adding this op would exceed the live balance.
+        let pending_committed: u128 = g
+            .mempool
+            .iter()
+            .filter(|p| p.from == from)
+            .fold(0u128, |acc, p| acc.saturating_add(spendable_debit(p.value, &p.kind)));
+        let need = pending_committed.saturating_add(spendable_debit(value, &kind));
+        if settled < need {
+            // Note the already-pending portion only when there is one, so the single-tx message is
+            // unchanged. Keep "for deposit" wording on stream opens (their `value` is 0).
+            let pending_note = if pending_committed > 0 {
+                format!(" (incl. {pending_committed} already pending from this sender)")
+            } else {
+                String::new()
+            };
+            let what = if matches!(kind, PendingKind::OpenStream { .. }) {
+                "balance for deposit"
+            } else {
+                "balance"
+            };
             return Err(invalid_params(format!(
-                "insufficient balance: have {settled}, need {value}"
+                "insufficient {what}: have {settled}, need {need}{pending_note}"
             )));
         }
     }

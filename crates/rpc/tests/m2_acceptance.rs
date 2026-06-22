@@ -767,6 +767,102 @@ async fn erc721_collection_metadata_and_eth_call_soulbound() {
     let _ = handle.stopped().await;
 }
 
+// =============================================================================================
+// M2-F2 / cycle-1 FU-1 — mempool over-admission regression. A second `openStream` whose deposit
+// would lock the same sender balance the first already committed must be REJECTED synchronously at
+// `eth_sendRawTransaction`, NOT accepted (returning a tx hash to the wallet) and then silently
+// dropped by the runtime's fail-closed balance check at block time. Pre-fix, the submit gate
+// compared each deposit against the full live balance in isolation, so N full-balance opens all
+// got "accepted" and all but the first vanished with only a WARN log and no receipt.
+// =============================================================================================
+#[tokio::test]
+async fn second_full_balance_open_rejected_at_admission() {
+    let addr: SocketAddr = "127.0.0.1:18559".parse().unwrap();
+    // Genesis well in the past so the dev account holds a sizable spendable balance from emission.
+    let genesis = now_secs() - 50 * EMISSION_PERIOD_SECS; // ~50 UBI accrued
+    let (chain, handle) = boot(addr, genesis).await;
+
+    let dev = format!("0x{}", hex::encode(DEV_ADDR.as_slice()));
+    let recipient_a = address!("00000000000000000000000000000000000000a1");
+    let recipient_b = address!("00000000000000000000000000000000000000b2");
+
+    // Each open locks ~the entire live spendable balance as its deposit, so two cannot both be
+    // funded. Emission may add a few base units before mining, but it never doubles the balance, so
+    // the first open stays affordable while a second full-balance open never can be.
+    let bal =
+        hex_u128(&rpc(addr, "eth_getBalance", serde_json::json!([dev, "latest"])).await["result"]);
+    assert!(bal > 0, "dev account must hold spendable balance to lock");
+    let deposit = bal;
+
+    // First open (nonce 0): the sole pending commitment, fits the balance → accepted.
+    let open_a = openStreamCall {
+        to: recipient_a,
+        ratePerSec: U256::from(1u128),
+        deposit: U256::from(deposit),
+    }
+    .abi_encode();
+    let raw_a = sign_tx(STREAM_HUB, 0, open_a, 0, DEVNET_CHAIN_ID);
+    let raw_a_hex = format!("0x{}", hex::encode(&raw_a));
+    let send_a = rpc(addr, "eth_sendRawTransaction", serde_json::json!([raw_a_hex])).await;
+    let hash_a = send_a["result"]
+        .as_str()
+        .unwrap_or_else(|| panic!("first full-balance openStream must be accepted: {send_a}"))
+        .to_string();
+    println!("[mempool] first open accepted: {hash_a}");
+
+    // Second open (nonce 1, so it clears the pending-nonce gate): same sender, another full-balance
+    // deposit. The first open's deposit is already committed in the mempool, so the cumulative check
+    // sees live_balance < pending_committed + this_deposit and must REJECT at admission.
+    let open_b = openStreamCall {
+        to: recipient_b,
+        ratePerSec: U256::from(1u128),
+        deposit: U256::from(deposit),
+    }
+    .abi_encode();
+    let raw_b = sign_tx(STREAM_HUB, 0, open_b, 1, DEVNET_CHAIN_ID);
+    let raw_b_hex = format!("0x{}", hex::encode(&raw_b));
+    let send_b = rpc(addr, "eth_sendRawTransaction", serde_json::json!([raw_b_hex])).await;
+    assert!(
+        send_b.get("result").is_none() && send_b.get("error").is_some(),
+        "second full-balance openStream must be REJECTED at admission, not accepted: {send_b}"
+    );
+    let err_msg = send_b["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        err_msg.contains("insufficient") && err_msg.contains("pending"),
+        "rejection must cite the cumulative pending commitment, got: {err_msg}"
+    );
+    println!("[mempool] second open rejected at admission: {err_msg}");
+
+    // Mine: exactly the first open lands. Pre-fix this asserted-out because BOTH opens were admitted
+    // and the runtime then dropped the second — here the second never entered the mempool at all.
+    let block = chain.produce_block(now_secs());
+    assert_eq!(
+        block.txs.len(),
+        1,
+        "exactly one open mined (the first); the over-committed second was never admitted"
+    );
+
+    // The dev account is left with exactly one outgoing stream — no orphaned second deposit lock.
+    let receipt_a =
+        rpc(addr, "eth_getTransactionReceipt", serde_json::json!([hash_a])).await;
+    assert!(
+        receipt_a["result"]["logs"]
+            .as_array()
+            .map_or(0, |l| l.len())
+            >= 1,
+        "first open has a receipt with logs (it actually mined): {receipt_a}"
+    );
+    let (outgoing, _incoming) = chain.streams_of(&DEV_ADDR.into_array());
+    assert_eq!(
+        outgoing.len(),
+        1,
+        "dev has exactly one outgoing stream, not a second orphaned deposit lock"
+    );
+
+    handle.stop().unwrap();
+    let _ = handle.stopped().await;
+}
+
 /// Minimal standard base64 decoder (keeps the test self-contained; mirrors the crate's `base64` use).
 fn b64_decode(s: &str) -> Vec<u8> {
     use base64::engine::general_purpose::STANDARD;
