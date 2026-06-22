@@ -4,7 +4,7 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M3 — AI Proof-of-Humanity · **M1 + M2 shipped (cycles 1–2) ✅**
+**Current milestone:** M4 — Prompt Contracts · **M1 + M2 + M3 shipped (cycles 1–3) ✅**
 
 | Field | Meaning |
 |---|---|
@@ -16,13 +16,20 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 
 ## 🔜 Backlog
 
-**M3 — AI Proof-of-Humanity** ([spec](specs/03-proof-of-humanity.md)) — social vouching + AI jury, full uniqueness
-- **M3-T6 · qa-engineer** — Tests for the 8 M3 acceptance criteria (MockOracle). *Accepts:* each → passing test.
-- **M3-T7 · reliability-engineer** — Quorum-verdict determinism + emission reproducibility under `Verified`
-  gating + lifecycle state-machine consistency. *Accepts:* two nodes agree; no nondeterminism.
-- **M3-T8 · security-engineer** — Threat model + pentest: juror collusion, vouch farms/sybil, challenge
-  griefing, oracle prompt-injection, replay, privacy leakage. *Accepts:* no open High/Critical.
-- **M3-T9 · release-engineer** — Seed-set bootstrap script + CI green. *(likely inline)*
+**M4 — Prompt Contracts** ([spec](specs/04-prompt-contracts.md)) — NL contracts, AI interpreter quorum (reuses M3)
+- **M4-T3 · ai-engineer** — `ContractInterpreter` oracle: LLM maps `(text, state, trigger)` → `CanonicalEffect`
+  (structured output, temp-0, injection-resistant); `MockInterpreter` for offline tests. *Accepts:* fixed input → identical effect.
+- **M4-T4 · protocol-engineer** — `ContractHub` (`0x…5043`) txs (`deployContract`/`fundContract`/`invokeContract`/
+  `submitEffect`) + `ubi_getContract`/`getExecCase`/`getContractsOf`; **+ EXPL-1 address indexer**
+  (`ubi_getAddressActivity`/`getAccount`) behind the RPC. *Accepts:* invoke→effect over the wire; indexer reads.
+- **M4-T5 · interface-engineer** — Consolidate the app into the **UBI on-ramp**: wallet + **full block explorer**
+  (all blocks/txs/accounts, search, per-account history) + **social/PoH hub** (status, vouches in/out,
+  vouch/challenge, pending cases, jurors) + **contracts** (author/deploy/fund/invoke). *Accepts:* full flow against devnet; builds green.
+- **M4-T6 · qa-engineer** — Tests for the 6 M4 acceptance criteria (MockInterpreter). *Accepts:* each → passing test.
+- **M4-T7 · reliability-engineer** — Interpreter-quorum determinism + effect-application reproducibility + abort-on-split. *Accepts:* two nodes agree.
+- **M4-T8 · security-engineer** — Threat model + pentest: over-authority/escrow drain, interpreter prompt-injection,
+  quorum/abort integrity, replay, privacy. *Accepts:* no open High/Critical.
+- **M4-T9 · release-engineer** — CI + demo contract. *(likely inline)*
 
 **Follow-ups carried from the gates — address before they bite**
 - **FU-1 · protocol/security** — Mempool/registry hardening before any multi-node / non-localhost deploy:
@@ -59,7 +66,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-_(none — M3 shipped; M4 next)_
+- **M4-T2 · protocol-engineer** — Contract runtime: `PromptContract`/`ExecCase` registries, the canonical
+  **effect language** + deterministic atomic apply with escrow/authority validation, and the interpreter-quorum
+  tally (generalize M3's quorum) + `MockInterpreter`. *(cycle 4)*
 
 ## 👀 Review (awaiting gates)
 _(none)_
@@ -68,6 +77,9 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **M4-T1 · architect** — M4 prompt-contracts spec: NL contracts → canonical **effect language** executed by an
+  **interpreter quorum** (reuses M3), escrow/least-authority (I6), deterministic abort (I1/I4), `ContractHub`,
+  the app-consolidation (explorer + social hub), 6 acceptance criteria. *(cycle 4 — [spec](specs/04-prompt-contracts.md))*
 - **M3 — AI Proof-of-Humanity · SHIPPED (cycle 3).** All gates green. ([spec](specs/03-proof-of-humanity.md))
   - **M3-T1 · architect** — Spec: social vouching + AI-jury quorum, on-chain lifecycle, `HumanityOracle` trait + determinism (I1), privacy (I6), 8 acceptance criteria.
   - **M3-T2 · protocol-engineer** — On-chain substrate: `Human`/`Vouch`/`Case`/`Juror` registries, deterministic lifecycle state machine, quorum tally, vouch graph, `Verified` emission gating, `MockOracle`.
