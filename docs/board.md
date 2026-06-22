@@ -17,13 +17,6 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 ## 🔜 Backlog
 
 **M3 — AI Proof-of-Humanity** ([spec](specs/03-proof-of-humanity.md)) — social vouching + AI jury, full uniqueness
-- **M3-T3 · ai-engineer** — `HumanityOracle` impl behind the runtime trait: liveness grading, sybil-cluster
-  analysis, jury adjudication via the latest Claude model; canonical-verdict determinism (temp 0, pinned,
-  structured); offline fixtures (I5). *Accepts:* fixed input → identical `CanonicalVerdict`, fixture-tested.
-- **M3-T4 · protocol-engineer** — RPC: `HumanityHub` system-address tx parsing (`requestVerification`/
-  `vouch`/`challenge`/`submitVerdict`) + `ubi_getHuman`/`getCase`/`getVouches`/`getJurors`/`getPendingCases`.
-- **M3-T5 · interface-engineer** — Wallet apply→liveness→vouch→status flow + vouch/challenge actions +
-  juror/verdict view; SDK helpers. *Accepts:* full flow against devnet; build+typecheck green.
 - **M3-T6 · qa-engineer** — Tests for the 8 M3 acceptance criteria (MockOracle). *Accepts:* each → passing test.
 - **M3-T7 · reliability-engineer** — Quorum-verdict determinism + emission reproducibility under `Verified`
   gating + lifecycle state-machine consistency. *Accepts:* two nodes agree; no nondeterminism.
@@ -59,16 +52,19 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-- **M3-T3 · ai-engineer** — `ClaudeOracle`: real LLM `HumanityOracle` (liveness grading, sybil analysis,
-  jury adjudication) with canonical-verdict determinism + offline fixtures; juror-submission design. *(cycle 3)*
-- **M3-T4 · protocol-engineer** — RPC: `HumanityHub` system-address tx parsing + `ubi_*` reads + block-time
-  lifecycle application (MockOracle stand-in in the node so the devnet verifies end-to-end). *(cycle 3)*
+- **M3-T6/T7/T8 · qa / reliability / security** — Running the three Definition-of-Done gates on the
+  combined M3 diff (substrate + oracle + RPC + wallet). *(cycle 3)*
 
 ## 👀 Review (awaiting gates)
-- **M3-T2 · protocol-engineer** — On-chain PoH substrate (registries, deterministic lifecycle, quorum tally,
-  vouch graph, `Verified` emission gating, genesis migration, `HumanityOracle` trait + `MockOracle`).
-  **Orchestrator-verified:** 78 tests (15 new M3), fmt + clippy clean; happy-path verify→stream, sybil→revoke,
-  quorum determinism/escalate (5k-iter property test) all proven. *(cycle 3)*
+- **M3-T2/T3/T4/T5 · protocol / ai / interface** — Full M3 implementation, **orchestrator-verified** (120
+  cargo tests, fmt + clippy clean; pnpm build + typecheck clean):
+  - **T2 substrate** (committed `21d0431`): registries, deterministic lifecycle, quorum tally, vouch graph,
+    `Verified` emission gating, `MockOracle`.
+  - **T3 oracle** (`crates/oracle`): `ClaudeOracle` — real `HumanityOracle` via the Anthropic API with forced
+    structured output, temp-0 determinism, injection-resistant prompts; gated on `ANTHROPIC_API_KEY`, fixture-tested.
+  - **T4 RPC/node**: `HumanityHub` (`0x…5048`) tx parsing + `ubi_*` reads + block-time lifecycle + auto-finalize
+    sweep + receipt logs + seeded jurors; `m3_acceptance` drives verify→stream and sybil→revoke over the wire.
+  - **T5 wallet/SDK**: a "Proof of Humanity" card (status, vouches, apply/vouch/challenge, pending cases) + SDK helpers.
 
 ## ⛔ Blocked
 _(none)_

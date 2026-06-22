@@ -4,6 +4,7 @@ members = [
     "crates/runtime",
     "crates/rpc",
     "crates/node",
+    "crates/oracle",
 ]
 
 [workspace.package]
@@ -42,3 +43,10 @@ derive_more = { version = "1", features = ["display", "from"] }
 # wired into jsonrpsee via `set_http_middleware`. tower 0.4 matches jsonrpsee 0.24's tower.
 tower = "0.4"
 tower-http = { version = "0.6", features = ["cors"] }
+# M3 (ai-engineer / crates/oracle): the live Claude-backed `HumanityOracle`. `reqwest` (rustls, no
+# OpenSSL dep) is the HTTP client for the Anthropic Messages API; the oracle's live path is gated on
+# `ANTHROPIC_API_KEY` and is NEVER exercised in tests/CI (I5 — tests replay recorded fixtures). `serde`
+# / `serde_json` (already shared above) model the structured-output request/response. `reqwest` carries
+# `serde_json` itself but we only `--features json` on the blocking client so no async runtime is pulled
+# into the otherwise-sync oracle.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

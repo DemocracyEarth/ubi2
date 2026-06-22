@@ -1,0 +1,23 @@
+[package]
+name = "ubi2-oracle"
+description = "ubi2 AI proof-of-humanity oracle: a Claude-backed HumanityOracle (M3-T3)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The runtime owns the seam: `HumanityOracle`, `CanonicalVerdict`, `Verdict`, `Confidence`,
+# `GraphView`, `Address`. We implement against it and never duplicate those types.
+ubi2-runtime = { path = "../runtime" }
+# Structured-output request/response modeling + the recorded fixtures replay path.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `keccak256` for `reasons_hash` — same hash convention the chain/rpc already use (no new hash dep).
+alloy-primitives = { workspace = true }
+# Live Anthropic Messages-API calls. Gated on `ANTHROPIC_API_KEY`; never reached in tests/CI.
+reqwest = { workspace = true }
+
+[dev-dependencies]
+# Fixture replay asserts the structured-output -> CanonicalVerdict mapping + determinism offline.
+serde_json = { workspace = true }

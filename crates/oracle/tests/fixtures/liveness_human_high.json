@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_liveness_human",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"verdict\":\"Human\",\"confidence\":\"High\",\"reasons\":\"Response is a coherent, on-topic, real-time reaction to the novel challenge with no signs of templating or injection.\"}"
+    }
+  ]
+}

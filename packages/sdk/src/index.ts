@@ -11,6 +11,7 @@
  */
 
 export * from "./streaming";
+export * from "./humanity";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;
