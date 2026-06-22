@@ -42,11 +42,14 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    apply_transfer, challenge as lc_challenge, finalize_registration, open_stream,
-    request_verification, stop_stream, submit_verdict, system_challenge as lc_system_challenge,
-    vouch as lc_vouch, Account, Address, Case, CaseKind, CaseStatus, Confidence, Human,
-    HumanStatus, HumanityOracle, Juror, LivenessEvidence, MemState, MockOracle, State, Stream,
-    StreamStatus, Verdict,
+    apply_transfer, challenge as lc_challenge, deploy_contract as lc_deploy_contract,
+    finalize_registration, fund_contract as lc_fund_contract,
+    invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
+    submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
+    vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
+    ContractInterpreter, ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle,
+    Juror, LivenessEvidence, MemState, MockInterpreter, MockOracle, Op, PromptContract, State,
+    Stream, StreamStatus, Verdict,
 };
 
 pub mod streams;
@@ -59,6 +62,13 @@ pub mod humanity;
 use humanity::{
     addr_topic as h_addr_topic, derive_liveness, parse_calldata as parse_humanity_calldata,
     u64_topic as h_u64_topic, CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
+};
+
+pub mod contracts;
+use contracts::{
+    addr_topic as c_addr_topic, derive_text, derive_trigger,
+    parse_calldata as parse_contract_calldata, u64_topic as c_u64_topic,
+    CalldataError as ContractCalldataError, ContractOp, CONTRACT_HUB,
 };
 
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
@@ -109,6 +119,17 @@ pub const M3_METHODS: &[&str] = &[
     "ubi_getVouches",
     "ubi_getJurors",
     "ubi_getPendingCases",
+];
+
+/// M4 prompt-contract read methods + the EXPL-1 address indexer reads (custom `ubi_*` surface; the
+/// write surface is `eth_sendRawTransaction` extended in place to recognize the ContractHub). Kept for
+/// docs / tests.
+pub const M4_METHODS: &[&str] = &[
+    "ubi_getContract",
+    "ubi_getExecCase",
+    "ubi_getContractsOf",
+    "ubi_getAddressActivity",
+    "ubi_getAccount",
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -176,6 +197,12 @@ struct Inner {
     txs: HashMap<B256, StoredTx>,
     /// FIFO mempool of decoded, validated-but-not-yet-mined transfers awaiting the next block.
     mempool: Vec<PendingTx>,
+    /// EXPL-1 per-address tx index: for every address a tx *touches* (its `from`, its `to`, and any
+    /// address an applied effect moves value to/from — payees, vouchees, challenge subjects, stream
+    /// recipients, contract escrows, effect targets), the ordered list of tx hashes that touched it.
+    /// Append-only in block order, so `ubi_getAddressActivity` returns most-recent-first by reversing.
+    /// Each entry is recorded once per (address, tx) pair (deduped) so a self-transfer isn't doubled.
+    addr_index: HashMap<Address, Vec<B256>>,
 }
 
 /// What a queued tx will do when mined. M1 had only value transfers; M2 adds the two StreamHub ops.
@@ -206,6 +233,23 @@ enum PendingKind {
     SubmitVerdict {
         case_id: u64,
         verdict: ubi2_runtime::CanonicalVerdict,
+    },
+
+    // ---- M4: prompt-contract ops to ContractHub ----
+    /// `deployContract(textRef, parties)`: register an `Active` contract for the signer.
+    DeployContract {
+        text_ref: [u8; 32],
+        parties: Vec<AlloyAddr>,
+    },
+    /// `fundContract(id)`: fund contract `id`'s escrow with the tx's value (carried in `PendingTx`).
+    FundContract { id: u64 },
+    /// `invokeContract(id, triggerRef)`: open an ExecCase; the node runs the interpreter quorum at
+    /// block time and commits/aborts the agreed effect.
+    InvokeContract { id: u64, trigger_ref: [u8; 32] },
+    /// `submitEffect(caseId, ops)`: an interpreter's canonical effect (deferred juror-daemon path).
+    SubmitEffect {
+        case_id: u64,
+        effect: CanonicalEffect,
     },
 }
 
@@ -425,6 +469,92 @@ fn status_changed_log(subject: &Address, status: HumanStatus) -> TxLog {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// M4 prompt-contract event logs (carried in tx receipts — spec 04 §"RPC / interfaces"). Same
+// `{address, topics, data}` shape as the StreamHub/HumanityHub logs.
+// ---------------------------------------------------------------------------------------------
+
+/// Topic for `ContractDeployed(uint256 indexed id, address indexed deployer, bytes32 textRef)` —
+/// emitted on `deployContract`. `textRef` is in `data`.
+fn contract_deployed_topic() -> B256 {
+    keccak256(b"ContractDeployed(uint256,address,bytes32)")
+}
+/// Topic for `CaseOpened(uint256 indexed caseId, uint256 indexed contractId, address indexed invoker)`
+/// — emitted on `invokeContract`. (Distinct from the HumanityHub's `CaseOpened` by its hub address +
+/// signature: this one carries a contract id, not a subject.)
+fn contract_case_opened_topic() -> B256 {
+    keccak256(b"CaseOpened(uint256,uint256,address)")
+}
+/// Topic for `EffectCommitted(uint256 indexed caseId, uint256 indexed contractId, bytes32 effectHash)`
+/// — emitted when a quorum-agreed effect is validated + applied. `effectHash` is in `data`.
+fn effect_committed_topic() -> B256 {
+    keccak256(b"EffectCommitted(uint256,uint256,bytes32)")
+}
+/// Topic for `EffectAborted(uint256 indexed caseId, uint256 indexed contractId)` — emitted when a case
+/// aborts (split / no-quorum / invalid-or-over-authority effect / explicit Abort). Fail-closed (I4).
+fn effect_aborted_topic() -> B256 {
+    keccak256(b"EffectAborted(uint256,uint256)")
+}
+
+/// 32-byte `data` word carrying a 32-byte hash (a `bytes32` ABI value is its own word).
+fn hash_data(h: &[u8; 32]) -> Vec<u8> {
+    h.to_vec()
+}
+
+/// A `ContractDeployed(id, deployer, textRef)` log for a freshly deployed contract.
+fn contract_deployed_log(id: u64, deployer: &AlloyAddr, text_ref: &[u8; 32]) -> TxLog {
+    TxLog {
+        address: CONTRACT_HUB,
+        topics: vec![
+            contract_deployed_topic(),
+            c_u64_topic(id),
+            c_addr_topic(deployer),
+        ],
+        data: hash_data(text_ref),
+    }
+}
+
+/// A `CaseOpened(caseId, contractId, invoker)` log for a freshly opened exec case.
+fn contract_case_opened_log(case_id: u64, contract_id: u64, invoker: &AlloyAddr) -> TxLog {
+    TxLog {
+        address: CONTRACT_HUB,
+        topics: vec![
+            contract_case_opened_topic(),
+            c_u64_topic(case_id),
+            c_u64_topic(contract_id),
+            c_addr_topic(invoker),
+        ],
+        data: Vec::new(),
+    }
+}
+
+/// The terminal log for an exec case: `EffectCommitted(caseId, contractId, effectHash)` when the case
+/// committed an effect, else `EffectAborted(caseId, contractId)` (split / invalid / explicit Abort).
+fn exec_case_outcome_log(case: &ExecCase) -> Option<TxLog> {
+    match &case.status {
+        ExecStatus::Committed(effect) => Some(TxLog {
+            address: CONTRACT_HUB,
+            topics: vec![
+                effect_committed_topic(),
+                c_u64_topic(case.id),
+                c_u64_topic(case.contract),
+            ],
+            data: hash_data(&effect.effect_hash),
+        }),
+        ExecStatus::Aborted => Some(TxLog {
+            address: CONTRACT_HUB,
+            topics: vec![
+                effect_aborted_topic(),
+                c_u64_topic(case.id),
+                c_u64_topic(case.contract),
+            ],
+            data: Vec::new(),
+        }),
+        // Still gathering submissions (the deferred juror-daemon path) — no terminal log yet.
+        ExecStatus::Open => None,
+    }
+}
+
 /// Fold a block's `(hash, number)` into a `u64` chain-entropy word for deterministic juror selection.
 /// Both inputs are consensus values, so the entropy is byte-reproducible across nodes (spec §"Juror
 /// selection": VRF-style from chain entropy; M3 uses this simpler deterministic-random seed).
@@ -514,6 +644,104 @@ fn sweep_sybil_scan(
     logs
 }
 
+/// The set of 20-byte addresses a stored tx **touches** (EXPL-1 — for the per-address index). Always
+/// includes `from` and `to`; for hub txs it also pulls the value-bearing counterparties out of the
+/// applied logs (payees / vouchees / subjects / stream recipients / contract escrows / effect
+/// targets), since those are exactly the addresses an explorer's per-account history must surface. We
+/// read them from the logs (which the apply path already emits) rather than re-deriving, so the index
+/// and the receipts agree. The result is sorted + deduped so each (address, tx) pair indexes once.
+fn affected_addresses(tx: &StoredTx) -> Vec<Address> {
+    let mut out: Vec<Address> = Vec::with_capacity(4);
+    out.push(tx.from.into_array());
+    if let Some(to) = tx.to {
+        out.push(to.into_array());
+    }
+    for log in &tx.logs {
+        // Address-typed topics are 32-byte left-padded; the low 20 bytes are the address. We treat any
+        // topic whose high 12 bytes are zero as a candidate address (the convention `addr_topic` uses).
+        for topic in &log.topics {
+            let bytes = topic.as_slice();
+            if bytes[..12].iter().all(|b| *b == 0) {
+                let mut a = [0u8; 20];
+                a.copy_from_slice(&bytes[12..]);
+                // Skip the zero address (ERC-721 mint `from`); it is not a real account.
+                if a != [0u8; 20] {
+                    out.push(a);
+                }
+            }
+        }
+        // A contract escrow address (the `Transfer`/`Refund` source for an effect) is the log emitter's
+        // contract space; the escrow address itself shows up as the `from` of the apply-time transfer,
+        // which is recorded on those synthetic effect logs' parent tx. Effect targets are in topics.
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Record `tx` under every address it touches in the per-address index (EXPL-1). Append-only in block
+/// order; each (address, tx) pair is recorded once.
+fn index_tx(addr_index: &mut HashMap<Address, Vec<B256>>, tx: &StoredTx) {
+    for a in affected_addresses(tx) {
+        let entry = addr_index.entry(a).or_default();
+        // Guard against double-indexing if the same tx is somehow re-stored (idempotent).
+        if entry.last() != Some(&tx.hash) {
+            entry.push(tx.hash);
+        }
+    }
+}
+
+/// Extra value-moving addresses a committed contract effect touches that aren't on the tx's
+/// `from`/`to`/log-topics (EXPL-1). For an `InvokeContract`/`SubmitEffect` whose exec case committed,
+/// this returns the contract's escrow address plus every effect-target address (Transfer/Refund/
+/// OpenStream recipients) so the per-address index records them. Returns empty for non-contract ops or
+/// a case that aborted / is still open (no value moved). Pure read of `state`.
+fn contract_effect_addresses(state: &dyn State, kind: &PendingKind) -> Vec<Address> {
+    let case_id = match kind {
+        PendingKind::InvokeContract { .. } | PendingKind::SubmitEffect { .. } => {
+            // Find the case this op resolved. For InvokeContract it is the highest-id case for the
+            // contract; for SubmitEffect it is the named case. Look up directly via the case id where
+            // we have it; for InvokeContract we re-derive by scanning the contract's cases.
+            if let PendingKind::SubmitEffect { case_id, .. } = kind {
+                Some(*case_id)
+            } else if let PendingKind::InvokeContract { id, .. } = kind {
+                // The just-opened case is the newest exec case for this contract.
+                state
+                    .exec_cases()
+                    .into_iter()
+                    .filter(|c| c.contract == *id)
+                    .map(|c| c.id)
+                    .max()
+            } else {
+                None
+            }
+        }
+        _ => return Vec::new(),
+    };
+    let Some(case_id) = case_id else {
+        return Vec::new();
+    };
+    let Some(case) = state.get_exec_case(case_id) else {
+        return Vec::new();
+    };
+    let ExecStatus::Committed(effect) = &case.status else {
+        return Vec::new();
+    };
+    let mut out = vec![ubi2_runtime::contract_address(case.contract)];
+    for op in &effect.ops {
+        match op {
+            Op::Transfer { to, .. } => out.push(*to),
+            Op::Refund { party, .. } => out.push(*party),
+            Op::OpenStream { to, .. } => out.push(*to),
+            // StopStream/SetVar/Abort move value only back into the escrow (already included).
+            Op::StopStream { .. } | Op::SetVar { .. } | Op::Abort { .. } => {}
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Shared node state. Cheaply cloneable (`Arc` inside) so handlers and the tick task share it.
 #[derive(Clone)]
 pub struct Chain {
@@ -529,6 +757,11 @@ pub struct Chain {
     /// deterministic [`MockOracle`] so the whole lifecycle verifies end-to-end with no model calls; the
     /// live node swaps a Claude-backed impl behind the same trait via [`Chain::with_oracle`].
     oracle: Arc<dyn HumanityOracle>,
+    /// The M4 prompt-contract interpreter the node runs at block time (the AI seam, I1/I5). The devnet
+    /// wires the deterministic [`MockInterpreter`] (every juror computes the same canonical effect, so
+    /// the quorum forms reproducibly with no model calls); the live node swaps a Claude-backed
+    /// `ClaudeInterpreter` (M4-T3) behind the same trait via [`Chain::with_interpreter`].
+    interpreter: Arc<dyn ContractInterpreter>,
 }
 
 impl Chain {
@@ -553,6 +786,7 @@ impl Chain {
                 blocks_by_hash,
                 txs: HashMap::new(),
                 mempool: vec![],
+                addr_index: HashMap::new(),
             })),
             chain_id,
             genesis_time,
@@ -562,6 +796,10 @@ impl Chain {
             // a per-input override is scripted), so registrations verify end-to-end in CI (I5). The
             // live node swaps a Claude-backed oracle via `with_oracle`.
             oracle: Arc::new(MockOracle::default()),
+            // Devnet default: the deterministic MockInterpreter (a no-op effect unless a per-input
+            // override is scripted). The live node swaps a Claude-backed interpreter via
+            // `with_interpreter`.
+            interpreter: Arc::new(MockInterpreter::default()),
         }
     }
 
@@ -570,6 +808,14 @@ impl Chain {
     /// from an env flag by the node). All other behavior is unchanged.
     pub fn with_oracle(mut self, oracle: Arc<dyn HumanityOracle>) -> Self {
         self.oracle = oracle;
+        self
+    }
+
+    /// Replace the prompt-contract interpreter (the AI seam — I1/I5). The devnet uses the deterministic
+    /// [`MockInterpreter`]; this is the single swap point for a Claude-backed `ContractInterpreter`
+    /// (M4-T3). All other behavior is unchanged.
+    pub fn with_interpreter(mut self, interpreter: Arc<dyn ContractInterpreter>) -> Self {
+        self.interpreter = interpreter;
         self
     }
 
@@ -619,8 +865,10 @@ impl Chain {
     /// block, and broadcasts it to `newHeads` subscribers. Called by the node on every clock tick;
     /// empty mempool ⇒ empty block (still advances height — spec §M1-T1.6).
     pub fn produce_block(&self, timestamp: u64) -> Block {
-        // Clone the oracle Arc before locking state (the apply loop calls it for liveness grading).
+        // Clone the AI-seam Arcs before locking state (the apply loop calls the oracle for liveness
+        // grading and the interpreter for contract effects).
         let oracle = Arc::clone(&self.oracle);
+        let interpreter = Arc::clone(&self.interpreter);
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
@@ -782,6 +1030,101 @@ impl Chain {
                             logs
                         })
                 }
+
+                // ---- M4: prompt-contract ops ----
+                PendingKind::DeployContract { text_ref, parties } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            let parties: Vec<Address> =
+                                parties.iter().map(|a| a.into_array()).collect();
+                            lc_deploy_contract(&mut g.state, *text_ref, parties)
+                                .map_err(|e| e.to_string())
+                        })
+                        .map(|id| vec![contract_deployed_log(id, &p.from, text_ref)])
+                }
+
+                PendingKind::FundContract { id } => {
+                    // `fund_contract` moves the tx's value (`p.value`) from the funder into the escrow
+                    // account via the normal transfer path (settles + nonce + balance); it consumes the
+                    // funder nonce itself, so we do NOT call `consume_nonce` here (that would double-
+                    // count). Fail-closed: an unknown/terminated contract or insufficient balance leaves
+                    // no state change.
+                    lc_fund_contract(
+                        &mut g.state,
+                        &p.from.into_array(),
+                        *id,
+                        p.value,
+                        p.nonce,
+                        timestamp,
+                    )
+                    .map(|()| Vec::new())
+                    .map_err(|e| e.to_string())
+                }
+
+                PendingKind::InvokeContract { id, trigger_ref } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            // Derive the off-chain contract text + trigger bytes from the committed refs
+                            // (the devnet seam — no prose/PII on-chain, I6); the deterministic
+                            // interpreter computes the same canonical effect for every juror so the
+                            // quorum forms reproducibly (I1/I5). `entropy` folds chain entropy into
+                            // interpreter selection.
+                            let contract = g
+                                .state
+                                .get_contract(*id)
+                                .ok_or_else(|| "no such contract".to_string())?;
+                            let text = derive_text(&contract.text_ref);
+                            let trigger = derive_trigger(trigger_ref);
+                            let entropy = block_entropy(hash, number);
+                            lc_invoke_contract(
+                                &mut g.state,
+                                &*interpreter,
+                                *id,
+                                &text,
+                                *trigger_ref,
+                                &trigger,
+                                p.from.into_array(),
+                                entropy,
+                                timestamp,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|case_id| {
+                            let mut logs = vec![contract_case_opened_log(case_id, *id, &p.from)];
+                            // The interpreter quorum may already have committed/aborted the effect in
+                            // this call (the common case with the deterministic MockInterpreter); emit
+                            // the terminal EffectCommitted/EffectAborted log if so.
+                            if let Some(case) = g.state.get_exec_case(case_id) {
+                                if let Some(log) = exec_case_outcome_log(&case) {
+                                    logs.push(log);
+                                }
+                            }
+                            logs
+                        })
+                }
+
+                PendingKind::SubmitEffect { case_id, effect } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            lc_submit_effect(
+                                &mut g.state,
+                                *case_id,
+                                &p.from.into_array(),
+                                effect.clone(),
+                                timestamp,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|_status| {
+                            // The case may have transitioned to Committed/Aborted with this submission;
+                            // emit the terminal log if so (it stays Open while gathering more votes).
+                            if let Some(case) = g.state.get_exec_case(*case_id) {
+                                exec_case_outcome_log(&case).into_iter().collect()
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                }
             };
 
             match applied {
@@ -798,6 +1141,18 @@ impl Chain {
                         input: p.input.clone(),
                         logs,
                     };
+                    index_tx(&mut g.addr_index, &tx);
+                    // EXPL-1: a committed contract effect moves value from the escrow to payees /
+                    // stream recipients that are NOT the tx's `from`/`to`/log-topics, so the per-address
+                    // index would miss them. Index the escrow + every effect-target address explicitly
+                    // so an explorer's per-account history surfaces "received 5 UBI from contract #N".
+                    let extra = contract_effect_addresses(&g.state, &p.kind);
+                    for a in extra {
+                        let entry = g.addr_index.entry(a).or_default();
+                        if entry.last() != Some(&tx.hash) {
+                            entry.push(tx.hash);
+                        }
+                    }
                     g.txs.insert(p.hash, tx.clone());
                     stored.push(tx);
                 }
@@ -838,6 +1193,7 @@ impl Chain {
                 input: Vec::new(),
                 logs: sweep_logs,
             };
+            index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
             stored.push(tx);
         }
@@ -906,6 +1262,94 @@ impl Chain {
     pub fn open_cases(&self) -> Vec<u64> {
         self.inner.lock().unwrap().state.open_cases()
     }
+
+    // ---- M4: prompt-contract reads (pure snapshots — invariants I1/I6) ----
+
+    /// A prompt contract by id (None if unknown). Pure read.
+    pub fn get_contract(&self, id: u64) -> Option<PromptContract> {
+        self.inner.lock().unwrap().state.get_contract(id)
+    }
+
+    /// An exec case by id (None if unknown). Pure read.
+    pub fn get_exec_case(&self, id: u64) -> Option<ExecCase> {
+        self.inner.lock().unwrap().state.get_exec_case(id)
+    }
+
+    /// Contracts `addr` is a declared party of, sorted by id ascending. Pure read.
+    pub fn contracts_of(&self, addr: &Address) -> Vec<PromptContract> {
+        let g = self.inner.lock().unwrap();
+        g.state
+            .contracts()
+            .into_iter()
+            .filter(|c| c.is_party(addr))
+            .collect()
+    }
+
+    // ---- EXPL-1: address index reads ----
+
+    /// The most-recent `limit` tx hashes that touched `addr` (newest first). Backs
+    /// `ubi_getAddressActivity`. Pure read of the per-address index.
+    pub fn address_activity(&self, addr: &Address, limit: usize) -> Vec<StoredTx> {
+        let g = self.inner.lock().unwrap();
+        let hashes = match g.addr_index.get(addr) {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        hashes
+            .iter()
+            .rev()
+            .take(limit)
+            .filter_map(|h| g.txs.get(h).cloned())
+            .collect()
+    }
+
+    /// An account summary for `addr` (balance at `now`, nonce, human status, #streams in/out,
+    /// #contracts the address is a party of). Backs `ubi_getAccount`. Pure read.
+    pub fn account_summary(&self, addr: &Address, now: u64) -> AccountSummary {
+        let g = self.inner.lock().unwrap();
+        let balance = g.state.balance(addr, now);
+        let nonce = g.state.nonce(addr);
+        let human_status = g.state.get_human(addr).map(|h| h.status);
+        let streams_out = g.state.outgoing(addr).len() as u64;
+        let streams_in = g.state.incoming(addr).len() as u64;
+        let contracts = g
+            .state
+            .contracts()
+            .into_iter()
+            .filter(|c| c.is_party(addr))
+            .count() as u64;
+        let tx_count = g.addr_index.get(addr).map(|v| v.len() as u64).unwrap_or(0);
+        AccountSummary {
+            address: *addr,
+            balance,
+            nonce,
+            human_status,
+            streams_out,
+            streams_in,
+            contracts,
+            tx_count,
+        }
+    }
+}
+
+/// A per-account summary returned by `ubi_getAccount` (EXPL-1): the explorer/social-hub at-a-glance
+/// card for an address. All numeric fields are exact integer reads of `(state, now)` — invariant I2.
+#[derive(Clone, Debug)]
+pub struct AccountSummary {
+    pub address: Address,
+    /// Live streaming balance at `now`, in base units.
+    pub balance: u128,
+    pub nonce: u64,
+    /// The address's proof-of-humanity status (None if never registered / Unverified).
+    pub human_status: Option<HumanStatus>,
+    /// Number of streams the address is the sender of.
+    pub streams_out: u64,
+    /// Number of streams the address is the recipient of.
+    pub streams_in: u64,
+    /// Number of prompt contracts the address is a declared party of.
+    pub contracts: u64,
+    /// Total txs that have touched the address (the per-address index length).
+    pub tx_count: u64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1168,6 +1612,24 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
             }
             Err(e) => return Err(invalid_params(format!("HumanityHub call: {e}"))),
         }
+    } else if to == CONTRACT_HUB {
+        // Parse the ContractHub selector + ABI args into a prompt-contract op (M4).
+        match parse_contract_calldata(&input) {
+            Ok(ContractOp::DeployContract { text_ref, parties }) => {
+                PendingKind::DeployContract { text_ref, parties }
+            }
+            Ok(ContractOp::FundContract { id }) => PendingKind::FundContract { id },
+            Ok(ContractOp::InvokeContract { id, trigger_ref }) => {
+                PendingKind::InvokeContract { id, trigger_ref }
+            }
+            Ok(ContractOp::SubmitEffect { case_id, effect }) => {
+                PendingKind::SubmitEffect { case_id, effect }
+            }
+            Err(ContractCalldataError::UnknownSelector(_)) => {
+                return Err(execution_reverted("unknown ContractHub selector"));
+            }
+            Err(e) => return Err(invalid_params(format!("ContractHub call: {e}"))),
+        }
     } else {
         if !input.is_empty() {
             return Err(invalid_params(
@@ -1181,9 +1643,14 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         PendingKind::Transfer { to, value }
     };
 
-    // The deposit for stream ops is a calldata arg, not msg.value (D2/Q1); the tx value is 0.
+    // The deposit for stream ops is a calldata arg, not msg.value (D2/Q1); the tx value is 0. A
+    // `fundContract` tx IS value-bearing: its `msg.value` is the escrow funding amount, threaded
+    // through as the `PendingTx.value` (the runtime moves it from the funder into the escrow account).
     let value: u128 = match &kind {
         PendingKind::Transfer { value, .. } => *value,
+        PendingKind::FundContract { .. } => value_u256
+            .try_into()
+            .map_err(|_| invalid_params("value exceeds u128 base-unit range"))?,
         _ => 0,
     };
 
@@ -1459,6 +1926,176 @@ fn juror_view_json(j: &Juror) -> Value {
 }
 
 // ---------------------------------------------------------------------------------------------
+// M4 prompt-contract JSON shapes (spec 04 §"RPC / interfaces") + the EXPL-1 indexer reads.
+// ---------------------------------------------------------------------------------------------
+
+/// String name for a [`ContractStatus`].
+fn contract_status_str(s: ContractStatus) -> &'static str {
+    match s {
+        ContractStatus::Active => "Active",
+        ContractStatus::Terminated => "Terminated",
+    }
+}
+
+/// Render a single canonical [`Op`] as a tagged JSON object (so a wallet/explorer can show "Transfer
+/// 5 UBI to 0x…" without re-decoding the ops blob). Amounts are 0x-hex base units; addresses/hashes
+/// 0x-hex; ids numbers.
+fn op_json(op: &Op) -> Value {
+    match op {
+        Op::Transfer { to, amount } => json!({
+            "type": "Transfer", "to": addr_hex(to), "amount": hex_u128(*amount),
+        }),
+        Op::Refund { party, amount } => json!({
+            "type": "Refund", "party": addr_hex(party), "amount": hex_u128(*amount),
+        }),
+        Op::OpenStream { to, rate, deposit } => json!({
+            "type": "OpenStream", "to": addr_hex(to),
+            "rate": hex_u128(*rate), "deposit": hex_u128(*deposit),
+        }),
+        Op::StopStream { id } => json!({ "type": "StopStream", "id": id }),
+        Op::SetVar { key, value } => json!({
+            "type": "SetVar", "key": hash_hex(key), "value": hash_hex(value),
+        }),
+        Op::Abort { reason_hash } => json!({
+            "type": "Abort", "reason_hash": hash_hex(reason_hash),
+        }),
+    }
+}
+
+/// Render a [`CanonicalEffect`] as `{ops: [...], effect_hash}` — the quorum-equality key plus the
+/// human-readable op list.
+fn effect_json(e: &CanonicalEffect) -> Value {
+    json!({
+        "ops": e.ops.iter().map(op_json).collect::<Vec<_>>(),
+        "effect_hash": hash_hex(&e.effect_hash),
+    })
+}
+
+/// Render a [`PromptContract`] into the `ubi_getContract` JSON shape: escrow (0x-hex base units), the
+/// declared parties, the `text_ref` commitment, the contract-local vars, the derived escrow address,
+/// and status. No prose/PII ever (I6 — only the `text_ref` commitment).
+fn contract_view_json(c: &PromptContract) -> Value {
+    let mut vars: Vec<([u8; 32], [u8; 32])> = c.vars.iter().map(|(k, v)| (*k, *v)).collect();
+    vars.sort_unstable();
+    let vars_json: Vec<Value> = vars
+        .iter()
+        .map(|(k, v)| json!({ "key": hash_hex(k), "value": hash_hex(v) }))
+        .collect();
+    json!({
+        "id": c.id,
+        "escrow": hex_u128(c.escrow),
+        "escrow_address": addr_hex(&ubi2_runtime::contract_address(c.id)),
+        "parties": c.parties.iter().map(addr_hex).collect::<Vec<_>>(),
+        "text_ref": hash_hex(&c.text_ref),
+        "vars": vars_json,
+        "status": contract_status_str(c.status),
+    })
+}
+
+/// Render the exec-case `status` as `{type, ...}` so a `Committed` carries its canonical effect.
+fn exec_status_json(s: &ExecStatus) -> Value {
+    match s {
+        ExecStatus::Open => json!({ "type": "Open" }),
+        ExecStatus::Committed(e) => json!({ "type": "Committed", "effect": effect_json(e) }),
+        ExecStatus::Aborted => json!({ "type": "Aborted" }),
+    }
+}
+
+/// Render an [`ExecCase`] into the `ubi_getExecCase` JSON shape: the contract, trigger commitment,
+/// invoker, the interpreter jury, each submitted effect, and the case status (with the committed
+/// effect if any).
+fn exec_case_view_json(c: &ExecCase) -> Value {
+    let effects: Vec<Value> = c
+        .effects
+        .iter()
+        .map(|(interp, e)| json!({ "interpreter": addr_hex(interp), "effect": effect_json(e) }))
+        .collect();
+    json!({
+        "id": c.id,
+        "contract": c.contract,
+        "trigger_ref": hash_hex(&c.trigger_ref),
+        "invoker": addr_hex(&c.invoker),
+        "jury": c.jury.iter().map(addr_hex).collect::<Vec<_>>(),
+        "effects": effects,
+        "status": exec_status_json(&c.status),
+        "opened_at": c.opened_at,
+    })
+}
+
+/// Classify a stored tx by the hub it targets (its `to`) + selector, for the explorer's per-address
+/// activity feed. Returns a stable string `kind` an explorer can label rows with.
+fn tx_kind_str(tx: &StoredTx) -> &'static str {
+    let to = match tx.to {
+        Some(a) => a,
+        None => return "Create",
+    };
+    if to == STREAM_HUB {
+        match parse_calldata(&tx.input) {
+            Ok(StreamOp::Open { .. }) => "OpenStream",
+            Ok(StreamOp::Stop { .. }) => "StopStream",
+            _ => "StreamHub",
+        }
+    } else if to == HUMANITY_HUB {
+        match parse_humanity_calldata(&tx.input) {
+            Ok(HumanityOp::RequestVerification { .. }) => "RequestVerification",
+            Ok(HumanityOp::Vouch { .. }) => "Vouch",
+            Ok(HumanityOp::Challenge { .. }) => "Challenge",
+            Ok(HumanityOp::SubmitVerdict { .. }) => "SubmitVerdict",
+            // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
+            _ => "HumanitySystem",
+        }
+    } else if to == CONTRACT_HUB {
+        match parse_contract_calldata(&tx.input) {
+            Ok(ContractOp::DeployContract { .. }) => "DeployContract",
+            Ok(ContractOp::FundContract { .. }) => "FundContract",
+            Ok(ContractOp::InvokeContract { .. }) => "InvokeContract",
+            Ok(ContractOp::SubmitEffect { .. }) => "SubmitEffect",
+            _ => "ContractHub",
+        }
+    } else if tx.input.is_empty() {
+        "Transfer"
+    } else {
+        "Call"
+    }
+}
+
+/// Render one activity row for `subject` (the queried address): the tx hash, block, kind, the
+/// counterparty (the *other* side from `subject`'s perspective), and value. Backs
+/// `ubi_getAddressActivity`.
+fn activity_row_json(tx: &StoredTx, subject: &Address) -> Value {
+    // The counterparty is whichever of from/to is not the subject (default to `to`).
+    let counterparty = if &tx.from.into_array() == subject {
+        tx.to.map(|a| a.into_array())
+    } else {
+        Some(tx.from.into_array())
+    };
+    json!({
+        "hash": hex_b256(&tx.hash),
+        "blockNumber": hex_u64(tx.block_number),
+        "kind": tx_kind_str(tx),
+        "from": hex_addr(&tx.from),
+        "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
+        "counterparty": counterparty.map(|a| addr_hex(&a)).map(Value::String).unwrap_or(Value::Null),
+        "value": hex_u256(tx.value),
+        "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
+    })
+}
+
+/// Render an [`AccountSummary`] into the `ubi_getAccount` JSON shape.
+fn account_summary_json(s: &AccountSummary) -> Value {
+    json!({
+        "address": addr_hex(&s.address),
+        "balance": hex_u128(s.balance),
+        "nonce": hex_u64(s.nonce),
+        "human_status": s.human_status.map(human_status_str).map(Value::from).unwrap_or(Value::Null),
+        "streams_out": s.streams_out,
+        "streams_in": s.streams_in,
+        "contracts": s.contracts,
+        "tx_count": s.tx_count,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------------------------
 
@@ -1667,6 +2304,88 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             .map(|c| case_view_json(&c))
             .collect();
         Ok::<_, ErrorObjectOwned>(json!(cases))
+    })
+    .unwrap();
+
+    // ---- M4 prompt-contract reads (ubi_*) ----
+
+    // ubi_getContract(id) → the contract (escrow, parties, text_ref, vars, status), or null. `id`
+    // accepts hex or number.
+    m.register_method("ubi_getContract", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [id]"))?;
+        let id = parse_stream_id_param(seq.first())?;
+        match ctx.get_contract(id) {
+            Some(c) => Ok::<_, ErrorObjectOwned>(contract_view_json(&c)),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // ubi_getExecCase(id) → the exec case (jury, submitted effects, status), or null. `id` hex/number.
+    m.register_method("ubi_getExecCase", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [id]"))?;
+        let id = parse_stream_id_param(seq.first())?;
+        match ctx.get_exec_case(id) {
+            Some(c) => Ok::<_, ErrorObjectOwned>(exec_case_view_json(&c)),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // ubi_getContractsOf(address) → the contracts the address is a declared party of, sorted by id.
+    m.register_method("ubi_getContractsOf", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        let contracts: Vec<Value> = ctx
+            .contracts_of(&addr)
+            .iter()
+            .map(contract_view_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(contracts))
+    })
+    .unwrap();
+
+    // ---- EXPL-1 address indexer reads (ubi_*) ----
+
+    // ubi_getAddressActivity(address, limit?) → the most-recent txs touching the address (newest
+    // first). `limit` (param 2, hex or number) defaults to 50, capped at 1000.
+    m.register_method("ubi_getAddressActivity", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [address, limit?]"))?;
+        let raw = seq
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("missing address param"))?;
+        let bytes = decode_hex(raw).ok_or_else(|| invalid_params("bad address hex"))?;
+        if bytes.len() != 20 {
+            return Err(invalid_params("address must be 20 bytes"));
+        }
+        let mut addr = [0u8; 20];
+        addr.copy_from_slice(&bytes);
+        let limit = match seq.get(1) {
+            Some(v) if !v.is_null() => parse_stream_id_param(Some(v))?,
+            _ => 50,
+        }
+        .clamp(1, 1000) as usize;
+        let rows: Vec<Value> = ctx
+            .address_activity(&addr, limit)
+            .iter()
+            .map(|tx| activity_row_json(tx, &addr))
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(rows))
+    })
+    .unwrap();
+
+    // ubi_getAccount(address) → an at-a-glance account summary (balance, nonce, human status,
+    // #streams in/out, #contracts, #txs).
+    m.register_method("ubi_getAccount", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        let summary = ctx.account_summary(&addr, now_secs());
+        Ok::<_, ErrorObjectOwned>(account_summary_json(&summary))
     })
     .unwrap();
 

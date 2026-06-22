@@ -4,7 +4,7 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M3 — AI Proof-of-Humanity · **M1 + M2 shipped (cycles 1–2) ✅**
+**Current milestone:** M5 — Economics & Governance · **M1–M4 shipped (cycles 1–4) ✅**
 
 | Field | Meaning |
 |---|---|
@@ -16,13 +16,15 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 
 ## 🔜 Backlog
 
-**M3 — AI Proof-of-Humanity** ([spec](specs/03-proof-of-humanity.md)) — social vouching + AI jury, full uniqueness
-- **M3-T6 · qa-engineer** — Tests for the 8 M3 acceptance criteria (MockOracle). *Accepts:* each → passing test.
-- **M3-T7 · reliability-engineer** — Quorum-verdict determinism + emission reproducibility under `Verified`
-  gating + lifecycle state-machine consistency. *Accepts:* two nodes agree; no nondeterminism.
-- **M3-T8 · security-engineer** — Threat model + pentest: juror collusion, vouch farms/sybil, challenge
-  griefing, oracle prompt-injection, replay, privacy leakage. *Accepts:* no open High/Critical.
-- **M3-T9 · release-engineer** — Seed-set bootstrap script + CI green. *(likely inline)*
+**M4 — Prompt Contracts** ([spec](specs/04-prompt-contracts.md)) — NL contracts, AI interpreter quorum (reuses M3)
+- **M4-T5 · interface-engineer** — Consolidate the app into the **UBI on-ramp**: wallet + **full block explorer**
+  (all blocks/txs/accounts, search, per-account history) + **social/PoH hub** (status, vouches in/out,
+  vouch/challenge, pending cases, jurors) + **contracts** (author/deploy/fund/invoke). *Accepts:* full flow against devnet; builds green.
+- **M4-T6 · qa-engineer** — Tests for the 6 M4 acceptance criteria (MockInterpreter). *Accepts:* each → passing test.
+- **M4-T7 · reliability-engineer** — Interpreter-quorum determinism + effect-application reproducibility + abort-on-split. *Accepts:* two nodes agree.
+- **M4-T8 · security-engineer** — Threat model + pentest: over-authority/escrow drain, interpreter prompt-injection,
+  quorum/abort integrity, replay, privacy. *Accepts:* no open High/Critical.
+- **M4-T9 · release-engineer** — CI + demo contract. *(likely inline)*
 
 **Follow-ups carried from the gates — address before they bite**
 - **FU-1 · protocol/security** — Mempool/registry hardening before any multi-node / non-localhost deploy:
@@ -44,6 +46,18 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-8 · protocol/security (M5)** — Juror staking + rotation (M3 security Finding C, the fixed non-rotatable
   3-juror quorum) and the re-gate's LOW (system-scan cooldown can't auto-re-file under a fooled jury).
   *Source:* `docs/reports/security-m3.md`.
+- **FU-9 · architect/protocol (before mainnet)** — Prompt-contract **stranded-funds desync** (M4 security
+  Medium): a *plain* transfer to a contract's escrow **address** raises the account balance but not the
+  tracked `contract.escrow`, so the funds are unmovable (footgun, not theft — can't over-draw/halt). Our app
+  funds via `fundContract` so it doesn't hit this. Architect picks the fix (preferred: derive `contract.escrow`
+  from `balance(escrow_addr)` — single source of truth; or reject plain transfers into ContractHub space).
+  *Source:* `docs/reports/security-m4.md`.
+- **FU-10 · protocol** — Per-invoke O(N log N) full exec-case scan at block production (M4 security Low):
+  thread the `case_id` `invoke_contract` returns through `PendingKind::InvokeContract` instead of re-deriving
+  by full-scan; also fixes effect-address mis-attribution when two invokes for one contract share a block.
+- **FU-11 · protocol** — M4 Info cleanups: reject `value`-bearing non-fund ContractHub txs at ingestion
+  (least-surprise); fix the `fnv1a_256` "eight lanes" docstring (4 lanes); document `MemState::accounts()`/
+  `streams()` as unsorted (not on a consensus path today).
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -59,7 +73,7 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-_(none — M3 shipped; M4 next)_
+_(none — M4 shipped; M5 next)_
 
 ## 👀 Review (awaiting gates)
 _(none)_
@@ -68,6 +82,13 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **M4 — Prompt Contracts · SHIPPED (cycle 4).** All gates green. ([spec](specs/04-prompt-contracts.md))
+  - **M4-T1 · architect** — Spec: NL contracts → canonical **effect language** executed by an **interpreter quorum** (reuses M3), escrow/least-authority (I6), deterministic abort (I1/I4), `ContractHub`, the app-consolidation.
+  - **M4-T2 · protocol-engineer** — Contract runtime: effect language + escrow/least-authority **atomic apply**, `PromptContract`/`ExecCase`, generalized `quorum_tally` (shared w/ M3), `ContractInterpreter` trait + `MockInterpreter`, derived escrow addresses.
+  - **M4-T3 · ai-engineer** — `ClaudeInterpreter` (structured-output effect schema, temp-0, injection-fenced; `ANTHROPIC_API_KEY`-gated, fixture-tested).
+  - **M4-T4 · protocol-engineer** — `ContractHub` (`0x…5043`) txs + `ubi_getContract`/`getExecCase`/`getContractsOf` + **EXPL-1 address indexer** (`ubi_getAddressActivity`/`getAccount`). Orchestrator-verified live (deploy→fund→invoke→commit).
+  - **M4-T5 · interface-engineer** — The consolidated **UBI app**: nav + Wallet · Explorer (search/account/activity) · Identity (social/PoH hub) · Contracts (author→deploy→fund→invoke); SDK `contracts.ts` + `explorer.ts`.
+  - **M4-T6 · qa** — ✅ 6/6 acceptance criteria → tests. **M4-T7 · reliability** — ✅ interpreter-quorum determinism + atomic-apply reproducibility (10k/5k iters). **M4-T8 · security** — ✅ PASS, no High/Critical; escrow/least-authority + injection + quorum/abort + replay + privacy intact (6 PoCs). Reports in [`docs/reports/`](reports/). 258 tests.
 - **M3 — AI Proof-of-Humanity · SHIPPED (cycle 3).** All gates green. ([spec](specs/03-proof-of-humanity.md))
   - **M3-T1 · architect** — Spec: social vouching + AI-jury quorum, on-chain lifecycle, `HumanityOracle` trait + determinism (I1), privacy (I6), 8 acceptance criteria.
   - **M3-T2 · protocol-engineer** — On-chain substrate: `Human`/`Vouch`/`Case`/`Juror` registries, deterministic lifecycle state machine, quorum tally, vouch graph, `Verified` emission gating, `MockOracle`.

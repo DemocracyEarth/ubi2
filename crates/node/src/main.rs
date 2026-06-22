@@ -103,6 +103,14 @@ async fn main() -> anyhow::Result<()> {
     //   juror #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 (Anvil acct #1)
     //   juror #2: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC (Anvil acct #2)
     //   juror #3: 0x90F79bf6EB2c4f870365E785982E1f101E93b906 (Anvil acct #3)
+    //
+    // M4 (board M4-T4 §4): the SAME registered jurors double as the prompt-contract **interpreter
+    // quorum** — `invoke_contract` selects its interpreters from `active_jurors()` exactly the way a
+    // case selects its jury (one shared verifier/interpreter set; spec 04 §"reuses the M3 substrate").
+    // The devnet runs the deterministic `MockInterpreter` (the `Chain::new` default), so a contract
+    // invocation commits its canonical effect end-to-end with no model calls (I5). No NEW genesis seed
+    // is needed for M4 — the M3 juror set is the interpreter set, and contract escrows live in the
+    // ContractHub address space derived purely from the contract id (no per-contract seeding).
     for juror in DEVNET_JURORS {
         chain.register_juror(&juror.into_array(), 0);
     }
@@ -125,6 +133,10 @@ async fn main() -> anyhow::Result<()> {
             hex::encode(juror.as_slice())
         );
     }
+    // M4: the reserved hub system addresses a wallet sends write ops to (all derived from ASCII tags).
+    tracing::info!("  StreamHub         : 0x0000000000000000000000000000000000005742 (\"WB\")");
+    tracing::info!("  HumanityHub       : 0x0000000000000000000000000000000000005048 (\"PH\")");
+    tracing::info!("  ContractHub       : 0x0000000000000000000000000000000000005043 (\"PC\")");
     tracing::info!("  block tick        : {block_ms} ms");
 
     // Block-production loop: tick every `block_ms`, mine pending txs, advance height + newHeads.

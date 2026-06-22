@@ -400,10 +400,106 @@ impl SplitMix64 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tally — the deterministic quorum logic (spec I1). Pure function, no state, fully testable.
+// Generic quorum tally — the deterministic consensus core, shared by M3 (CanonicalVerdict) and
+// M4 (CanonicalEffect). One audited path so both milestones agree exactly (spec 04 §"Reuse").
 // ---------------------------------------------------------------------------------------------
 
-/// The outcome of tallying a case's submitted verdicts against `quorum`.
+/// The single trait the generic [`quorum_tally`] needs of any item it tallies (M3
+/// [`CanonicalVerdict`], M4 `CanonicalEffect`): a notion of "the same effect for quorum purposes"
+/// and a stable, order-independent key to group identical items by.
+///
+/// `Key` must be `Eq + Clone` and capture **exactly** what makes two items quorum-equal — never any
+/// informational field (e.g. M3's `reasons_hash`, M4's off-chain reason) — so the informational part
+/// can never split an otherwise-agreeing quorum (I1).
+pub trait QuorumEq: Copy {
+    /// The grouping key. Two items reach the same quorum group iff their keys are equal.
+    type Key: Eq + Clone;
+    /// The order-independent key used to group identical items in a tally.
+    fn quorum_key(&self) -> Self::Key;
+    /// Whether this item, *at quorum*, is a **committable** effect. `false` ⇒ reaching quorum on it
+    /// escalates/aborts rather than commits (M3 `Uncertain`; M4 has no such item — every effect,
+    /// including `Abort`, commits and is then validated by the runtime). Fail-closed (I4).
+    fn is_committable(&self) -> bool;
+}
+
+/// The generic outcome of tallying submitted items of type `T` against `quorum`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuorumOutcome<T> {
+    /// Fewer than `quorum` items for any single key so far, and it's still possible to reach quorum
+    /// with the remaining jurors — keep waiting.
+    Pending,
+    /// `>= quorum` jurors produced the *same* item (by `quorum_key`) **and** it `is_committable`.
+    Committed(T),
+    /// Quorum can no longer be reached for any item (a split), or the leading item reached quorum but
+    /// is not committable — abort/escalate (I4: fail closed, never a coin-flip).
+    NoQuorum,
+}
+
+/// Tally `items` over a jury of size `jury_size`, requiring `quorum` matching items (by
+/// [`QuorumEq::quorum_key`]). Deterministic and order-independent — the audited consensus core.
+///
+///   * if any group reaches `quorum` **and** its exemplar `is_committable` ⇒ `Committed(exemplar)`;
+///   * if a group reaches `quorum` but is **not** committable ⇒ `NoQuorum` (escalate/abort);
+///   * else if no group *can still* reach `quorum` given the unused jurors ⇒ `NoQuorum` (split);
+///   * else ⇒ `Pending`.
+///
+/// For `jury_size = 3, quorum = 2` at most one group can ever reach quorum, so the "first group at
+/// quorum" is unambiguous; for larger juries quorum > N/2 keeps it unique too.
+pub fn quorum_tally<T: QuorumEq>(
+    items: &[(Address, T)],
+    jury_size: usize,
+    quorum: usize,
+) -> QuorumOutcome<T> {
+    // Count identical items by their quorum key deterministically: an ordered (key, count, exemplar)
+    // list — no hash-iteration ordering on the consensus path.
+    let mut groups: Vec<(T::Key, usize, T)> = Vec::new();
+    for (_, item) in items {
+        let key = item.quorum_key();
+        if let Some(g) = groups.iter_mut().find(|(k, _, _)| *k == key) {
+            g.1 += 1;
+        } else {
+            groups.push((key, 1, *item));
+        }
+    }
+
+    // A group at quorum: commit iff its exemplar is committable, else abort.
+    if let Some((_, _, exemplar)) = groups.iter().find(|(_, c, _)| *c >= quorum) {
+        return if exemplar.is_committable() {
+            QuorumOutcome::Committed(*exemplar)
+        } else {
+            QuorumOutcome::NoQuorum
+        };
+    }
+
+    // No group at quorum yet. Can any still reach it? `unused` jurors haven't voted.
+    let cast = items.len();
+    let unused = jury_size.saturating_sub(cast);
+    let best = groups.iter().map(|(_, c, _)| *c).max().unwrap_or(0);
+    if best + unused < quorum {
+        QuorumOutcome::NoQuorum
+    } else {
+        QuorumOutcome::Pending
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// M3 tally — the proof-of-humanity verdict tally, now a thin wrapper over `quorum_tally`.
+// ---------------------------------------------------------------------------------------------
+
+/// M3 [`CanonicalVerdict`] as a tallyable item: grouped by `(verdict, confidence)`; an `Uncertain`
+/// verdict is **not committable** (reaching quorum on it escalates — I4).
+impl QuorumEq for CanonicalVerdict {
+    type Key = (Verdict, Confidence);
+    fn quorum_key(&self) -> Self::Key {
+        (self.verdict, self.confidence)
+    }
+    fn is_committable(&self) -> bool {
+        !matches!(self.verdict, Verdict::Uncertain)
+    }
+}
+
+/// The outcome of tallying a case's submitted verdicts against `quorum` (M3 alias over
+/// [`QuorumOutcome`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tally {
     /// Fewer than `quorum` votes for any single verdict so far, and it's still possible to reach
@@ -416,46 +512,14 @@ pub enum Tally {
     Escalated,
 }
 
-/// Tally `votes` over a jury of size `jury_size`, requiring `quorum` matching verdicts.
-///
-/// Deterministic: groups verdicts by `(verdict, confidence)` (ignoring the informational
-/// `reasons_hash`), and:
-///   * if any group reaches `quorum` **and** is `Human`/`Sybil` ⇒ `Committed` (the first such group
-///     by canonical key order — but quorum is exclusive for `size=3, quorum=2`, so at most one group
-///     can ever reach it; for larger juries ties are impossible past quorum on a fixed jury);
-///   * if a group reaches `quorum` but is `Uncertain` ⇒ `Escalated`;
-///   * else if no group *can still* reach `quorum` given the unused jurors ⇒ `Escalated` (split);
-///   * else ⇒ `Pending`.
+/// Tally `votes` over a jury of size `jury_size`, requiring `quorum` matching verdicts (M3). A thin
+/// wrapper over the generic [`quorum_tally`] so M3 and M4 share one audited consensus path: an
+/// `Uncertain` verdict at quorum is non-committable and maps to `Escalated` (I4).
 pub fn tally(votes: &[(Address, CanonicalVerdict)], jury_size: usize, quorum: usize) -> Tally {
-    // Count identical canonical verdicts (verdict + confidence) deterministically: build an ordered
-    // list of (key, count, exemplar) — no hash-iteration ordering on the consensus path.
-    let mut groups: Vec<((Verdict, Confidence), usize, CanonicalVerdict)> = Vec::new();
-    for (_, v) in votes {
-        let key = v.quorum_key();
-        if let Some(g) = groups.iter_mut().find(|(k, _, _)| *k == key) {
-            g.1 += 1;
-        } else {
-            groups.push((key, 1, *v));
-        }
-    }
-
-    // A group at quorum: commit (Human/Sybil) or escalate (Uncertain).
-    if let Some((_, _, exemplar)) = groups.iter().find(|(_, c, _)| *c >= quorum) {
-        return match exemplar.verdict {
-            Verdict::Uncertain => Tally::Escalated,
-            Verdict::Human | Verdict::Sybil => Tally::Committed(*exemplar),
-        };
-    }
-
-    // No group at quorum yet. Can any still reach it? `unused` jurors haven't voted.
-    let cast = votes.len();
-    let unused = jury_size.saturating_sub(cast);
-    let best = groups.iter().map(|(_, c, _)| *c).max().unwrap_or(0);
-    if best + unused < quorum {
-        // Even handing every remaining juror to the current leader can't reach quorum ⇒ split.
-        Tally::Escalated
-    } else {
-        Tally::Pending
+    match quorum_tally(votes, jury_size, quorum) {
+        QuorumOutcome::Pending => Tally::Pending,
+        QuorumOutcome::Committed(v) => Tally::Committed(v),
+        QuorumOutcome::NoQuorum => Tally::Escalated,
     }
 }
 
