@@ -58,6 +58,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-11 · protocol** — M4 Info cleanups: reject `value`-bearing non-fund ContractHub txs at ingestion
   (least-surprise); fix the `fnv1a_256` "eight lanes" docstring (4 lanes); document `MemState::accounts()`/
   `streams()` as unsorted (not on a consensus path today).
+- **FU-12 · protocol/security** — Close the residual public-hostname **DNS-rebinding TOCTOU** on the OpenAI
+  base_url (Info): resolve-once then dial-by-IP (pin the validated IP into the reqwest connector) so a
+  rebind in the validate→dial window can't reach an internal host. *Source:* `docs/reports/security-c5.md`.
+- **FU-13 · protocol** — Cycle-5 reliability Info: canonicalize `MemState::incoming()/outgoing()` stream-index
+  ordering before any multi-node consensus compares snapshots; tidy the zero-balance TREASURY entry left by a
+  rolled-back zero-gas onboarding op. *Source:* `docs/reports/reliability-c5.md`.
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -82,6 +88,13 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **Cycle 5 — Productionize & polish · SHIPPED.** All gates green (342 tests). Native **UBI gas fees** on every
+  tx (treasury `0x…5542`, per-kind gas, onboarding fee-exempt — fixes the MetaMask vouch/deploy stall; seeds M5
+  fee-recycling); a **configurable LLM backend** (Anthropic/Ollama/OpenAI) with a loopback-only oracle-config
+  RPC; a **deep block explorer** (`ubi_getBlock`/`ubi_getTransaction` fully decoded); and the **"obsidian glass"
+  redesign** (wallet + explorer + social + contracts + Settings). Security gate caught + the loop fixed a
+  CRITICAL key-exfil (`base_url` SSRF) + 2 HIGH (admin CSRF/rebinding, live-backend DoS) before merge.
+  Reports in [`docs/reports/`](reports/) (`*-c5.md`). Follow-ups: FU-12, FU-13.
 - **M4 — Prompt Contracts · SHIPPED (cycle 4).** All gates green. ([spec](specs/04-prompt-contracts.md))
   - **M4-T1 · architect** — Spec: NL contracts → canonical **effect language** executed by an **interpreter quorum** (reuses M3), escrow/least-authority (I6), deterministic abort (I1/I4), `ContractHub`, the app-consolidation.
   - **M4-T2 · protocol-engineer** — Contract runtime: effect language + escrow/least-authority **atomic apply**, `PromptContract`/`ExecCase`, generalized `quorum_tally` (shared w/ M3), `ContractInterpreter` trait + `MockInterpreter`, derived escrow addresses.
