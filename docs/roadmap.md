@@ -43,12 +43,16 @@ vouching + AI-jury quorum (`HumanityHub`), deterministic on-chain lifecycle, rea
 challenge-spam DoS. All gates green. Follow-ups: FU-7 (juror daemon for the real oracle on consensus),
 FU-8 (M5 juror staking/rotation).
 
-## M4 — Prompt Contracts 🚧 *(current)*
+## M4 — Prompt Contracts ✅ *(shipped cycle 4)*
 **Goal:** natural-language contracts parsed into canonical effects and committed by interpreter quorum,
 with deterministic abort on disagreement. **Exit:** a plain-language contract executes reproducibly
-across nodes; a prompt-injection attempt fails closed. **Depends on:** M2, M3.
+across nodes; a prompt-injection attempt fails closed. **Depends on:** M2, M3. **Shipped:** a bounded
+canonical **effect language** + escrow/least-authority **atomic apply** (I4/I6), an **interpreter quorum**
+reusing the M3 tally (`ContractHub`), the `ClaudeInterpreter` (+ `MockInterpreter` for the devnet), and the
+consolidated **UBI app** (wallet + block explorer + social/PoH hub + contracts). All gates green; injection
+fails closed. Follow-ups: FU-9 (stranded-funds desync, before mainnet), FU-10/FU-11.
 
-## M5 — Economics & Governance ⬜
+## M5 — Economics & Governance 🚧 *(current)*
 **Goal:** demurrage + fee recycling live; minimal quadratic-delegation governance over bounded
 parameters. **Exit:** demurrage and recycling demonstrated on devnet; a parameter change passes via
 quadratic delegation. **Depends on:** M1–M4.
