@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ubi2 — wallet & explorer",
+  title: "UBI — wallet & explorer",
   description: "A UBI blockchain where humans are verified by AI and money flows as a stream.",
 };
 

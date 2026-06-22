@@ -445,9 +445,9 @@ pub fn render_svg(card: &CardData) -> String {
     };
 
     format!(
-        r##"<svg width="100%" viewBox="0 0 680 540" role="img" xmlns="http://www.w3.org/2000/svg"><title>ubi2 stream #{id}</title><desc>{from} to {to}, {rate} UBI/hr, {streamed} of {deposit} UBI, {pct}%, {status}.</desc>
+        r##"<svg width="100%" viewBox="0 0 680 540" role="img" xmlns="http://www.w3.org/2000/svg"><title>UBI stream #{id}</title><desc>{from} to {to}, {rate} UBI/hr, {streamed} of {deposit} UBI, {pct}%, {status}.</desc>
 <rect x="90" y="20" width="500" height="500" rx="22" fill="#0b0b0f" stroke="#2a2a36"/>
-<text x="124" y="80" font-family="ui-sans-serif,system-ui,sans-serif" font-size="30" font-weight="700" fill="#e8e8ec">ubi<tspan fill="#6ee7b7">2</tspan></text>
+<text x="124" y="80" font-family="ui-sans-serif,system-ui,sans-serif" font-size="30" font-weight="700" fill="#6ee7b7">UBI</text>
 <text x="124" y="102" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#9a9aa6">stream #{id} · {side}</text>
 <rect x="454" y="54" width="102" height="30" rx="15" fill="{status_bg}" stroke="{status_stroke}"/><circle cx="472" cy="69" r="4" fill="{status_fg}"/><text x="484" y="73" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="500" fill="{status_fg}">{status}</text>
 <line x1="124" y1="120" x2="556" y2="120" stroke="#1b1b24"/>
@@ -462,7 +462,7 @@ pub fn render_svg(card: &CardData) -> String {
 <text x="312" y="386" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Started</text><text x="312" y="408" font-size="14" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{started}</text>
 <text x="556" y="386" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Ends</text><text x="556" y="408" text-anchor="end" font-size="14" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{ends}</text>
 <line x1="124" y1="442" x2="556" y2="442" stroke="#1b1b24"/>
-<text x="124" y="470" font-size="12" fill="#6f6f78" font-family="ui-monospace,Menlo,monospace">real-time stream · chain 21826</text><text x="556" y="470" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">ubi2 Streams</text></svg>"##
+<text x="124" y="470" font-size="12" fill="#6f6f78" font-family="ui-monospace,Menlo,monospace">real-time stream · chain 21826</text><text x="556" y="470" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">UBI Streams</text></svg>"##
     )
 }
 
@@ -484,9 +484,9 @@ pub fn render_token_uri(card: &CardData) -> String {
         _ => card.t_end,
     };
 
-    let name = format!("ubi2 Stream #{}", card.id);
+    let name = format!("UBI Stream #{}", card.id);
     let description = format!(
-        "A real-time UBI stream from {from_full} to {to_full} at {} UBI/hr. Fully on-chain on ubi2.",
+        "A real-time UBI stream from {from_full} to {to_full} at {} UBI/hr. Fully on-chain on UBI.",
         fmt_rate_per_hour(card.rate)
     );
 
@@ -643,7 +643,7 @@ mod tests {
         let uri = render_token_uri(&card);
         let b64 = uri.strip_prefix("data:application/json;base64,").unwrap();
         let json = String::from_utf8(B64.decode(b64).unwrap()).unwrap();
-        assert!(json.contains("\"name\":\"ubi2 Stream #7\""));
+        assert!(json.contains("\"name\":\"UBI Stream #7\""));
         assert!(json.contains("\"attributes\":["));
         assert!(json.contains("\"Outgoing\""));
         let img_marker = "\"image\":\"data:image/svg+xml;base64,";
