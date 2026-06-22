@@ -37,6 +37,13 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-6 · protocol/interface** — Stream-rate display precision: a "1 UBI/hr" stream flows at
   ⌊1e18/3600⌋/sec ≈ 0.99999…/hr ([ADR-0003](specs/adr/0003-streaming-and-stream-nfts.md)); decide card
   rounding + a finer `rate` granularity. *Source:* M2-T4 note. (TS test runner for the SDK/wallet too.)
+- **FU-7 · ai/protocol** — Juror daemon for the REAL oracle on the consensus path: the node ships the
+  deterministic `MockOracle`; `ClaudeOracle` exists + is fixture-tested but isn't wired into consensus
+  (by design — the correct end-state is off-chain juror processes that call Claude and submit signed
+  `submitVerdict` txs, not the node grading inline). Build the juror daemon (`ANTHROPIC_API_KEY`).
+- **FU-8 · protocol/security (M5)** — Juror staking + rotation (M3 security Finding C, the fixed non-rotatable
+  3-juror quorum) and the re-gate's LOW (system-scan cooldown can't auto-re-file under a fooled jury).
+  *Source:* `docs/reports/security-m3.md`.
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -52,30 +59,23 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-- **M3-T8-fix · protocol-engineer** — Harden `challenge()` against the security HIGH (Finding A) + bundle
-  Finding B / F-REL-1 / F-REL-2 / Finding D, then re-gate. *(cycle 3)*
+_(none — M3 shipped; M4 next)_
 
 ## 👀 Review (awaiting gates)
-- **M3-T2/T3/T4/T5 · protocol / ai / interface** — Full M3 implementation, **orchestrator-verified** (120
-  cargo tests, fmt + clippy clean; pnpm build + typecheck clean):
-  - **T2 substrate** (committed `21d0431`): registries, deterministic lifecycle, quorum tally, vouch graph,
-    `Verified` emission gating, `MockOracle`.
-  - **T3 oracle** (`crates/oracle`): `ClaudeOracle` — real `HumanityOracle` via the Anthropic API with forced
-    structured output, temp-0 determinism, injection-resistant prompts; gated on `ANTHROPIC_API_KEY`, fixture-tested.
-  - **T4 RPC/node**: `HumanityHub` (`0x…5048`) tx parsing + `ubi_*` reads + block-time lifecycle + auto-finalize
-    sweep + receipt logs + seeded jurors; `m3_acceptance` drives verify→stream and sybil→revoke over the wire.
-  - **T5 wallet/SDK**: a "Proof of Humanity" card (status, vouches, apply/vouch/challenge, pending cases) + SDK helpers.
+_(none)_
 
 ## ⛔ Blocked
-- **M3-T8 · security gate FAIL (HIGH, Finding A)** — `lifecycle.rs::challenge` ignores `_challenger` (no
-  auth), needs no bond, has no per-subject cap/cooldown; an Open challenge stalls `finalize_registration`
-  forever → any address (gas only) blocks any human from verifying/streaming and flips Verified→Challenged.
-  PoC `crates/runtime/tests/sec_m3_poc.rs` + live tx on devnet. Fix in progress (M3-T8-fix). Do not advance on red.
-  *Source:* [`docs/reports/security-m3.md`](reports/security-m3.md).
+_(none)_
 
 ## ✅ Done
-- **M3-T1 · architect** — M3 proof-of-humanity spec: social vouching + AI-jury quorum, on-chain lifecycle,
-  `HumanityOracle` trait + determinism (I1), privacy (I6), 8 acceptance criteria. *(cycle 3 — [spec](specs/03-proof-of-humanity.md))*
+- **M3 — AI Proof-of-Humanity · SHIPPED (cycle 3).** All gates green. ([spec](specs/03-proof-of-humanity.md))
+  - **M3-T1 · architect** — Spec: social vouching + AI-jury quorum, on-chain lifecycle, `HumanityOracle` trait + determinism (I1), privacy (I6), 8 acceptance criteria.
+  - **M3-T2 · protocol-engineer** — On-chain substrate: `Human`/`Vouch`/`Case`/`Juror` registries, deterministic lifecycle state machine, quorum tally, vouch graph, `Verified` emission gating, `MockOracle`.
+  - **M3-T3 · ai-engineer** — `crates/oracle` `ClaudeOracle`: real `HumanityOracle` via the Anthropic API (forced structured output, temp-0, injection-resistant); `ANTHROPIC_API_KEY`-gated, fixture-tested (I5).
+  - **M3-T4 · protocol-engineer** — `HumanityHub` (`0x…5048`) txs + `ubi_*` reads + block-time lifecycle + auto-finalize + sybil sweep + receipt logs + seeded jurors. Orchestrator-verified live (verify→stream, sybil→revoke).
+  - **M3-T5 · interface-engineer** — Wallet "Proof of Humanity" card (status/vouches/apply/vouch/challenge/pending cases) + SDK helpers. Builds + typecheck green.
+  - **M3-T6 · qa** — ✅ 8/8 acceptance criteria → tests. **M3-T7 · reliability** — ✅ I1/I2 determinism over 10k–50k-iter property tests. **M3-T8 · security** — ✅ PASS after fixing a HIGH challenge-spam DoS (Finding A) + Findings B/F-REL-1/F-REL-2/D. Reports in [`docs/reports/`](reports/).
+  - **M3-T9 · release** — CI covers the oracle crate; node ships deterministic `MockOracle` (see FU-7). *(inline)*
 - **M2 — Streaming primitive · SHIPPED (cycle 2).** All gates green. ([spec](specs/02-streaming.md), [ADR-0003](specs/adr/0003-streaming-and-stream-nfts.md))
   - **M2-T1 · architect** — Spec: collateralized 1:1 streams, StreamHub system-address txs (EVM-signable), live net-stream balances (I2), open/stop/refund, **two ERC-721 stream NFTs** with on-chain SVG card.
   - **M2-T2/T3 · protocol-engineer** — Stream runtime + StreamHub RPC (tx parsing, `ubi_getStream(s)`) + ERC-721 precompile (`ownerOf`/`tokenURI`/…) minting recipient + sender NFTs with the on-chain card. Orchestrator-verified live.

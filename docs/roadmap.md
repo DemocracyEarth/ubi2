@@ -34,12 +34,16 @@ Original goal text:
 safety controls (rate limits, collateralization, circuit breakers). **Exit:** a user opens a stream to
 another account and both balances move in real time; safety limits demonstrated. **Depends on:** M1.
 
-## M3 — AI Proof-of-Humanity 🚧 *(current)*
+## M3 — AI Proof-of-Humanity ✅ *(shipped cycle 3)*
 **Goal:** the LLM-based verification gate with a verifier quorum; only verified humans begin accruing
 UBI. **Exit:** a human passes verification by quorum and starts streaming; a bot/duplicate is rejected;
-verdict integrity holds against a hostile minority of verifiers. **Depends on:** M1.
+verdict integrity holds against a hostile minority of verifiers. **Depends on:** M1. **Shipped:** social
+vouching + AI-jury quorum (`HumanityHub`), deterministic on-chain lifecycle, real `ClaudeOracle`
+(`ANTHROPIC_API_KEY`-gated) + `MockOracle` for the devnet, AI sybil auto-challenge, hardened against a
+challenge-spam DoS. All gates green. Follow-ups: FU-7 (juror daemon for the real oracle on consensus),
+FU-8 (M5 juror staking/rotation).
 
-## M4 — Prompt Contracts ⬜
+## M4 — Prompt Contracts 🚧 *(current)*
 **Goal:** natural-language contracts parsed into canonical effects and committed by interpreter quorum,
 with deterministic abort on disagreement. **Exit:** a plain-language contract executes reproducibly
 across nodes; a prompt-injection attempt fails closed. **Depends on:** M2, M3.
