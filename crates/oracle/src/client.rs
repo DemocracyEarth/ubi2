@@ -79,6 +79,9 @@ impl ClaudeConfig {
 pub enum OracleError {
     /// `ANTHROPIC_API_KEY` is unset/empty — the node should use `MockOracle` instead.
     MissingApiKey,
+    /// The configured `base_url` was refused by the per-provider URL policy (SSRF / key-exfiltration
+    /// defense, C5-SEC-1). Carries a secret-free, operator-facing reason (the offending URL/host only).
+    BadConfig(String),
     /// The HTTP transport failed (network, timeout, non-2xx). Carries a short, key-free description.
     Transport(String),
     /// The response could not be parsed into the pinned structured schema (deterministic abort).
@@ -92,6 +95,7 @@ impl fmt::Display for OracleError {
                 f,
                 "ANTHROPIC_API_KEY is not set; node should fall back to MockOracle"
             ),
+            OracleError::BadConfig(m) => write!(f, "oracle config rejected: {m}"),
             OracleError::Transport(m) => write!(f, "oracle transport error: {m}"),
             OracleError::Decode(m) => write!(f, "oracle response decode error: {m}"),
         }
@@ -263,7 +267,12 @@ pub struct HttpTransport {
 impl HttpTransport {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            // Disable HTTP redirects: a `3xx` must never be able to bounce the request — and the
+            // `x-api-key` header — to a different host (cross-host credential leak, C5-SEC-1).
+            client: reqwest::blocking::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
             api_key,
         }
     }

@@ -33,3 +33,7 @@ hyper.workspace = true
 # live HTTP JSON-RPC like a standard EVM client. k256 is the secp256k1 signer; alloy-rlp re-exported
 # for encode_2718. No extra HTTP crate — the test POSTs raw HTTP/1.1 over tokio TcpStream.
 k256 = { version = "0.13", features = ["ecdsa"] }
+# Security PoC (C5-SEC-3): drive a STUBBED live-style backend (a blocking reqwest client, no network)
+# through `produce_block` to prove the block-production task never panics dropping a blocking runtime.
+ubi2-oracle = { path = "../oracle" }
+reqwest = { workspace = true }

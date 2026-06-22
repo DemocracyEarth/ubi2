@@ -41,6 +41,126 @@ use ubi2_runtime::{ContractInterpreter, HumanityOracle};
 pub const ERR_NOT_LOOPBACK: i32 = -32099;
 /// JSON-RPC error code for an invalid / unbuildable oracle config.
 pub const ERR_BAD_CONFIG: i32 = -32098;
+/// JSON-RPC error code for an admin call rejected by the browser-CSRF / DNS-rebinding gate (a non-loopback
+/// `Host` header, or a disallowed `Origin`). Distinct from the TCP-peer gate so the wallet can tell them
+/// apart.
+pub const ERR_FORBIDDEN_ORIGIN: i32 = -32097;
+
+/// The default wallet origin allowed to call the admin RPC cross-origin (the local devnet wallet). Any
+/// other present `Origin` is refused for the admin methods (browser-CSRF defense, C5-SEC-2). Configurable
+/// via [`AdminAccess::with_allowed_origins`] / the node's `UBI2_ADMIN_ALLOWED_ORIGINS` env.
+pub const DEFAULT_WALLET_ORIGIN: &str = "http://localhost:3000";
+
+/// The per-request HTTP metadata the admin gate inspects, injected into the request extensions by
+/// [`serve`](crate::serve)'s accept loop alongside the peer `SocketAddr`. `Host`/`Origin` are read here
+/// (not trusted for the *loopback* decision — that stays TCP-peer based — but used for the DNS-rebinding
+/// (`Host`) and CSRF (`Origin`) defenses on the admin methods).
+#[derive(Clone, Debug, Default)]
+pub struct AdminHttpMeta {
+    /// The HTTP `Host` header value (lowercased), if present.
+    pub host: Option<String>,
+    /// The HTTP `Origin` header value, if present.
+    pub origin: Option<String>,
+}
+
+/// The admin-method access policy: which `Origin`s are allowed to call the loopback admin RPC. The TCP
+/// loopback-peer gate and the `Host`-header loopback pinning are always on; this carries the (configurable)
+/// `Origin` allowlist so a real wallet (`http://localhost:3000`) works while a malicious page
+/// (`Origin: https://evil.example.com`) is refused. Absent `Origin` (curl / same-origin) is allowed.
+#[derive(Clone, Debug)]
+pub struct AdminAccess {
+    allowed_origins: Vec<String>,
+}
+
+impl Default for AdminAccess {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec![DEFAULT_WALLET_ORIGIN.to_string()],
+        }
+    }
+}
+
+impl AdminAccess {
+    /// Replace the allowed-origin allowlist (each entry compared case-insensitively, trailing slash
+    /// ignored). An empty list means "no cross-origin caller is allowed" (only absent `Origin`).
+    pub fn with_allowed_origins(origins: Vec<String>) -> Self {
+        Self {
+            allowed_origins: origins
+                .into_iter()
+                .map(|o| normalize_origin(&o))
+                .filter(|o| !o.is_empty())
+                .collect(),
+        }
+    }
+
+    /// The configured allowlist (normalized). Exposed so the node can scope its CORS layer to exactly
+    /// these origins for the admin methods.
+    pub fn allowed_origins(&self) -> &[String] {
+        &self.allowed_origins
+    }
+
+    /// Enforce the admin-method browser defenses (C5-SEC-2) on a request's HTTP metadata:
+    ///   * **Host-header pinning** (DNS-rebinding defense): the `Host` MUST be a loopback host
+    ///     (`127.0.0.1[:port]` / `localhost[:port]` / `[::1][:port]`). A request that arrived over the
+    ///     loopback interface but carries a rebound hostname `Host` is refused.
+    ///   * **Origin allowlist** (CSRF defense): if an `Origin` header is present it MUST be on the
+    ///     allowlist (the wallet origin). Absent `Origin` (curl / non-browser / same-origin) is allowed.
+    ///
+    /// A missing `Host` header is refused (fail-closed; every real HTTP/1.1+ client sends one).
+    pub fn check(&self, meta: &AdminHttpMeta) -> Result<(), ErrorObjectOwned> {
+        match meta.host.as_deref() {
+            Some(h) if is_loopback_host_header(h) => {}
+            _ => {
+                return Err(forbidden_origin_error(
+                    "admin RPC requires a loopback Host header",
+                ))
+            }
+        }
+        if let Some(origin) = meta.origin.as_deref() {
+            let norm = normalize_origin(origin);
+            if !self.allowed_origins.iter().any(|a| a == &norm) {
+                return Err(forbidden_origin_error(
+                    "admin RPC rejected: Origin is not on the wallet allowlist",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Normalize an origin for comparison: trim, lowercase, drop a single trailing slash. (Browsers send an
+/// origin with no path, but be lenient about a trailing slash / case.)
+fn normalize_origin(o: &str) -> String {
+    o.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Is the HTTP `Host` header value a loopback host (DNS-rebinding defense)? Accepts `localhost`,
+/// `127.0.0.0/8` literals, and `::1`, each with an optional `:port`. A non-loopback hostname (the
+/// rebinding payload) is refused.
+pub fn is_loopback_host_header(host: &str) -> bool {
+    let host = host.trim();
+    // IPv6 literal in brackets: `[::1]` or `[::1]:port`.
+    let hostname = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, _port)) => h,
+            None => return false,
+        }
+    } else {
+        // host[:port] — strip a trailing :port only if it parses as one.
+        match host.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => h,
+            _ => host,
+        }
+    };
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match hostname.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback(),
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback(),
+        Err(_) => false,
+    }
+}
 
 /// The persisted oracle config — the exact JSON the node writes under the devnet data dir
 /// (`<data_dir>/oracle.json`) and the shape [`ubi_getOracleConfig`] returns (secret redacted). Mirrors
@@ -286,6 +406,11 @@ pub fn not_loopback_error() -> ErrorObjectOwned {
 /// Map a bad-config build failure to a JSON-RPC error (the message is already secret-free).
 pub fn bad_config_error(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ERR_BAD_CONFIG, msg.into(), None::<()>)
+}
+
+/// Map a rejected admin call (bad `Host`/`Origin`) to the browser-CSRF/DNS-rebinding rejection error.
+pub fn forbidden_origin_error(msg: impl Into<String>) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(ERR_FORBIDDEN_ORIGIN, msg.into(), None::<()>)
 }
 
 /// A factory that only ever yields the deterministic Mock pair — the default when the node wires no live

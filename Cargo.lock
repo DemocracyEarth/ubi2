@@ -2989,12 +2989,14 @@ dependencies = [
  "hyper",
  "jsonrpsee",
  "k256",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tower 0.4.13",
  "tower-http",
  "tracing",
+ "ubi2-oracle",
  "ubi2-runtime",
 ]
 

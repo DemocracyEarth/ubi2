@@ -7,10 +7,12 @@
 - PoCs: `crates/rpc/tests/sec_c5_poc.rs` (5 tests, all green) + live captures against a node on
   `127.0.0.1:38545` (documented inline below).
 
-## Verdict: FAIL — 1 Critical, 2 High open.
+## Verdict: original gate FAILED (1 Critical, 2 High). RE-GATE (2026-06-22): **PASS** — all three closed, no new High/Critical.
 
-Do not ship until C5-SEC-1, C5-SEC-2, and C5-SEC-3 are remediated. The fee model, secret redaction,
-LLM-injection fencing, and replay protection are sound (no open finding).
+The protocol-engineer's fix has been independently re-verified on a live devnet (`127.0.0.1:38545`,
+killed after) plus the inverted PoCs. SEC-1/SEC-2/SEC-3 are CLOSED; the wallet still works; no open
+High/Critical remains. See the "Re-gate verification" section at the bottom for the live captures.
+The fee model, secret redaction, LLM-injection fencing, and replay protection remain sound.
 
 ---
 
@@ -198,10 +200,59 @@ humanity/contract op crashes the node regardless of attacker intent.
 
 | ID        | Severity | Status | Blocking gate |
 |-----------|----------|--------|---------------|
-| C5-SEC-1  | Critical | OPEN   | yes |
-| C5-SEC-2  | High     | OPEN   | yes |
-| C5-SEC-3  | High     | OPEN   | yes |
-| C5-SEC-4 (env-var key residency) | Info | Noted | no |
+| C5-SEC-1  | Critical | **CLOSED** (re-gate 2026-06-22) | yes |
+| C5-SEC-2  | High     | **CLOSED** (re-gate 2026-06-22) | yes |
+| C5-SEC-3  | High     | **CLOSED** (re-gate 2026-06-22) | yes |
+| C5-SEC-4 (env-var key residency) | Info | **FIXED** (key no longer enters `std::env`) | no |
+
+---
+
+## Re-gate verification (2026-06-22, branch `feat/fees-llm-explorer-ui` @ `6bbbe81`)
+
+Independently re-verified the fix (changes left uncommitted in the working tree). `cargo test --workspace`
+(30 test binaries, all green), `cargo clippy --workspace --all-targets -D warnings` (clean), and
+`cargo fmt --all --check` (clean). The inverted PoCs `crates/rpc/tests/sec_c5_poc.rs` (10/10) and
+`crates/rpc/tests/sec_c5_produce_block.rs` (1/1) pass. Live devnet on `127.0.0.1:38545` booted with a live
+OpenAI config + `OPENAI_API_KEY=sk-BOOT-ENV-OPERATOR-KEY-xyz789`, an attacker listener on `:39099`, then
+killed; the listener captured **0 bytes** across the whole session.
+
+**C5-SEC-1 (SSRF + key exfil) — CLOSED.** Every internal/metadata/RFC1918/loopback `base_url` is rejected
+with `-32098` (`ERR_BAD_CONFIG`) and never hot-swaps; the operator key never reaches the attacker. Live
+rejections captured: `http://127.0.0.1:39099` (http→requires https), `http://169.254.169.254/...`,
+`https://10.0.0.5/v1`, `https://[::1]:6379/`, `https://127.0.0.1:39099`,
+`https://[::ffff:127.0.0.1]:39099`. The encoded-IP bypass class is also blocked because the OpenAI policy
+DNS-resolves the host and rejects any internal resolved IP: `https://0x7f000001`, `https://2130706433`,
+`https://127.1`, `https://0`, `https://localhost`, `https://0.0.0.0`, `https://[::]`, `https://[0:..:7f00:1]`
+all → `-32098`. Anthropic is host-pinned: only `https://api.anthropic.com` passes;
+`api.anthropic.com.evil.com`, `…@evil.com`, path-embedded, and `http://` variants all → `-32098`. A PUBLIC
+https endpoint (`https://1.1.1.1/v1`) is still ACCEPTED (feature preserved). After a real signed
+`requestVerification` (fee-exempt, any account) drove `produce_block` to invoke the live OpenAI backend, the
+attacker capture stayed empty (key rode only to the configured provider, never to a rejected host).
+
+**C5-SEC-2 (browser CSRF / DNS-rebinding) — CLOSED.** The TCP-peer loopback gate (`-32099`) stays primary
+and non-spoofable. Admin methods additionally enforce, server-side, Host-pinning + an Origin allowlist
+(`-32097`, `ERR_FORBIDDEN_ORIGIN`): foreign `Origin: https://evil.example.com` rejected (both
+`setOracleConfig` and the read `getOracleConfig`); rebound `Host: attacker.com` rejected; subdomain/userinfo
+spoofs (`127.0.0.1.evil.com`, `…@evil.com`, `http://localhost:3000.evil.com`, `…@evil.com`, fragment,
+`https://localhost:3000`, `:30000`, `null`) all rejected. The REAL wallet (`Origin: http://localhost:3000` +
+loopback `Host`) is ACCEPTED for both read and write (incl. a loopback-Ollama hot-swap); curl with no Origin
+is accepted. **Read/EVM CORS is intact** — `eth_chainId`/`eth_blockNumber` answer 200 from a browser Origin
+and the permissive ACAO preflight still works — while the admin surface cannot be reached cross-origin even
+with permissive CORS (the server-side gate fires).
+
+**C5-SEC-3 (live-backend panic in block production) — CLOSED.** `produce_block` now runs per-tick via
+`spawn_blocking` (`crates/node/src/main.rs`). Live confirmation: a real `requestVerification` that invoked
+the live blocking-client OpenAI backend was mined (block height advanced past 0x70), the node stayed up and
+serving, and the log shows no `panic` / "Cannot drop a runtime". The regression test
+`live_blocking_backend_through_produce_block_does_not_panic` reproduces the exact hazard offline and passes.
+
+**New-finding scan — none High/Critical.** Origin/Host allowlist and the per-provider URL policy resisted
+every bypass vector tried (encoded IPs, host-suffix/userinfo/fragment spoofs, case, IPv4-mapped v6). The
+only residual is INFO: a theoretical DNS-rebinding TOCTOU between the dial-time `validate_base_url`
+re-resolution and reqwest's own resolution for a *public* hostname an attacker controls; this requires
+attacker-controlled DNS for a public name and a sub-millisecond rebind on the node's resolver, and the
+redirect policy is `none()` so a 3xx cannot bounce the key cross-host. Not a release blocker; pin-by-IP or a
+resolved-address-aware connector would close it fully (follow-up).
 
 Re-run `cargo test -p ubi2-rpc --test sec_c5_poc` after fixes; the SSRF/CSRF PoCs should be **inverted**
 (the hostile `base_url` and the cross-origin admin call must be rejected) once the allowlist + Host

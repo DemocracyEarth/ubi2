@@ -9,11 +9,12 @@
 //! `crates/oracle`). When no provider is configured — or the backend cannot be built (missing key, etc.)
 //! — the node falls back to the deterministic Mock impls so the devnet **always** boots (invariant I4).
 //!
-//! ## Secret handling (I6)
+//! ## Secret handling (I6 / C5-SEC-4)
 //! The persisted config never holds a key value, only the *name* of the env var the key is read from
-//! (`api_key_env`). When the localhost admin RPC supplies a raw `api_key`, the node sets that env var in
-//! its own process memory (so `Backend` can read it) and persists only the name — the secret never
-//! touches disk or logs.
+//! (`api_key_env`). When the localhost admin RPC supplies a raw `api_key`, the node passes it **directly**
+//! into the in-memory `Backend.api_key` (and on to the HTTP transport) — it does **not** write the secret
+//! into the process env (it never appears in `std::env`, is never inherited by a child process), and only
+//! the env-var *name* is persisted. The secret never touches disk or logs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -114,13 +115,20 @@ fn parse_provider(cfg: &OracleConfig) -> Result<Option<Provider>, String> {
     }
 }
 
-/// Build a `ubi2_oracle::Backend` from an [`OracleConfig`] (provider already known to be `Some`).
-fn backend_from_config(cfg: &OracleConfig, provider: Provider) -> Backend {
+/// Build a `ubi2_oracle::Backend` from an [`OracleConfig`] (provider already known to be `Some`). The raw
+/// `api_key` (when the admin RPC supplied one) is attached **in-memory** to the backend and used verbatim
+/// by the transport — the node never writes it into its process env (C5-SEC-4). Only `api_key_env` (a
+/// *name*) is ever persisted (I6).
+fn backend_from_config(cfg: &OracleConfig, provider: Provider, api_key: Option<&str>) -> Backend {
     Backend {
         provider,
         model: cfg.model.clone(),
         base_url: cfg.base_url.clone(),
         api_key_env: cfg.api_key_env.clone(),
+        api_key: api_key
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -140,24 +148,26 @@ impl OracleFactory for NodeOracleFactory {
     fn build(&self, cfg: &OracleConfig, api_key: Option<&str>) -> Result<BuiltOracle, String> {
         let provider =
             parse_provider(cfg)?.ok_or_else(|| "no provider configured (Mock)".to_string())?;
-        let backend = backend_from_config(cfg, provider);
 
-        // If the admin RPC supplied a raw key, set the resolved env var in-process so `Backend` reads it.
-        // The key is used in-memory only; only `api_key_env` is ever persisted (I6).
-        if let Some(key) = api_key {
-            if let Some(env_name) = backend.resolved_api_key_env() {
-                // SAFETY: single-threaded config path at construction; we only ever set our own var.
-                std::env::set_var(&env_name, key);
-            }
-        }
+        // Validate the configured `base_url` against the per-provider URL policy BEFORE building anything
+        // (SSRF / key-exfiltration defense, C5-SEC-1). A rejected URL is a fail-closed `Err` here, so a
+        // `setOracleConfig` carrying an internal/metadata/attacker target never hot-swaps the backend; the
+        // previous (possibly Mock) impl keeps serving. The transport re-checks at dial time too (defense
+        // in depth).
+        ubi2_oracle::validate_base_url(provider, cfg.base_url.as_deref())
+            .map_err(|e| format!("invalid base_url: {e}"))?;
+
+        // The raw key (when supplied by the admin RPC) is attached in-memory to the backend and used
+        // verbatim by the transport — the node never writes it into its process env (C5-SEC-4).
+        let backend = backend_from_config(cfg, provider, api_key);
 
         let model = backend.resolved_model();
-        // Construct both trait objects. This reads the API key from the env var and validates the
-        // backend is buildable; a missing key / bad config is the fail-closed signal to fall back to
-        // Mock. We do NOT make a live network call here (I5: boot/CI never touch the network) — the
-        // health `reachable` reflects "the backend was constructed", a structural probe, not a ping.
-        // The oracle crate already scrubs any key value from its error strings, so `to_string()` here is
-        // secret-free; the construction path only ever sees env-var *names*, never values.
+        // Construct both trait objects. This reads the API key (in-memory key if the admin RPC supplied
+        // one, else the configured env var) and validates the backend is buildable; a missing key / bad
+        // config is the fail-closed signal to fall back to Mock. We do NOT make a live network call here
+        // (I5: boot/CI never touch the network) — the health `reachable` reflects "the backend was
+        // constructed", a structural probe, not a ping. The oracle crate scrubs any key value from its
+        // error strings, so `to_string()` here is secret-free.
         let oracle: Arc<dyn ubi2_runtime::HumanityOracle> =
             Arc::from(backend.humanity_oracle().map_err(|e| e.to_string())?);
         let interpreter: Arc<dyn ubi2_runtime::ContractInterpreter> =

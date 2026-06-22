@@ -85,7 +85,7 @@ impl Provider {
 ///   * `{ provider = "anthropic" }` → pinned Claude model, key from `ANTHROPIC_API_KEY`.
 ///   * `{ provider = "ollama" }` → `llama3.1` at `http://localhost:11434`, no key.
 ///   * `{ provider = "openai", model = "gpt-4o" }` → OpenAI, key from `OPENAI_API_KEY`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Backend {
     /// Which provider to call.
     pub provider: Provider,
@@ -96,10 +96,28 @@ pub struct Backend {
     #[serde(default)]
     pub base_url: Option<String>,
     /// The **name** of the env var holding the API key (e.g. `"ANTHROPIC_API_KEY"`, `"OPENAI_API_KEY"`,
-    /// `"OPENROUTER_API_KEY"`). `None` ⇒ the provider default; Ollama needs none. The key value is read
-    /// at construction time and never stored in this struct.
+    /// `"OPENROUTER_API_KEY"`). `None` ⇒ the provider default; Ollama needs none.
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// An **in-memory** raw API key passed directly from the admin RPC (`setOracleConfig`'s `api_key`
+    /// param). When `Some`, it is used verbatim instead of reading the env var — so the node never has to
+    /// write the secret into its process env (C5-SEC-4). `#[serde(skip)]`: it is never serialized to the
+    /// persisted config (only `api_key_env`, a *name*, is — I6). `Debug` omits it (see manual impl).
+    #[serde(skip)]
+    pub api_key: Option<String>,
+}
+
+impl fmt::Debug for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the raw key value (I6); show only whether one is present.
+        f.debug_struct("Backend")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key_env", &self.api_key_env)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl Backend {
@@ -111,7 +129,15 @@ impl Backend {
             model: None,
             base_url: None,
             api_key_env: None,
+            api_key: None,
         }
+    }
+
+    /// Attach a raw API key in-memory (from the admin RPC). Used verbatim by the transport instead of an
+    /// env var, so the node never writes the secret into its process env (C5-SEC-4).
+    pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
+        self.api_key = api_key.filter(|k| !k.trim().is_empty());
+        self
     }
 
     /// The resolved, pinned model id (config override or provider default).
@@ -148,6 +174,16 @@ impl Backend {
     /// `Ok(None)` for keyless providers (Ollama). Errors (with the env-var **name**, never a value) when
     /// a required key is unset/empty so the node can fall back to the deterministic Mock impls.
     fn read_api_key(&self) -> Result<Option<String>, OracleError> {
+        // An in-memory key (passed directly from the admin RPC) wins over the env var — the node never
+        // has to set a process env var for the secret (C5-SEC-4).
+        if let Some(direct) = self
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            return Ok(Some(direct.to_string()));
+        }
         match self.resolved_api_key_env() {
             None => Ok(None),
             Some(name) => {
@@ -167,6 +203,13 @@ impl Backend {
     /// place a live HTTP client is constructed; **never** called in tests/CI (I5). Returns
     /// [`OracleError::MissingApiKey`] when a required key is absent so the node falls back to Mock.
     pub fn transport(&self) -> Result<Box<dyn Transport>, OracleError> {
+        // Defense-at-dial (C5-SEC-1): validate the configured `base_url` against the per-provider URL
+        // policy BEFORE constructing any client. This refuses SSRF/internal/metadata targets (and the
+        // wrong-host/scheme cases) so a repointed `base_url` can never be reached — the key is attached
+        // only after this passes. The node's admin RPC also validates earlier (so a bad `setOracleConfig`
+        // is rejected without a hot-swap); this is the second, mandatory gate on the actual dial path.
+        crate::url_policy::validate_base_url(self.provider, self.base_url.as_deref())
+            .map_err(|e| OracleError::BadConfig(e.0))?;
         let key = self.read_api_key()?;
         match self.provider {
             Provider::Anthropic => {
@@ -178,12 +221,15 @@ impl Backend {
                 let base = self
                     .resolved_base_url()
                     .unwrap_or_else(|| DEFAULT_OLLAMA_BASE_URL.to_string());
+                // Ollama never carries a key.
                 Ok(Box::new(OllamaTransport::new(base)))
             }
             Provider::Openai => {
                 let base = self
                     .resolved_base_url()
                     .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+                // The key rides the Bearer header — but only to a `base_url` that just passed the policy
+                // above (a public https host), so it can never be exfiltrated to an internal/attacker host.
                 let api_key = key.unwrap_or_default();
                 Ok(Box::new(OpenAiTransport::new(base, api_key)))
             }
@@ -232,7 +278,7 @@ pub struct OllamaTransport {
 impl OllamaTransport {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: build_no_redirect_client(),
             base_url: normalize_base(base_url.into()),
         }
     }
@@ -316,7 +362,7 @@ pub struct OpenAiTransport {
 impl OpenAiTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: build_no_redirect_client(),
             base_url: normalize_base(base_url.into()),
             api_key: api_key.into(),
         }
@@ -400,6 +446,16 @@ fn normalize_base(s: String) -> String {
     s.trim_end_matches('/').to_string()
 }
 
+/// Build a blocking client with HTTP redirects **disabled** (C5-SEC-1): a `3xx` must never bounce the
+/// request — and any auth header — to a different host (cross-host credential leak). All live transports
+/// use this; the destination is already validated by [`crate::url_policy::validate_base_url`].
+fn build_no_redirect_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
 /// Remove any accidental occurrence of the API key from an error string before it can be logged (I6).
 /// Mirrors [`crate::client`]'s scrub for the OpenAI-compatible path.
 fn scrub(s: &str, key: &str) -> String {
@@ -475,6 +531,7 @@ mod tests {
             model: Some("llama-3.1-70b".to_string()),
             base_url: Some("https://openrouter.ai/api/".to_string()),
             api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+            api_key: None,
         };
         assert_eq!(b.resolved_model(), "llama-3.1-70b");
         // Trailing slash is normalized only at transport build; resolved keeps the override verbatim.
@@ -495,6 +552,7 @@ mod tests {
             model: Some("qwen2.5".to_string()),
             base_url: Some("http://10.0.0.5:11434".to_string()),
             api_key_env: None,
+            api_key: None,
         };
         let json = serde_json::to_string(&b).unwrap();
         let back: Backend = serde_json::from_str(&json).unwrap();

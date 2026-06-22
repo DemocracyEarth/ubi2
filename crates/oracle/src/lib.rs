@@ -119,6 +119,7 @@ pub mod juror;
 pub mod oracle;
 pub mod prompt;
 pub mod schema;
+pub mod url_policy;
 
 pub use backend::{
     Backend, OllamaTransport, OpenAiTransport, Provider, DEFAULT_OLLAMA_BASE_URL,
@@ -133,3 +134,4 @@ pub use interpreter::{abort_effect, ClaudeInterpreter, ABORT_REASON};
 pub use juror::{juror_verdict, SubmitVerdictTx};
 pub use oracle::{abort_verdict, ClaudeOracle};
 pub use schema::{ConfidenceTag, StructuredVerdict, VerdictTag};
+pub use url_policy::{is_internal_ip, validate_base_url, UrlPolicyError, ANTHROPIC_HOST};

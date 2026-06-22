@@ -80,9 +80,9 @@ use contracts::{
 };
 
 pub mod oracle_admin;
-use oracle_admin::{bad_config_error, is_loopback, not_loopback_error};
+use oracle_admin::{bad_config_error, is_loopback, not_loopback_error, AdminHttpMeta};
 pub use oracle_admin::{
-    ActiveImpl, BuiltOracle, OracleAdmin, OracleConfig, OracleFactory, OracleHealth,
+    ActiveImpl, AdminAccess, BuiltOracle, OracleAdmin, OracleConfig, OracleFactory, OracleHealth,
 };
 
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
@@ -842,6 +842,10 @@ pub struct Chain {
     /// config + the localhost-only `ubi_setOracleConfig`) swaps a provider-backed impl behind the same
     /// runtime traits at runtime. See [`oracle_admin`].
     oracle_admin: Arc<OracleAdmin>,
+    /// Browser-CSRF / DNS-rebinding policy for the admin methods (`Origin` allowlist + `Host` pinning).
+    /// The loopback TCP-peer gate is always on; this scopes which browser origins may reach the admin
+    /// surface (default: the local wallet at `http://localhost:3000`). See [`oracle_admin::AdminAccess`].
+    admin_access: Arc<AdminAccess>,
 }
 
 impl Chain {
@@ -877,7 +881,20 @@ impl Chain {
             // verifies end-to-end in CI (I5). The node may swap a provider-backed impl at runtime via
             // the localhost-only admin RPC (`with_oracle_admin`).
             oracle_admin: Arc::new(OracleAdmin::mock_only()),
+            admin_access: Arc::new(AdminAccess::default()),
         }
+    }
+
+    /// Install the admin-method browser-access policy (the `Origin` allowlist for the loopback admin RPC).
+    /// The node builds this from its boot config (default: the local wallet at `http://localhost:3000`).
+    pub fn with_admin_access(mut self, access: Arc<AdminAccess>) -> Self {
+        self.admin_access = access;
+        self
+    }
+
+    /// The admin-method access policy (for the admin handlers + tests).
+    pub fn admin_access(&self) -> &Arc<AdminAccess> {
+        &self.admin_access
     }
 
     /// Install a node-configured [`OracleAdmin`] (the hot-swappable AI backend + its localhost-only admin
@@ -1591,15 +1608,31 @@ fn invalid_params(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32602, msg.into(), None::<()>)
 }
 
-/// Enforce the localhost-only admin gate: the call's peer address (injected into the request extensions
-/// by [`serve`]'s accept loop) must be a loopback address. A missing peer address is treated as
-/// **non-loopback** and rejected — fail-closed (we never default-allow an unidentified caller). Used by
-/// `ubi_getOracleConfig` / `ubi_setOracleConfig`.
-fn require_loopback(ext: &jsonrpsee::Extensions) -> RpcResult<()> {
+/// Enforce the admin gate for `ubi_getOracleConfig` / `ubi_setOracleConfig`. Three independent checks, all
+/// fail-closed:
+///   1. **TCP-peer loopback** — the connection's peer `SocketAddr` (injected by [`serve`]'s accept loop)
+///      must be a loopback address. A missing peer is treated as non-loopback and rejected. This is the
+///      primary gate and is *not* header-spoofable (it reads the socket, not a header).
+///   2. **`Host`-header pinning** (DNS-rebinding defense, C5-SEC-2) — the HTTP `Host` must be a loopback
+///      host; a rebound hostname is refused even though it arrived over loopback.
+///   3. **`Origin` allowlist** (browser-CSRF defense, C5-SEC-2) — a present `Origin` must be the wallet
+///      origin; a malicious page's `Origin` (e.g. `https://evil.example.com`) is refused. Absent `Origin`
+///      (curl / non-browser / same-origin) is allowed.
+///
+/// Checks 2+3 read the per-request [`AdminHttpMeta`] injected alongside the peer address; if no metadata
+/// was injected (a direct in-process module call in tests, with no `Host`), only the loopback gate runs —
+/// the production `serve` path always injects it, so the browser defenses are always active on the wire.
+fn require_loopback(ext: &jsonrpsee::Extensions, access: &AdminAccess) -> RpcResult<()> {
     match ext.get::<std::net::SocketAddr>() {
-        Some(addr) if is_loopback(addr) => Ok(()),
-        _ => Err(not_loopback_error()),
+        Some(addr) if is_loopback(addr) => {}
+        _ => return Err(not_loopback_error()),
     }
+    // The browser defenses run only when HTTP metadata is present (the wire path always injects it). A
+    // bare module call (offline test) with no metadata is the loopback in-process path and is allowed.
+    if let Some(meta) = ext.get::<AdminHttpMeta>() {
+        access.check(meta)?;
+    }
+    Ok(())
 }
 
 /// Parse `ubi_setOracleConfig`'s single object param into the persisted [`OracleConfig`] (secret-free)
@@ -3023,7 +3056,7 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     //   health: { provider, model, reachable, error } }. The config is secret-free by construction
     //   (only the env-var NAME is stored, never a key value).
     m.register_method("ubi_getOracleConfig", |_params, ctx, ext| {
-        require_loopback(ext)?;
+        require_loopback(ext, ctx.admin_access())?;
         Ok::<_, ErrorObjectOwned>(ctx.oracle_admin().get_config_json())
     })
     .unwrap();
@@ -3038,7 +3071,7 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     // the loopback gate + parse params inline, then run the (synchronous) build/hot-swap/persist on the
     // blocking pool.
     m.register_async_method("ubi_setOracleConfig", |params, ctx, ext| async move {
-        require_loopback(&ext)?;
+        require_loopback(&ext, ctx.admin_access())?;
         let (config, api_key) = parse_set_oracle_params(&params)?;
         let admin = Arc::clone(ctx.oracle_admin());
         tokio::task::spawn_blocking(move || admin.set_config(config, api_key))
@@ -3267,9 +3300,15 @@ async fn new_heads_subscription(
 ///
 /// We use jsonrpsee's manual accept loop (`to_service_builder` + `serve_with_graceful_shutdown`) rather
 /// than the one-line `Server::start` so we can capture each connection's **peer `SocketAddr`** and inject
-/// it into the per-request extensions. The admin RPC ([`require_loopback`]) reads that address to enforce
-/// its localhost-only gate; the default `start` path does not surface the peer address to method handlers.
-/// All other behavior (HTTP+WS on one socket, the permissive CORS middleware) is unchanged.
+/// it (plus the `Host`/`Origin` headers) into the per-request extensions. The admin RPC
+/// ([`require_loopback`]) reads the address for its loopback gate and the headers for its DNS-rebinding /
+/// browser-CSRF defenses (C5-SEC-2); the default `start` path surfaces neither to method handlers.
+///
+/// CORS: the read/EVM methods keep permissive CORS (the browser wallet needs it). The admin methods are
+/// not protected by CORS alone — they enforce a server-side `Host`-pinning + `Origin`-allowlist gate at
+/// the handler ([`AdminAccess`]), so a permissive ACAO header cannot authorize a cross-origin admin call
+/// (the handler still rejects a foreign `Origin`). This is the standard local-RPC posture: CORS for
+/// read-compat, an explicit server-side gate for the privileged surface.
 pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<ServerHandle> {
     use jsonrpsee::server::{serve_with_graceful_shutdown, stop_channel, HttpRequest};
     use tower::Service;
@@ -3277,8 +3316,10 @@ pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<S
     // The wallet/explorer runs in the browser at localhost:3000 and fetches this RPC at
     // 127.0.0.1:8545 — a cross-origin request the browser guards with a CORS preflight. Without
     // CORS headers every browser `fetch` fails ("Failed to fetch"), even though curl/MetaMask work.
-    // A permissive CORS layer is fine for a local devnet (any origin/method/header). MetaMask makes
-    // its own (non-browser) requests, so it is unaffected either way.
+    // A permissive CORS layer is fine for the *read* surface of a local devnet (any origin/method/
+    // header). The privileged admin methods are gated server-side by `AdminAccess` (Host pinning +
+    // Origin allowlist), so permissive CORS does not weaken them. MetaMask makes its own (non-browser)
+    // requests, so it is unaffected either way.
     let cors = tower_http::cors::CorsLayer::permissive();
     let http_middleware = tower::ServiceBuilder::new().layer(cors);
 
@@ -3308,13 +3349,26 @@ pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<S
 
             // Build the jsonrpsee tower service once per connection (consumes a clone of the builder);
             // it is `Clone`, so each request gets its own handle. Wrap it in a `service_fn` that injects
-            // the peer address into the request extensions first — that address flows into each method
-            // call's `Extensions`, where `require_loopback` reads it for the localhost-only admin gate.
+            // the peer address AND the request's `Host`/`Origin` headers into the request extensions
+            // first — the peer address drives `require_loopback`'s loopback gate; the headers drive its
+            // DNS-rebinding (`Host` pinning) + browser-CSRF (`Origin` allowlist) defenses (C5-SEC-2).
             let jsonrpsee_svc = svc_builder
                 .clone()
                 .build(methods.clone(), stop_handle.clone());
             let svc = tower::service_fn(move |mut req: HttpRequest<hyper::body::Incoming>| {
+                let header_str = |name: &str| -> Option<String> {
+                    req.headers()
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                };
+                let meta = AdminHttpMeta {
+                    host: header_str("host").map(|h| h.to_ascii_lowercase()),
+                    origin: header_str("origin"),
+                };
                 req.extensions_mut().insert(remote_addr);
+                req.extensions_mut().insert(meta);
                 let mut jsonrpsee_svc = jsonrpsee_svc.clone();
                 jsonrpsee_svc.call(req)
             });
