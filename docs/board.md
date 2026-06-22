@@ -61,8 +61,8 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-- **M4-T5 · interface-engineer** — Consolidate the app into the UBI on-ramp (wallet + full block explorer +
-  social/PoH hub + contracts), against the M4 RPC + EXPL-1 indexer. *(cycle 4)*
+- **M4-T6/T7/T8 · qa / reliability / security** — Running the three Definition-of-Done gates on the
+  combined M4 diff (contract core + ContractHub RPC + indexer + interpreter + UBI app). *(cycle 4)*
 
 ## 👀 Review (awaiting gates)
 - **M4-T2/T3/T4 · protocol / ai** — M4 core, **orchestrator-verified** (217 cargo tests, fmt + clippy clean):
@@ -71,6 +71,7 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   - **T4 RPC/node**: `ContractHub` (`0x…5043`) txs (`deployContract`/`fundContract`/`invokeContract`/`submitEffect`) +
     `ubi_getContract`/`getExecCase`/`getContractsOf` + **EXPL-1 address indexer** (`ubi_getAddressActivity`/`getAccount`); `m4_acceptance` drives invoke→commit over the wire.
   - **T3 oracle**: `ClaudeInterpreter` (structured-output effect schema, temp-0, injection-fenced; `ANTHROPIC_API_KEY`-gated, fixture-tested).
+  - **T5 app**: the consolidated **UBI app** — nav + Wallet · Explorer (search/account/activity via the indexer) · Identity (social/PoH hub) · Contracts (author→deploy→fund→invoke); SDK `contracts.ts` + `explorer.ts`. Builds + typecheck green; live deploy→fund→invoke→Committed verified.
 
 ## ⛔ Blocked
 _(none)_
