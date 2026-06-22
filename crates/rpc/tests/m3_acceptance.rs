@@ -217,8 +217,18 @@ async fn boot(
         });
         chain.seed_verified_human(&a.into_array(), k_at);
     }
-    // Three deterministic devnet jurors (register-only; the jury for every case).
+    // Three deterministic devnet jurors (the jury for every case). Jurors are real humans doing
+    // consensus work, so seed each as a verified, funded account: they pay the real UBI gas fee on
+    // every `submitVerdict` out of their streaming balance (a juror with no UBI could not vote).
     for j in [JUROR1, JUROR2, JUROR3] {
+        chain.seed_account(Account {
+            address: j.into_array(),
+            verified: true,
+            verified_at: genesis,
+            last_settled_at: genesis,
+            settled_balance: UBI, // ample prefund to cover many verdict fees
+            nonce: 0,
+        });
         chain.register_juror(&j.into_array(), 0);
     }
     let handle = serve(addr, chain.clone()).await.expect("serve");

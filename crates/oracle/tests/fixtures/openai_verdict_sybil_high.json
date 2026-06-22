@@ -1,0 +1,15 @@
+{
+  "id": "chatcmpl-fixture-openai-sybil",
+  "object": "chat.completion",
+  "model": "gpt-4o",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"verdict\":\"Sybil\",\"confidence\":\"High\",\"reasons\":\"Subject sits in a dense self-referential vouch ring inconsistent with organic trust.\"}"
+      }
+    }
+  ]
+}

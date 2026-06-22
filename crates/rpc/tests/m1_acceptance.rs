@@ -31,7 +31,7 @@ use alloy_primitives::{address, Address as AlloyAddr, PrimitiveSignature, TxKind
 use k256::ecdsa::SigningKey;
 
 use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
-use ubi2_runtime::{Account, EMISSION_PERIOD_SECS, UBI};
+use ubi2_runtime::{fee_for_gas, Account, EMISSION_PERIOD_SECS, GAS_TRANSFER, TREASURY, UBI};
 
 /// Well-known PUBLIC devnet key (Hardhat/Anvil account #0). NOT A SECRET — published everywhere.
 ///   private key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
@@ -371,6 +371,10 @@ async fn signed_transfer_settles_and_moves_balance() {
     // *at* the same instant via the runtime (so the streaming component doesn't race the assertion).
     let dev_at_mine = chain.balance(&DEV_ADDR.into_array(), mine_ts);
     let rcpt_at_mine = chain.balance(&recipient.into_array(), mine_ts);
+    // The transfer also paid a real UBI gas fee into the reserved TREASURY (fee recycling). Conservation
+    // is now dev + recipient + treasury == dev_emission(mine_ts): the fee never leaves the system, it
+    // just moves sender → treasury.
+    let treasury_at_mine = chain.balance(&TREASURY, mine_ts);
     // Total value at mine time must equal what the dev alone would have held had it not transferred:
     // dev_emission(mine_ts) (recipient is unverified ⇒ contributes no new stream).
     let expected_total = {
@@ -379,9 +383,15 @@ async fn signed_transfer_settles_and_moves_balance() {
         UBI.saturating_mul(elapsed) / EMISSION_PERIOD_SECS as u128
     };
     assert_eq!(
-        dev_at_mine + rcpt_at_mine,
+        dev_at_mine + rcpt_at_mine + treasury_at_mine,
         expected_total,
-        "value must be conserved exactly across the transfer+settlement"
+        "value must be conserved exactly across the transfer+settlement+fee"
+    );
+    // The transfer fee is exactly `GAS_TRANSFER * gas_price`, and it landed in the treasury.
+    assert_eq!(
+        treasury_at_mine,
+        fee_for_gas(GAS_TRANSFER),
+        "the transfer's UBI gas fee accrued to the treasury"
     );
     assert_eq!(
         rcpt_at_mine, UBI,

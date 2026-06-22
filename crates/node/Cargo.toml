@@ -13,8 +13,15 @@ path = "src/main.rs"
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
 ubi2-rpc = { path = "../rpc" }
+# The node owns the live-oracle wiring: it reads its boot config, builds the provider-backed
+# HumanityOracle + ContractInterpreter via `ubi2-oracle::Backend`, and fills `crates/rpc`'s OracleFactory
+# seam (so `crates/rpc` itself stays free of the oracle crate). serde/serde_json parse + persist the
+# secret-free config file.
+ubi2-oracle = { path = "../oracle" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 alloy-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true

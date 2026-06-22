@@ -23,6 +23,10 @@ base64.workspace = true
 derive_more.workspace = true
 tower.workspace = true
 tower-http.workspace = true
+# Manual jsonrpsee accept loop (`serve`): captures each connection's peer SocketAddr and injects it into
+# the per-request extensions so the localhost-only admin RPC can enforce its loopback gate. `hyper`
+# names the incoming-body request type; both crates are already in the tree via jsonrpsee 0.24.
+hyper.workspace = true
 
 [dev-dependencies]
 # QA (M1-T7) integration tests: sign EIP-155 legacy txs with the well-known devnet key and drive the

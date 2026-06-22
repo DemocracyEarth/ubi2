@@ -30,7 +30,7 @@ use ubi2_rpc::streams::{
     symbolCall, tokenURICall, transferFromCall, IFACE_ERC165, IFACE_ERC721, IFACE_ERC721_METADATA,
 };
 use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
-use ubi2_runtime::{Account, EMISSION_PERIOD_SECS, UBI};
+use ubi2_runtime::{fee_for_gas, Account, EMISSION_PERIOD_SECS, GAS_STREAM, TREASURY, UBI};
 
 /// Well-known PUBLIC devnet key (Hardhat/Anvil account #0). NOT A SECRET — published everywhere.
 const DEV_PRIVKEY: [u8; 32] =
@@ -334,7 +334,11 @@ async fn stream_lock_accrual_solvency_stop() {
         let s = chain.get_stream(stream_id).unwrap();
         s.deposit - s.accrued(stop_at)
     };
-    let pre_total = pre_sender + pre_rcpt + pre_locked;
+    // The treasury already holds the openStream tx's UBI gas fee; the stopStream tx adds another.
+    // Including it on both sides keeps conservation exact: the stop neither creates nor destroys value,
+    // it just moves accrued→recipient, refund→sender, and the stop fee→treasury.
+    let pre_treasury = chain.balance(&TREASURY, stop_at);
+    let pre_total = pre_sender + pre_rcpt + pre_locked + pre_treasury;
 
     let stop_data = stopStreamCall {
         id: U256::from(stream_id),
@@ -363,8 +367,15 @@ async fn stream_lock_accrual_solvency_stop() {
         "accrual frozen after stop"
     );
 
-    // Conservation: post total (escrow now fully released) == pre total.
-    let post_total = post_sender + post_rcpt;
+    // Conservation: post total (escrow now fully released) == pre total. The treasury grew by exactly
+    // the stopStream UBI gas fee, so including it on both sides keeps the equality exact.
+    let post_treasury = chain.balance(&TREASURY, stop_at);
+    assert_eq!(
+        post_treasury - pre_treasury,
+        fee_for_gas(GAS_STREAM),
+        "the stopStream UBI gas fee accrued to the treasury"
+    );
+    let post_total = post_sender + post_rcpt + post_treasury;
     assert_eq!(
         post_total, pre_total,
         "stop must conserve totals: pre {pre_total} != post {post_total}"

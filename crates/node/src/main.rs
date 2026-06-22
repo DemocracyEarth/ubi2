@@ -22,6 +22,8 @@
 //!
 //! Import the dev account below to sign txs (its key is PUBLIC — see the constant).
 
+mod oracle_cfg;
+
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -75,7 +77,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(2_000);
 
     let genesis_time = now_secs();
-    let chain = Chain::new(DEVNET_CHAIN_ID, genesis_time);
+
+    // Select the AI backend (proof-of-humanity oracle + prompt-contract interpreter) from the node's
+    // config file (`<data_dir>/oracle.json`) + `UBI2_ORACLE_*` env overrides. Absent a provider — or if
+    // the backend can't be built (missing key, etc.) — the chain runs the deterministic Mock impls so the
+    // devnet always boots (I4). The wallet's Settings panel can hot-swap this at runtime over the
+    // localhost-only `ubi_setOracleConfig` admin RPC.
+    let data_dir = oracle_cfg::data_dir();
+    let oracle_config = oracle_cfg::load_config(&data_dir);
+    // Build the admin on the blocking pool: constructing a live backend creates a blocking HTTP client,
+    // which must not run on the async runtime thread. (For the default Mock config this is a no-op build,
+    // but the blocking hop keeps the live-config boot path safe too.)
+    let admin_data_dir = data_dir.clone();
+    let oracle_admin =
+        tokio::task::spawn_blocking(move || oracle_cfg::build_admin(admin_data_dir, oracle_config))
+            .await?;
+
+    let chain = Chain::new(DEVNET_CHAIN_ID, genesis_time).with_oracle_admin(oracle_admin);
 
     // Genesis: the pre-verified dev account (M3 proof-of-humanity stands in for this `verified` flag
     // via the runtime `Verifier` trait). Streams 1 UBI/hour from genesis.
@@ -138,6 +156,22 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  HumanityHub       : 0x0000000000000000000000000000000000005048 (\"PH\")");
     tracing::info!("  ContractHub       : 0x0000000000000000000000000000000000005043 (\"PC\")");
     tracing::info!("  block tick        : {block_ms} ms");
+    // AI backend: which impl ended up active after resolving the config (Mock unless a reachable live
+    // provider was configured). The admin RPC (`ubi_getOracleConfig`/`ubi_setOracleConfig`) is
+    // localhost-only; the secret-free config lives at `<data_dir>/oracle.json`.
+    let admin_status = chain.oracle_admin().get_config_json();
+    tracing::info!(
+        "  AI backend        : {} (provider={}, model={})",
+        admin_status["active"].as_str().unwrap_or("mock"),
+        admin_status["health"]["provider"]
+            .as_str()
+            .unwrap_or("mock"),
+        admin_status["health"]["model"].as_str().unwrap_or(""),
+    );
+    tracing::info!(
+        "  oracle config     : {} (admin RPC: ubi_getOracleConfig/ubi_setOracleConfig, localhost-only)",
+        oracle_cfg::config_path(&data_dir).display()
+    );
 
     // Block-production loop: tick every `block_ms`, mine pending txs, advance height + newHeads.
     let block_chain = chain.clone();

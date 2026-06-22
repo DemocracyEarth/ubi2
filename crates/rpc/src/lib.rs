@@ -16,9 +16,16 @@
 //!   handled by alloy.
 //!
 //! ## Documented deviations from Ethereum (invariant I3)
-//! * **Gas is nominal.** `eth_gasPrice` is a flat constant, `eth_estimateGas` returns `0x5208`
-//!   (21000) for transfers, and gas is *not* charged against balances on devnet. Wallets only need a
-//!   plausible price/estimate to build a tx; UBI is never spent on gas in M1.
+//! * **Gas is a real, flat UBI fee.** `eth_gasPrice` is a flat constant (1 gwei) and there is no
+//!   per-opcode metering: each tx kind has a fixed `gas_used` (transfer `21000`; StreamHub `60000`;
+//!   HumanityHub `80000`; ContractHub `120000`). `eth_estimateGas` returns the per-kind gas for the
+//!   call's target so a wallet's `gasLimit * gasPrice` preview equals the UBI deducted. The fee
+//!   `gas_used * gas_price` (base units) is charged to the sender at apply time and credited to the
+//!   reserved TREASURY (`0x…5542`) — fee recycling, the M5 redistribution basis. Sender needs
+//!   `value + fee`; an under-funded tx is dropped. (Verified humans stream 1 UBI/hr, far above the
+//!   `~2.1e13`-base-unit transfer fee, so they always cover it.) **`requestVerification` (onboarding)
+//!   is the one fee-exempt tx kind** — a not-yet-verified account has no UBI to pay with, so the
+//!   network subsidizes the bootstrap gate (its `eth_estimateGas` is `0x0`).
 //! * **`eth_call` is minimal.** There is no EVM; calls return `0x`. M1 has no contracts (deferred to
 //!   M4 prompt-contracts).
 //! * **Blocks are empty-or-tx containers** produced on a fixed clock tick; there is no real PoW/PoS,
@@ -42,14 +49,15 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    apply_transfer, challenge as lc_challenge, deploy_contract as lc_deploy_contract,
+    apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
     finalize_registration, fund_contract as lc_fund_contract,
     invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
     submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
     vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
     ContractInterpreter, ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle,
-    Juror, LivenessEvidence, MemState, MockInterpreter, MockOracle, Op, PromptContract, State,
-    Stream, StreamStatus, Verdict,
+    Juror, LivenessEvidence, MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict,
+    GAS_CONTRACT, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM,
+    GAS_TRANSFER, TREASURY,
 };
 
 pub mod streams;
@@ -71,14 +79,75 @@ use contracts::{
     CalldataError as ContractCalldataError, ContractOp, CONTRACT_HUB,
 };
 
+pub mod oracle_admin;
+use oracle_admin::{bad_config_error, is_loopback, not_loopback_error};
+pub use oracle_admin::{
+    ActiveImpl, BuiltOracle, OracleAdmin, OracleConfig, OracleFactory, OracleHealth,
+};
+
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
 pub const DEVNET_CHAIN_ID: u64 = 0x5542;
 
-/// Flat devnet gas price (1 gwei) — nominal; gas is not charged on devnet (see module docs).
-const GAS_PRICE_WEI: u64 = 1_000_000_000;
+/// Flat devnet gas price (1 gwei), as a `u64` for the JSON quantity helpers. Sourced from the runtime
+/// constant ([`RT_GAS_PRICE_WEI`]) so the price the RPC advertises (`eth_gasPrice`) is exactly the
+/// price the runtime charges the fee at — a wallet's `gasLimit * gasPrice` preview equals the UBI
+/// deducted.
+const GAS_PRICE_WEI: u64 = RT_GAS_PRICE_WEI as u64;
 
-/// Gas a plain value transfer "costs" in the EVM — returned verbatim by `eth_estimateGas`.
-const TRANSFER_GAS: u64 = 21_000;
+/// Gas a plain value transfer costs — the EVM intrinsic `21000`, sourced from the runtime constant.
+const TRANSFER_GAS: u64 = GAS_TRANSFER;
+
+/// Deterministic per-kind gas for a queued tx — the `gas_used` the UBI fee is charged on and the value
+/// `eth_estimateGas` returns. A small constant per tx kind (no metering): transfers pay the EVM
+/// intrinsic; hub ops pay progressively more to reflect their bookkeeping (escrow/index/quorum). This
+/// is consensus state (I2): every node charges the same sender the same fee for the same tx kind.
+fn gas_for_kind(kind: &PendingKind) -> u64 {
+    match kind {
+        PendingKind::Transfer { .. } => GAS_TRANSFER,
+        PendingKind::OpenStream { .. } | PendingKind::StopStream { .. } => GAS_STREAM,
+        // Onboarding is fee-exempt: a not-yet-verified account has no UBI to pay with (bootstrap gate).
+        PendingKind::RequestVerification { .. } => GAS_ONBOARD,
+        PendingKind::Vouch { .. }
+        | PendingKind::Challenge { .. }
+        | PendingKind::SubmitVerdict { .. } => GAS_HUMANITY,
+        PendingKind::DeployContract { .. }
+        | PendingKind::FundContract { .. }
+        | PendingKind::InvokeContract { .. }
+        | PendingKind::SubmitEffect { .. } => GAS_CONTRACT,
+    }
+}
+
+/// Gas for an `eth_estimateGas` / `eth_call` call object, by its `to` address. Each hub charges one
+/// gas tier for *all* its methods (matching [`gas_for_kind`]), so the destination address alone fixes
+/// the estimate — no selector decode needed. A call with no `to` (contract creation) or to any
+/// non-hub address is a plain transfer (`21000`). Keeps `eth_estimateGas` in lock-step with the fee
+/// the apply path actually charges, so MetaMask's preview matches the deduction.
+fn gas_for_call_obj(call: &Value) -> u64 {
+    let to = call
+        .get("to")
+        .and_then(|v| v.as_str())
+        .and_then(decode_hex)
+        .filter(|b| b.len() == 20);
+    let data = call
+        .get("data")
+        .or_else(|| call.get("input"))
+        .and_then(|v| v.as_str())
+        .and_then(decode_hex)
+        .unwrap_or_default();
+    match to.as_deref() {
+        Some(a) if a == STREAM_HUB.as_slice() => GAS_STREAM,
+        Some(a) if a == HUMANITY_HUB.as_slice() => {
+            // `requestVerification` (onboarding) is fee-exempt, so MetaMask's zero-balance preflight
+            // estimate is 0 and the new human can submit. Other HumanityHub ops pay the humanity tier.
+            match parse_humanity_calldata(&data) {
+                Ok(HumanityOp::RequestVerification { .. }) => GAS_ONBOARD,
+                _ => GAS_HUMANITY,
+            }
+        }
+        Some(a) if a == CONTRACT_HUB.as_slice() => GAS_CONTRACT,
+        _ => GAS_TRANSFER,
+    }
+}
 
 /// Client version string returned by `web3_clientVersion`.
 const CLIENT_VERSION: &str = "ubi2-node/v0.2.0-m2";
@@ -132,6 +201,17 @@ pub const M4_METHODS: &[&str] = &[
     "ubi_getAccount",
 ];
 
+/// EXPL-2 deep decoded explorer reads (custom `ubi_*` surface): a full decoded block and a full
+/// decoded transaction (system-hub call + decoded logs + resulting state effect/verdict/status).
+/// Standard `eth_getBlockByNumber`/`eth_getTransactionByHash` stay intact for wallets; these are the
+/// explorer's richer surface. Kept for docs / tests.
+pub const EXPL2_METHODS: &[&str] = &["ubi_getBlock", "ubi_getTransaction"];
+
+/// LOCALHOST-ONLY AI-backend admin (`ubi_*`): the wallet's Settings panel reads/updates which LLM the
+/// node calls. Both methods are rejected for non-loopback callers (see [`oracle_admin`]). Kept for
+/// docs / tests.
+pub const ADMIN_METHODS: &[&str] = &["ubi_getOracleConfig", "ubi_setOracleConfig"];
+
 // ---------------------------------------------------------------------------------------------
 // Block / transaction model
 // ---------------------------------------------------------------------------------------------
@@ -161,6 +241,9 @@ pub struct StoredTx {
     pub input: Vec<u8>,
     /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints).
     pub logs: Vec<TxLog>,
+    /// Gas this tx consumed — the per-kind constant the UBI fee was charged on (`fee = gas * price`).
+    /// Surfaced verbatim in `eth_getTransactionReceipt` (`gasUsed`) and the tx's `gas`/block `gasUsed`.
+    pub gas_used: u64,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -753,15 +836,12 @@ pub struct Chain {
     sub_seq: Arc<AtomicU64>,
     /// `newHeads` fan-out: every produced block is broadcast to live WS subscribers.
     heads_tx: broadcast::Sender<Block>,
-    /// The M3 proof-of-humanity oracle each juror node runs (the AI seam, I1/I5). The devnet wires the
-    /// deterministic [`MockOracle`] so the whole lifecycle verifies end-to-end with no model calls; the
-    /// live node swaps a Claude-backed impl behind the same trait via [`Chain::with_oracle`].
-    oracle: Arc<dyn HumanityOracle>,
-    /// The M4 prompt-contract interpreter the node runs at block time (the AI seam, I1/I5). The devnet
-    /// wires the deterministic [`MockInterpreter`] (every juror computes the same canonical effect, so
-    /// the quorum forms reproducibly with no model calls); the live node swaps a Claude-backed
-    /// `ClaudeInterpreter` (M4-T3) behind the same trait via [`Chain::with_interpreter`].
-    interpreter: Arc<dyn ContractInterpreter>,
+    /// The hot-swappable AI backend (the proof-of-humanity oracle + the prompt-contract interpreter, both
+    /// AI seams — I1/I5). The devnet boots the deterministic `MockOracle`/`MockInterpreter` so the whole
+    /// lifecycle verifies end-to-end with no model calls; a node configured with a live provider (boot
+    /// config + the localhost-only `ubi_setOracleConfig`) swaps a provider-backed impl behind the same
+    /// runtime traits at runtime. See [`oracle_admin`].
+    oracle_admin: Arc<OracleAdmin>,
 }
 
 impl Chain {
@@ -792,31 +872,43 @@ impl Chain {
             genesis_time,
             sub_seq: Arc::new(AtomicU64::new(1)),
             heads_tx,
-            // Devnet default: the deterministic MockOracle (everyone votes a confident `Human` unless
-            // a per-input override is scripted), so registrations verify end-to-end in CI (I5). The
-            // live node swaps a Claude-backed oracle via `with_oracle`.
-            oracle: Arc::new(MockOracle::default()),
-            // Devnet default: the deterministic MockInterpreter (a no-op effect unless a per-input
-            // override is scripted). The live node swaps a Claude-backed interpreter via
-            // `with_interpreter`.
-            interpreter: Arc::new(MockInterpreter::default()),
+            // Devnet default: the deterministic MockOracle/MockInterpreter (everyone votes a confident
+            // `Human` / a no-op effect unless a per-input override is scripted), so the lifecycle
+            // verifies end-to-end in CI (I5). The node may swap a provider-backed impl at runtime via
+            // the localhost-only admin RPC (`with_oracle_admin`).
+            oracle_admin: Arc::new(OracleAdmin::mock_only()),
         }
     }
 
-    /// Replace the proof-of-humanity oracle (the AI seam — I1/I5). The devnet uses the deterministic
-    /// [`MockOracle`]; this is the single swap point for a Claude-backed `HumanityOracle` (e.g. wired
-    /// from an env flag by the node). All other behavior is unchanged.
-    pub fn with_oracle(mut self, oracle: Arc<dyn HumanityOracle>) -> Self {
-        self.oracle = oracle;
+    /// Install a node-configured [`OracleAdmin`] (the hot-swappable AI backend + its localhost-only admin
+    /// surface). The node builds this from its boot config (a JSON file under the data dir + env
+    /// overrides) and a factory over `ubi2-oracle`; absent a call, the chain runs the deterministic Mock
+    /// impls. This is the single wiring point for a live provider.
+    pub fn with_oracle_admin(mut self, admin: Arc<OracleAdmin>) -> Self {
+        self.oracle_admin = admin;
         self
     }
 
-    /// Replace the prompt-contract interpreter (the AI seam — I1/I5). The devnet uses the deterministic
-    /// [`MockInterpreter`]; this is the single swap point for a Claude-backed `ContractInterpreter`
-    /// (M4-T3). All other behavior is unchanged.
-    pub fn with_interpreter(mut self, interpreter: Arc<dyn ContractInterpreter>) -> Self {
-        self.interpreter = interpreter;
+    /// Replace the proof-of-humanity oracle (the AI seam — I1/I5) with a fixed impl, keeping the Mock
+    /// interpreter. Test/back-compat helper; the node uses [`Chain::with_oracle_admin`] for the
+    /// runtime-configurable path.
+    pub fn with_oracle(mut self, oracle: Arc<dyn HumanityOracle>) -> Self {
+        let interpreter = self.oracle_admin.interpreter();
+        self.oracle_admin = Arc::new(OracleAdmin::with_fixed(oracle, interpreter));
         self
+    }
+
+    /// Replace the prompt-contract interpreter (the AI seam — I1/I5) with a fixed impl, keeping the Mock
+    /// oracle. Test/back-compat helper; the node uses [`Chain::with_oracle_admin`].
+    pub fn with_interpreter(mut self, interpreter: Arc<dyn ContractInterpreter>) -> Self {
+        let oracle = self.oracle_admin.oracle();
+        self.oracle_admin = Arc::new(OracleAdmin::with_fixed(oracle, interpreter));
+        self
+    }
+
+    /// The chain's oracle-admin (for the admin RPC handlers + tests).
+    pub fn oracle_admin(&self) -> &Arc<OracleAdmin> {
+        &self.oracle_admin
     }
 
     /// Insert/replace an account in genesis state (used by the node to seed the dev account).
@@ -866,9 +958,10 @@ impl Chain {
     /// empty mempool ⇒ empty block (still advances height — spec §M1-T1.6).
     pub fn produce_block(&self, timestamp: u64) -> Block {
         // Clone the AI-seam Arcs before locking state (the apply loop calls the oracle for liveness
-        // grading and the interpreter for contract effects).
-        let oracle = Arc::clone(&self.oracle);
-        let interpreter = Arc::clone(&self.interpreter);
+        // grading and the interpreter for contract effects). Reading from the hot-swappable admin once
+        // per block makes a mid-flight `setOracleConfig` swap atomic at the block boundary.
+        let oracle = self.oracle_admin.oracle();
+        let interpreter = self.oracle_admin.interpreter();
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
@@ -877,6 +970,25 @@ impl Chain {
         let pending = std::mem::take(&mut g.mempool);
         let mut stored = Vec::with_capacity(pending.len());
         for (i, p) in pending.into_iter().enumerate() {
+            // ---- Real UBI gas fee (M5 fee-recycling foundation) ----
+            // Charge `fee = gas_for_kind(kind) * gas_price` in UBI base units to the sender *before*
+            // the op runs, crediting the reserved TREASURY. This is the only fee on the chain and it
+            // is always in UBI (the native currency). The op then operates on the post-fee balance, so
+            // the sender needs `value + fee` — an under-funded tx is rejected with a clear error.
+            //
+            // Fail-closed atomicity (I4): if the op subsequently fails (e.g. a nonce race against state
+            // that advanced since submit), we restore the pre-fee sender + treasury snapshot so the tx
+            // leaves *no* state change — a dropped tx is never charged. `charge_fee` itself settles the
+            // sender first, so its insufficient-balance check runs on the materialized balance (I2).
+            let gas_used = gas_for_kind(&p.kind);
+            let from_addr = p.from.into_array();
+            let sender_pre = g.state.get(&from_addr);
+            let treasury_pre = g.state.get(&TREASURY);
+            if let Err(e) = charge_fee(&mut g.state, &from_addr, gas_used, timestamp) {
+                tracing::warn!(tx = %p.hash, error = %e, "dropping tx: cannot pay gas fee");
+                continue;
+            }
+
             // Apply against current state. Validation already happened at submit time, but state may
             // have advanced; if it now fails (e.g. nonce raced), drop the tx rather than panic.
             let applied: Result<Vec<TxLog>, String> = match &p.kind {
@@ -1140,6 +1252,7 @@ impl Chain {
                         tx_index: i as u64,
                         input: p.input.clone(),
                         logs,
+                        gas_used,
                     };
                     index_tx(&mut g.addr_index, &tx);
                     // EXPL-1: a committed contract effect moves value from the escrow to payees /
@@ -1157,6 +1270,24 @@ impl Chain {
                     stored.push(tx);
                 }
                 Err(e) => {
+                    // The op failed after we charged the fee; roll back the fee so a dropped tx leaves
+                    // no state change (fail-closed, no value moved). Restore the exact pre-fee snapshot
+                    // of the sender and treasury (re-inserting handles the "account did not exist
+                    // before" case — `charge_fee` may have materialized them).
+                    match sender_pre {
+                        Some(acct) => g.state.put(acct),
+                        None => g.state.put(Account {
+                            address: from_addr,
+                            ..Default::default()
+                        }),
+                    }
+                    match treasury_pre {
+                        Some(acct) => g.state.put(acct),
+                        None => g.state.put(Account {
+                            address: TREASURY,
+                            ..Default::default()
+                        }),
+                    }
                     tracing::warn!(tx = %p.hash, error = %e, "dropping tx at block time");
                 }
             }
@@ -1192,6 +1323,8 @@ impl Chain {
                 tx_index: stored.len() as u64,
                 input: Vec::new(),
                 logs: sweep_logs,
+                // A synthetic system tx (no signer, no fee) — it consumes no gas.
+                gas_used: 0,
             };
             index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
@@ -1330,6 +1463,68 @@ impl Chain {
             tx_count,
         }
     }
+
+    // ---- EXPL-2: deep decoded block / tx reads ----
+
+    /// Build the fully-decoded `ubi_getTransaction` JSON for a tx hash (None if unknown). Decodes the
+    /// system-hub call, the emitted logs, and resolves the *resulting state effect / verdict / status*
+    /// from the now-settled state (for an invoke → the committed `CanonicalEffect` or `Aborted`; a
+    /// `submitVerdict`/`challenge`/`requestVerification` → the case outcome + subject status). Pure
+    /// read of `(stored tx, state snapshot)` — every field is deterministic (I2). Locks state once.
+    pub fn decoded_transaction(&self, hash: &B256) -> Option<Value> {
+        let g = self.inner.lock().unwrap();
+        let tx = g.txs.get(hash)?.clone();
+        Some(decoded_tx_json(&g.state, &tx))
+    }
+
+    /// Build the fully-decoded `ubi_getBlock` JSON for a resolved block: the header fields plus the
+    /// FULL list of its txs, each decoded via [`decoded_tx_json`]. `block` is resolved by the caller
+    /// (tag / number / hash). Pure read of `(block, state snapshot)`. Locks state once.
+    pub fn decoded_block_json(&self, block: &Block) -> Value {
+        let g = self.inner.lock().unwrap();
+        let txs: Vec<Value> = block
+            .txs
+            .iter()
+            .map(|tx| decoded_tx_json(&g.state, tx))
+            .collect();
+        json!({
+            "number": hex_u64(block.number),
+            "hash": hex_b256(&block.hash),
+            "parentHash": hex_b256(&block.parent_hash),
+            "timestamp": hex_u64(block.timestamp),
+            "txCount": block.txs.len(),
+            "gasUsed": hex_u64(block_gas_used(block)),
+            "gasLimit": "0x1c9c380",
+            "baseFeePerGas": hex_u64(GAS_PRICE_WEI),
+            // Roots are zero placeholders on devnet (no full header) — surfaced so the explorer can
+            // render the field set Ethereum blocks carry; documented in the module-level deviations.
+            "stateRoot": hex_b256(&B256::ZERO),
+            "transactionsRoot": hex_b256(&B256::ZERO),
+            "receiptsRoot": hex_b256(&B256::ZERO),
+            "miner": "0x0000000000000000000000000000000000000000",
+            "transactions": txs,
+        })
+    }
+
+    /// Resolve a block by `"latest"`/`"earliest"`/`"pending"`/`0x<number>`/`0x<32-byte-hash>` for the
+    /// `ubi_getBlock` explorer read. A 32-byte hex is treated as a block hash; anything else as a tag
+    /// or a block number. Pure read.
+    fn resolve_block_ref(&self, raw: &str) -> Option<Block> {
+        // A 32-byte (64 hex char) value is a block hash; resolve it directly.
+        if let Some(stripped) = raw.strip_prefix("0x") {
+            if stripped.len() == 64 {
+                let bytes = decode_hex(raw)?;
+                let h = B256::from_slice(&bytes);
+                let g = self.inner.lock().unwrap();
+                return g
+                    .blocks_by_hash
+                    .get(&h)
+                    .and_then(|i| g.blocks.get(*i))
+                    .cloned();
+            }
+        }
+        resolve_block_tag(self, raw)
+    }
 }
 
 /// A per-account summary returned by `ubi_getAccount` (EXPL-1): the explorer/social-hub at-a-glance
@@ -1396,6 +1591,57 @@ fn invalid_params(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32602, msg.into(), None::<()>)
 }
 
+/// Enforce the localhost-only admin gate: the call's peer address (injected into the request extensions
+/// by [`serve`]'s accept loop) must be a loopback address. A missing peer address is treated as
+/// **non-loopback** and rejected — fail-closed (we never default-allow an unidentified caller). Used by
+/// `ubi_getOracleConfig` / `ubi_setOracleConfig`.
+fn require_loopback(ext: &jsonrpsee::Extensions) -> RpcResult<()> {
+    match ext.get::<std::net::SocketAddr>() {
+        Some(addr) if is_loopback(addr) => Ok(()),
+        _ => Err(not_loopback_error()),
+    }
+}
+
+/// Parse `ubi_setOracleConfig`'s single object param into the persisted [`OracleConfig`] (secret-free)
+/// plus the optional raw `api_key` (used in-memory, never persisted). Accepts the object either as the
+/// first element of a params array (`[{...}]`) or, leniently, as the bare object. Every field is
+/// optional; an empty object clears to the Mock default.
+fn parse_set_oracle_params(
+    params: &jsonrpsee::types::Params,
+) -> RpcResult<(OracleConfig, Option<String>)> {
+    // jsonrpsee delivers positional params; the wallet sends `[{...}]`. Accept a bare object too.
+    let obj: Value = match params.parse::<Vec<Value>>() {
+        Ok(mut seq) if !seq.is_empty() => seq.swap_remove(0),
+        _ => params
+            .parse::<Value>()
+            .map_err(|_| invalid_params("expected [{provider?, model?, base_url?, api_key?}]"))?,
+    };
+    let o = obj
+        .as_object()
+        .ok_or_else(|| invalid_params("oracle config must be an object"))?;
+
+    // Pull a string field, treating "" as absent (so the wallet can clear a field with an empty box).
+    let str_field = |k: &str| -> Option<String> {
+        o.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let raw_api_key = str_field("api_key");
+    // When a raw key is provided without an explicit env-var name, default the name from the provider so
+    // the node has somewhere to set the in-memory key. The node's factory resolves the default per
+    // provider; we leave `api_key_env` as the caller gave it (possibly None) and pass the raw key through.
+    let config = OracleConfig {
+        provider: str_field("provider"),
+        model: str_field("model"),
+        base_url: str_field("base_url"),
+        api_key_env: str_field("api_key_env"),
+    };
+    Ok((config, raw_api_key))
+}
+
 /// Parse the first param of `[address, block]` shape into a 20-byte address.
 fn parse_addr_param(params: &jsonrpsee::types::Params) -> RpcResult<Address> {
     let seq: Vec<Value> = params
@@ -1452,12 +1698,17 @@ fn block_to_json(block: &Block, full_txs: bool) -> Value {
         "extraData": "0x",
         "size": "0x0",
         "gasLimit": "0x1c9c380",
-        "gasUsed": hex_u64(block.txs.len() as u64 * TRANSFER_GAS),
+        "gasUsed": hex_u64(block_gas_used(block)),
         "timestamp": hex_u64(block.timestamp),
         "transactions": txs,
         "uncles": [],
         "baseFeePerGas": hex_u64(GAS_PRICE_WEI),
     })
+}
+
+/// Total gas a block consumed — the sum of its txs' per-kind `gas_used` (the block `gasUsed` header).
+fn block_gas_used(block: &Block) -> u64 {
+    block.txs.iter().map(|t| t.gas_used).sum()
 }
 
 fn tx_to_json(tx: &StoredTx) -> Value {
@@ -1470,7 +1721,7 @@ fn tx_to_json(tx: &StoredTx) -> Value {
         "from": hex_addr(&tx.from),
         "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
         "value": hex_u256(tx.value),
-        "gas": hex_u64(TRANSFER_GAS),
+        "gas": hex_u64(tx.gas_used),
         "gasPrice": hex_u64(GAS_PRICE_WEI),
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
         "type": "0x0",
@@ -1508,8 +1759,8 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         "blockNumber": hex_u64(tx.block_number),
         "from": hex_addr(&tx.from),
         "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
-        "cumulativeGasUsed": hex_u64(TRANSFER_GAS),
-        "gasUsed": hex_u64(TRANSFER_GAS),
+        "cumulativeGasUsed": hex_u64(tx.gas_used),
+        "gasUsed": hex_u64(tx.gas_used),
         "contractAddress": Value::Null,
         "logs": logs,
         "logsBloom": format!("0x{}", "0".repeat(512)),
@@ -2077,6 +2328,9 @@ fn activity_row_json(tx: &StoredTx, subject: &Address) -> Value {
         "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
         "counterparty": counterparty.map(|a| addr_hex(&a)).map(Value::String).unwrap_or(Value::Null),
         "value": hex_u256(tx.value),
+        // The UBI fee this tx paid (`gas_used * gas_price`, base units) — so a per-account feed can
+        // show what each row cost. Zero for the synthetic finalize/scan sweep tx (no signer, no fee).
+        "fee": hex_u128(tx_fee(tx)),
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
     })
 }
@@ -2092,6 +2346,360 @@ fn account_summary_json(s: &AccountSummary) -> Value {
         "streams_in": s.streams_in,
         "contracts": s.contracts,
         "tx_count": s.tx_count,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// EXPL-2: deep decoded reads (ubi_getBlock / ubi_getTransaction). The block explorer needs every
+// detail of a tx — not just its raw bytes, but a *human-decoded* view: which system hub it called,
+// which method, the decoded args, the events it emitted (decoded), and the resulting committed
+// state effect / verdict / status where applicable. These helpers are all pure, deterministic
+// functions of `(stored tx, state snapshot)` — no floats, hex quantities, 0x addresses/hashes (I2).
+// ---------------------------------------------------------------------------------------------
+
+/// The UBI fee a tx paid, in base units: `gas_used * gas_price`. A synthetic system tx (the
+/// finalize/scan sweep) has `gas_used == 0` and so a zero fee. Pure integer math (I2).
+fn tx_fee(tx: &StoredTx) -> u128 {
+    (tx.gas_used as u128) * RT_GAS_PRICE_WEI
+}
+
+/// Decode a tx's system-hub calldata into a `{hub, method, args}` object an explorer can render as
+/// "StreamHub.openStream(to=0x…, rate=…, deposit=…)" without re-implementing the ABI. Returns:
+/// * a `Transfer` descriptor for a plain value send (empty calldata to a non-hub address),
+/// * a hub call descriptor (`hub` = the hub name, `method` = the decoded op, `args` = a map) for a
+///   StreamHub / HumanityHub / ContractHub tx,
+/// * `System` for the synthetic humanity finalize/scan sweep tx (from==to==HumanityHub, no input),
+/// * `null` for an opaque call we can't decode (unknown selector to a non-hub address).
+///
+/// All addresses are 0x-hex, amounts/ids/refs are 0x-hex, so the shape is byte-stable across nodes.
+fn decode_call_json(tx: &StoredTx) -> Value {
+    let to = match tx.to {
+        Some(a) => a,
+        None => return json!({ "kind": "Create" }),
+    };
+    if to == STREAM_HUB {
+        match parse_calldata(&tx.input) {
+            Ok(StreamOp::Open { to, rate, deposit }) => json!({
+                "kind": "HubCall", "hub": "StreamHub", "method": "openStream",
+                "args": { "to": hex_addr(&to), "rate": hex_u128(rate), "deposit": hex_u128(deposit) },
+            }),
+            Ok(StreamOp::Stop { id }) => json!({
+                "kind": "HubCall", "hub": "StreamHub", "method": "stopStream",
+                "args": { "id": id },
+            }),
+            // The ERC-721 view selectors / unknowns reach a write tx only if a tool simulates them.
+            _ => json!({ "kind": "HubCall", "hub": "StreamHub", "method": null, "args": {} }),
+        }
+    } else if to == HUMANITY_HUB {
+        match parse_humanity_calldata(&tx.input) {
+            Ok(HumanityOp::RequestVerification { liveness_ref }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "requestVerification",
+                "args": { "liveness_ref": hash_hex(&liveness_ref) },
+            }),
+            Ok(HumanityOp::Vouch { vouchee }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "vouch",
+                "args": { "vouchee": hex_addr(&vouchee) },
+            }),
+            Ok(HumanityOp::Challenge {
+                subject,
+                evidence_ref,
+            }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "challenge",
+                "args": { "subject": hex_addr(&subject), "evidence_ref": hash_hex(&evidence_ref) },
+            }),
+            Ok(HumanityOp::SubmitVerdict { case_id, verdict }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "submitVerdict",
+                "args": {
+                    "case_id": case_id,
+                    "verdict": verdict_str(verdict.verdict),
+                    "confidence": confidence_str(verdict.confidence),
+                },
+            }),
+            // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
+            _ => json!({ "kind": "System", "hub": "HumanityHub", "method": "finalizeSweep" }),
+        }
+    } else if to == CONTRACT_HUB {
+        match parse_contract_calldata(&tx.input) {
+            Ok(ContractOp::DeployContract { text_ref, parties }) => json!({
+                "kind": "HubCall", "hub": "ContractHub", "method": "deployContract",
+                "args": {
+                    "text_ref": hash_hex(&text_ref),
+                    "parties": parties.iter().map(hex_addr).collect::<Vec<_>>(),
+                },
+            }),
+            Ok(ContractOp::FundContract { id }) => json!({
+                "kind": "HubCall", "hub": "ContractHub", "method": "fundContract",
+                "args": { "id": id, "value": hex_u256(tx.value) },
+            }),
+            Ok(ContractOp::InvokeContract { id, trigger_ref }) => json!({
+                "kind": "HubCall", "hub": "ContractHub", "method": "invokeContract",
+                "args": { "id": id, "trigger_ref": hash_hex(&trigger_ref) },
+            }),
+            Ok(ContractOp::SubmitEffect { case_id, effect }) => json!({
+                "kind": "HubCall", "hub": "ContractHub", "method": "submitEffect",
+                "args": { "case_id": case_id, "effect": effect_json(&effect) },
+            }),
+            _ => json!({ "kind": "HubCall", "hub": "ContractHub", "method": null, "args": {} }),
+        }
+    } else if tx.input.is_empty() {
+        json!({ "kind": "Transfer", "to": hex_addr(&to), "value": hex_u256(tx.value) })
+    } else {
+        // Opaque calldata to a non-hub address (no EVM on devnet) — surface the raw input only.
+        Value::Null
+    }
+}
+
+/// Decode a single [`TxLog`] into `{name, hub, args}` by matching its signature topic against the
+/// known hub events (StreamOpened/StreamStopped/Transfer, CaseOpened/VerdictSubmitted/StatusChanged,
+/// ContractDeployed/EffectCommitted/EffectAborted). Falls back to `{name: null}` carrying the raw
+/// topics for an event we don't recognize. Pure: the address-typed topics are decoded the same way
+/// `addr_topic`/`u64_topic` encode them, so this is the exact inverse (I2-stable).
+fn decode_log_json(log: &TxLog) -> Value {
+    let sig = log.topics.first().copied().unwrap_or(B256::ZERO);
+    // Recover a left-padded address topic's low 20 bytes.
+    let topic_addr = |i: usize| -> Option<String> {
+        log.topics.get(i).map(|t| {
+            let b = t.as_slice();
+            let mut a = [0u8; 20];
+            a.copy_from_slice(&b[12..]);
+            addr_hex(&a)
+        })
+    };
+    // Recover a u64 from a left-padded numeric topic (the low 8 bytes).
+    let topic_u64 = |i: usize| -> Option<u64> {
+        log.topics.get(i).map(|t| {
+            let b = t.as_slice();
+            let mut w = [0u8; 8];
+            w.copy_from_slice(&b[24..]);
+            u64::from_be_bytes(w)
+        })
+    };
+    // The trailing 1-byte ABI uint in the log `data` (left-padded to a 32-byte word).
+    let data_u8 = || -> Option<u8> { log.data.last().copied() };
+
+    if sig == stream_opened_topic() {
+        json!({ "name": "StreamOpened", "hub": "StreamHub", "args": {
+            "id": topic_u64(1), "from": topic_addr(2), "to": topic_addr(3),
+        }})
+    } else if sig == stream_stopped_topic() {
+        json!({ "name": "StreamStopped", "hub": "StreamHub", "args": {
+            "id": topic_u64(1), "caller": topic_addr(2),
+        }})
+    } else if sig == transfer_topic() {
+        // ERC-721 Transfer(from, to, tokenId) — the two stream-NFT mints. tokenId is in topic[3].
+        let token_id = log
+            .topics
+            .get(3)
+            .map(|t| hex_u256(U256::from_be_bytes(t.0)));
+        json!({ "name": "Transfer", "hub": "StreamHub", "args": {
+            "from": topic_addr(1), "to": topic_addr(2), "token_id": token_id,
+        }})
+    } else if sig == case_opened_topic() {
+        // HumanityHub CaseOpened(caseId, subject, kind); kind byte in data.
+        let kind = data_u8().map(|b| match b {
+            0 => "Registration",
+            1 => "Challenge",
+            _ => "Unknown",
+        });
+        json!({ "name": "CaseOpened", "hub": "HumanityHub", "args": {
+            "case_id": topic_u64(1), "subject": topic_addr(2), "kind": kind,
+        }})
+    } else if sig == verdict_submitted_topic() {
+        let verdict = data_u8().map(|b| match b {
+            0 => "Human",
+            1 => "Sybil",
+            2 => "Uncertain",
+            _ => "Unknown",
+        });
+        json!({ "name": "VerdictSubmitted", "hub": "HumanityHub", "args": {
+            "case_id": topic_u64(1), "juror": topic_addr(2), "verdict": verdict,
+        }})
+    } else if sig == status_changed_topic() {
+        let status = data_u8().map(|b| match b {
+            0 => "Unverified",
+            1 => "Pending",
+            2 => "Verified",
+            3 => "Challenged",
+            4 => "Revoked",
+            _ => "Unknown",
+        });
+        json!({ "name": "StatusChanged", "hub": "HumanityHub", "args": {
+            "subject": topic_addr(1), "status": status,
+        }})
+    } else if sig == contract_deployed_topic() {
+        let text_ref = log
+            .data
+            .first()
+            .map(|_| format!("0x{}", hex::encode(&log.data)));
+        json!({ "name": "ContractDeployed", "hub": "ContractHub", "args": {
+            "id": topic_u64(1), "deployer": topic_addr(2), "text_ref": text_ref,
+        }})
+    } else if sig == contract_case_opened_topic() {
+        // ContractHub CaseOpened(caseId, contractId, invoker) — distinct from the HumanityHub one.
+        json!({ "name": "CaseOpened", "hub": "ContractHub", "args": {
+            "case_id": topic_u64(1), "contract_id": topic_u64(2), "invoker": topic_addr(3),
+        }})
+    } else if sig == effect_committed_topic() {
+        let effect_hash = log
+            .data
+            .first()
+            .map(|_| format!("0x{}", hex::encode(&log.data)));
+        json!({ "name": "EffectCommitted", "hub": "ContractHub", "args": {
+            "case_id": topic_u64(1), "contract_id": topic_u64(2), "effect_hash": effect_hash,
+        }})
+    } else if sig == effect_aborted_topic() {
+        json!({ "name": "EffectAborted", "hub": "ContractHub", "args": {
+            "case_id": topic_u64(1), "contract_id": topic_u64(2),
+        }})
+    } else {
+        // Unknown event — surface the raw shape so the explorer can still show it.
+        json!({
+            "name": Value::Null,
+            "address": hex_addr(&log.address),
+            "topics": log.topics.iter().map(hex_b256).collect::<Vec<_>>(),
+            "data": if log.data.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&log.data)) },
+        })
+    }
+}
+
+/// Recover an indexed `caseId` (topic[1]) from the first log on `tx` whose signature matches `sig`.
+/// Used to map an invoke/verdict tx back to the case it opened/voted on, so we can report the case's
+/// *resulting* outcome from the settled state. Deterministic: topics are the exact `u64_topic`
+/// inverse.
+fn case_id_from_log(tx: &StoredTx, sig: B256) -> Option<u64> {
+    for log in &tx.logs {
+        if log.topics.first().copied() == Some(sig) {
+            let b = log.topics.get(1)?.as_slice();
+            let mut w = [0u8; 8];
+            w.copy_from_slice(&b[24..]);
+            return Some(u64::from_be_bytes(w));
+        }
+    }
+    None
+}
+
+/// Resolve the *resulting state effect / verdict / status* a tx produced, read from the settled state
+/// (so the explorer can show "this invoke committed effect 0x… (Transfer 5 UBI → 0x…)" or "this
+/// submitVerdict closed case #N as Sybil → subject Revoked"). Returns `null` for a tx whose kind has
+/// no after-the-fact resolvable outcome (a plain transfer / fund / vouch — the value move is already
+/// in the decoded call + logs). Pure read of `(state, tx)`; the case lookups are deterministic.
+fn tx_result_json(state: &dyn State, tx: &StoredTx) -> Value {
+    let to = match tx.to {
+        Some(a) => a,
+        None => return Value::Null,
+    };
+    if to == CONTRACT_HUB {
+        match parse_contract_calldata(&tx.input) {
+            // An invoke opened a case (CaseOpened in topic[1]); report its current outcome.
+            Ok(ContractOp::InvokeContract { id, .. }) => {
+                let case_id = case_id_from_log(tx, contract_case_opened_topic());
+                if let Some(case) = case_id.and_then(|cid| state.get_exec_case(cid)) {
+                    return json!({
+                        "kind": "ExecCase",
+                        "case_id": case.id,
+                        "contract_id": case.contract,
+                        "outcome": exec_status_json(&case.status),
+                    });
+                }
+                json!({ "kind": "ExecCase", "contract_id": id, "outcome": Value::Null })
+            }
+            // A submitEffect carries a caseId in calldata; report that case's outcome.
+            Ok(ContractOp::SubmitEffect { case_id, .. }) => {
+                if let Some(case) = state.get_exec_case(case_id) {
+                    return json!({
+                        "kind": "ExecCase",
+                        "case_id": case.id,
+                        "contract_id": case.contract,
+                        "outcome": exec_status_json(&case.status),
+                    });
+                }
+                Value::Null
+            }
+            _ => Value::Null,
+        }
+    } else if to == HUMANITY_HUB {
+        match parse_humanity_calldata(&tx.input) {
+            // A challenge / requestVerification opened a case (HumanityHub CaseOpened in topic[1]).
+            Ok(HumanityOp::Challenge { subject, .. }) => {
+                humanity_case_result(state, tx, &subject.into_array())
+            }
+            // requestVerification opens a Registration case for the signer.
+            Ok(HumanityOp::RequestVerification { .. }) => {
+                humanity_case_result(state, tx, &tx.from.into_array())
+            }
+            // A submitVerdict votes on a known caseId; report the (possibly now-committed) case + the
+            // subject's resulting human status.
+            Ok(HumanityOp::SubmitVerdict { case_id, .. }) => {
+                if let Some(case) = state.get_case(case_id) {
+                    let subject_status = state.get_human(&case.subject).map(|h| h.status);
+                    return json!({
+                        "kind": "Case",
+                        "case_id": case.id,
+                        "subject": addr_hex(&case.subject),
+                        "outcome": case_status_json(&case.status),
+                        "subject_status": subject_status.map(human_status_str)
+                            .map(Value::from).unwrap_or(Value::Null),
+                    });
+                }
+                Value::Null
+            }
+            _ => Value::Null,
+        }
+    } else {
+        Value::Null
+    }
+}
+
+/// Resolve the case a challenge / registration tx opened (its `caseId` is in the CaseOpened log) plus
+/// the subject's resulting human status, into the `{kind: "Case", …}` shape. Pure read.
+fn humanity_case_result(state: &dyn State, tx: &StoredTx, subject: &Address) -> Value {
+    let case_id = case_id_from_log(tx, case_opened_topic());
+    let subject_status = state.get_human(subject).map(|h| h.status);
+    if let Some(case) = case_id.and_then(|cid| state.get_case(cid)) {
+        return json!({
+            "kind": "Case",
+            "case_id": case.id,
+            "subject": addr_hex(&case.subject),
+            "outcome": case_status_json(&case.status),
+            "subject_status": subject_status.map(human_status_str)
+                .map(Value::from).unwrap_or(Value::Null),
+        });
+    }
+    json!({
+        "kind": "Case",
+        "subject": addr_hex(subject),
+        "outcome": Value::Null,
+        "subject_status": subject_status.map(human_status_str)
+            .map(Value::from).unwrap_or(Value::Null),
+    })
+}
+
+/// Build the full decoded `ubi_getTransaction` JSON for a stored tx against a state snapshot. The
+/// richest explorer surface: standard tx fields, the UBI `fee` paid, the explorer `kind`, the decoded
+/// system-hub `call` (hub + method + args), the decoded `logs`, and the resolved `result` (committed
+/// effect / case outcome / subject status). Pure + deterministic (I2).
+fn decoded_tx_json(state: &dyn State, tx: &StoredTx) -> Value {
+    let logs: Vec<Value> = tx.logs.iter().map(decode_log_json).collect();
+    json!({
+        "hash": hex_b256(&tx.hash),
+        "blockHash": hex_b256(&tx.block_hash),
+        "blockNumber": hex_u64(tx.block_number),
+        "transactionIndex": hex_u64(tx.tx_index),
+        "from": hex_addr(&tx.from),
+        "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
+        "value": hex_u256(tx.value),
+        "nonce": hex_u64(tx.nonce),
+        "gasUsed": hex_u64(tx.gas_used),
+        "gasPrice": hex_u64(GAS_PRICE_WEI),
+        "fee": hex_u128(tx_fee(tx)),
+        "kind": tx_kind_str(tx),
+        "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
+        // The decoded system-hub call (which hub + method + args) — null for an opaque non-hub call.
+        "call": decode_call_json(tx),
+        // Every emitted log, decoded into {name, hub, args}.
+        "logs": logs,
+        // The resulting committed effect / case verdict / subject status, where applicable.
+        "result": tx_result_json(state, tx),
     })
 }
 
@@ -2157,14 +2765,24 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
+    // The UBI gas price is a flat base fee carried in every block header (`baseFeePerGas =
+    // GAS_PRICE_WEI`), so the priority tip is 0 — a 1559 wallet computes `maxFee = baseFee + tip =
+    // GAS_PRICE_WEI`, exactly the price the runtime charges. (A legacy wallet uses `eth_gasPrice`,
+    // which is the same constant.)
     m.register_method("eth_maxPriorityFeePerGas", |_, _, _| {
         Ok::<_, ErrorObjectOwned>(json!(hex_u64(0)))
     })
     .unwrap();
 
-    // Transfers cost 21000; we don't simulate contract gas in M1.
-    m.register_method("eth_estimateGas", |_, _, _| {
-        Ok::<_, ErrorObjectOwned>(json!(hex_u64(TRANSFER_GAS)))
+    // Per-kind gas estimate. MetaMask preflights *every* tx with `eth_estimateGas` and refuses to let
+    // the user submit if it errors or under-estimates — so we must return the correct per-kind gas for
+    // hub calls (vouch/deploy/invoke), not just transfers. We decode `(to, data)` to the same tx kind
+    // the apply path charges the fee on, so the wallet's `gasLimit * gasPrice` preview equals the UBI
+    // fee deducted. Unknown/missing call → transfer intrinsic (a safe lower bound for a plain send).
+    m.register_method("eth_estimateGas", |params, _, _| {
+        let seq: Vec<Value> = params.parse().unwrap_or_default();
+        let gas = seq.first().map(gas_for_call_obj).unwrap_or(TRANSFER_GAS);
+        Ok::<_, ErrorObjectOwned>(json!(hex_u64(gas)))
     })
     .unwrap();
 
@@ -2178,6 +2796,9 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             .or_else(|| seq.first().and_then(|v| v.as_u64()))
             .unwrap_or(1)
             .clamp(1, 1024) as usize;
+        // Base fee = the flat UBI gas price (matching every block's `baseFeePerGas` header) and a zero
+        // priority reward, so a 1559 wallet's `maxFee = baseFee + tip` resolves to exactly the UBI gas
+        // price the runtime charges.
         let base: Vec<Value> = (0..=count).map(|_| json!(hex_u64(GAS_PRICE_WEI))).collect();
         let reward: Vec<Value> = (0..count).map(|_| json!([hex_u64(0)])).collect();
         let ratios: Vec<Value> = (0..count).map(|_| json!(0.0)).collect();
@@ -2389,6 +3010,87 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
+    // ---- AI-backend admin (ubi_*) — LOCALHOST ONLY ----
+    //
+    // The wallet's Settings panel reads/updates which LLM backend the node calls. These two methods are
+    // **rejected for any non-loopback caller** (the peer SocketAddr is injected into the call extensions
+    // by `serve`'s accept loop): `setOracleConfig` can redirect the node's model/endpoint and carries a
+    // raw API key, so it is a devnet admin surface, not a public RPC. See `oracle_admin` for the security
+    // note and the determinism caveat (a real LLM inline on this single-node devnet is fine; the
+    // multi-node end-state is the off-chain juror/interpreter daemon, FU-7 — that seam is untouched).
+
+    // ubi_getOracleConfig() → { config: {provider, model, base_url, api_key_env}, active: "mock"|"live",
+    //   health: { provider, model, reachable, error } }. The config is secret-free by construction
+    //   (only the env-var NAME is stored, never a key value).
+    m.register_method("ubi_getOracleConfig", |_params, ctx, ext| {
+        require_loopback(ext)?;
+        Ok::<_, ErrorObjectOwned>(ctx.oracle_admin().get_config_json())
+    })
+    .unwrap();
+
+    // ubi_setOracleConfig({ provider?, model?, base_url?, api_key?, api_key_env? }) → the new
+    //   getOracleConfig body. Validates + builds the backend, hot-swaps it into the chain, and persists
+    //   the secret-free config to the node's config file. A failed build leaves the previous impl serving
+    //   (fail-closed) and returns an error. The raw `api_key` (when supplied) is used in-memory only and
+    //   is NEVER persisted or logged — only `api_key_env` (its env-var name) is written to disk.
+    // Async + `spawn_blocking`: building a live backend constructs a blocking HTTP client, which MUST NOT
+    // run on a tokio worker thread (it would panic dropping a runtime in an async context). We validate
+    // the loopback gate + parse params inline, then run the (synchronous) build/hot-swap/persist on the
+    // blocking pool.
+    m.register_async_method("ubi_setOracleConfig", |params, ctx, ext| async move {
+        require_loopback(&ext)?;
+        let (config, api_key) = parse_set_oracle_params(&params)?;
+        let admin = Arc::clone(ctx.oracle_admin());
+        tokio::task::spawn_blocking(move || admin.set_config(config, api_key))
+            .await
+            .map_err(|e| bad_config_error(format!("oracle config task failed: {e}")))?
+            .map_err(bad_config_error)
+    })
+    .unwrap();
+
+    // ---- EXPL-2 deep decoded explorer reads (ubi_*) ----
+
+    // ubi_getBlock(numberOrHashOrTag) → a full decoded block: header fields (number, hash,
+    // parentHash, timestamp, txCount, roots) + the FULL list of its txs, each decoded (from/to/value/
+    // nonce/fee/kind, the decoded system-hub `call`, the decoded `logs`, and the resulting `result`).
+    // Accepts a tag ("latest"/"earliest"/"pending"), a 0x-block-number, or a 0x-32-byte block hash.
+    m.register_method("ubi_getBlock", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [numberOrHashOrTag]"))?;
+        let raw = seq.first().and_then(|v| v.as_str()).unwrap_or("latest");
+        match ctx.resolve_block_ref(raw) {
+            Some(b) => Ok::<_, ErrorObjectOwned>(ctx.decoded_block_json(&b)),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // ubi_getTransaction(hash) → a full decoded tx: from/to/value/nonce/fee/block, the decoded
+    // system-hub `call` (hub + method + args), the decoded `logs` (StreamOpened/CaseOpened/
+    // VerdictSubmitted/StatusChanged/ContractDeployed/EffectCommitted/EffectAborted/Transfer…), and
+    // the resulting `result` (an invoke → the committed effect or Aborted; a submitVerdict → the case
+    // outcome + subject status). Null if the hash is unknown.
+    m.register_method("ubi_getTransaction", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [hash]"))?;
+        let hash_s = seq
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("missing hash"))?;
+        let bytes = decode_hex(hash_s).ok_or_else(|| invalid_params("bad hash hex"))?;
+        if bytes.len() != 32 {
+            return Err(invalid_params("hash must be 32 bytes"));
+        }
+        let h = B256::from_slice(&bytes);
+        match ctx.decoded_transaction(&h) {
+            Some(v) => Ok::<_, ErrorObjectOwned>(v),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
     m.register_method("eth_sendRawTransaction", |params, ctx, _| {
         let seq: Vec<Value> = params
             .parse()
@@ -2532,7 +3234,7 @@ async fn new_heads_subscription(
                         "hash": hex_b256(&block.hash),
                         "parentHash": hex_b256(&block.parent_hash),
                         "timestamp": hex_u64(block.timestamp),
-                        "gasUsed": hex_u64(block.txs.len() as u64 * TRANSFER_GAS),
+                        "gasUsed": hex_u64(block_gas_used(&block)),
                         "gasLimit": "0x1c9c380",
                         "miner": "0x0000000000000000000000000000000000000000",
                         "difficulty": "0x0",
@@ -2562,7 +3264,16 @@ async fn new_heads_subscription(
 
 /// Start the JSON-RPC server on `addr` (HTTP **and** WebSocket share the socket). Returns the
 /// `ServerHandle`; the caller keeps the chain alive and drives `produce_block` on its tick.
+///
+/// We use jsonrpsee's manual accept loop (`to_service_builder` + `serve_with_graceful_shutdown`) rather
+/// than the one-line `Server::start` so we can capture each connection's **peer `SocketAddr`** and inject
+/// it into the per-request extensions. The admin RPC ([`require_loopback`]) reads that address to enforce
+/// its localhost-only gate; the default `start` path does not surface the peer address to method handlers.
+/// All other behavior (HTTP+WS on one socket, the permissive CORS middleware) is unchanged.
 pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<ServerHandle> {
+    use jsonrpsee::server::{serve_with_graceful_shutdown, stop_channel, HttpRequest};
+    use tower::Service;
+
     // The wallet/explorer runs in the browser at localhost:3000 and fetches this RPC at
     // 127.0.0.1:8545 — a cross-origin request the browser guards with a CORS preflight. Without
     // CORS headers every browser `fetch` fails ("Failed to fetch"), even though curl/MetaMask work.
@@ -2571,15 +3282,52 @@ pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<S
     let cors = tower_http::cors::CorsLayer::permissive();
     let http_middleware = tower::ServiceBuilder::new().layer(cors);
 
-    // jsonrpsee's default server speaks both HTTP and WS on one socket, so eth_subscribe (WS) and
-    // the plain HTTP request/response methods are available on the same `:8545` (spec §M1-T1.3).
-    let server = Server::builder()
+    // jsonrpsee's service speaks both HTTP and WS on one socket, so eth_subscribe (WS) and the plain
+    // HTTP request/response methods share the same `:8545` (spec §M1-T1.3).
+    let svc_builder = Server::builder()
         .set_http_middleware(http_middleware)
-        .build(addr)
-        .await?;
-    let module = build_module(chain);
-    let handle = server.start(module);
-    Ok(handle)
+        .to_service_builder();
+    let methods: jsonrpsee::Methods = build_module(chain).into();
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let (stop_handle, server_handle) = stop_channel();
+
+    tokio::spawn(async move {
+        loop {
+            // Accept the next connection, or stop when the handle is dropped/stopped.
+            let (sock, remote_addr) = tokio::select! {
+                res = listener.accept() => match res {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "accept failed");
+                        continue;
+                    }
+                },
+                _ = stop_handle.clone().shutdown() => break,
+            };
+
+            // Build the jsonrpsee tower service once per connection (consumes a clone of the builder);
+            // it is `Clone`, so each request gets its own handle. Wrap it in a `service_fn` that injects
+            // the peer address into the request extensions first — that address flows into each method
+            // call's `Extensions`, where `require_loopback` reads it for the localhost-only admin gate.
+            let jsonrpsee_svc = svc_builder
+                .clone()
+                .build(methods.clone(), stop_handle.clone());
+            let svc = tower::service_fn(move |mut req: HttpRequest<hyper::body::Incoming>| {
+                req.extensions_mut().insert(remote_addr);
+                let mut jsonrpsee_svc = jsonrpsee_svc.clone();
+                jsonrpsee_svc.call(req)
+            });
+
+            tokio::spawn(serve_with_graceful_shutdown(
+                sock,
+                svc,
+                stop_handle.clone().shutdown(),
+            ));
+        }
+    });
+
+    Ok(server_handle)
 }
 
 /// The `next_sub_id` helper exists so subscription ids are unique even before jsonrpsee assigns one

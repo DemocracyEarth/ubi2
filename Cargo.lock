@@ -2953,9 +2953,12 @@ version = "0.0.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ubi2-oracle",
  "ubi2-rpc",
  "ubi2-runtime",
 ]
@@ -2983,6 +2986,7 @@ dependencies = [
  "anyhow",
  "base64",
  "derive_more 1.0.0",
+ "hyper",
  "jsonrpsee",
  "k256",
  "serde",

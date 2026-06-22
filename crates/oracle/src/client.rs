@@ -195,6 +195,22 @@ pub struct ContentBlock {
 }
 
 impl MessagesResponse {
+    /// Wrap a single structured-output JSON document (delivered as text by a non-Anthropic backend's
+    /// reply envelope — Ollama `message.content`, OpenAI `choices[0].message.content`) as a one-block
+    /// `text` response, so the existing schema decoders ([`structured_verdict`](Self::structured_verdict)
+    /// / `crate::interpreter`'s effect decoder) parse it unchanged. This is the single normalization
+    /// point: every provider funnels its reply through here, so all backends share one decode path and
+    /// therefore produce byte-identical canonical outputs (I1/I5).
+    pub fn from_text(text: impl Into<String>) -> Self {
+        Self {
+            content: vec![ContentBlock {
+                kind: "text".to_string(),
+                text: Some(text.into()),
+                input: None,
+            }],
+        }
+    }
+
     /// Extract the [`StructuredVerdict`] from the response, deterministically. Tries a structured
     /// `input` object first, then a `text` block parsed as JSON. Any miss is a [`OracleError::Decode`]
     /// — a deterministic abort, never a guess.
@@ -225,6 +241,16 @@ impl MessagesResponse {
 pub trait Transport: Send + Sync {
     /// Send a pinned request and return the parsed response. Errors are deterministic aborts.
     fn send(&self, req: &MessagesRequest) -> Result<MessagesResponse, OracleError>;
+}
+
+/// A boxed transport is itself a transport. This lets the backend constructor select a provider at
+/// runtime (`Box<dyn Transport>`) while [`ClaudeOracle`](crate::ClaudeOracle) /
+/// [`ClaudeInterpreter`](crate::ClaudeInterpreter) stay generic over `T: Transport` — the same grading
+/// code runs over a static fixture transport (tests) or a dynamic provider transport (node).
+impl Transport for Box<dyn Transport> {
+    fn send(&self, req: &MessagesRequest) -> Result<MessagesResponse, OracleError> {
+        (**self).send(req)
+    }
 }
 
 /// Live transport: a blocking `reqwest` client against the Anthropic Messages API. Constructed only on
