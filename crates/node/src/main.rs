@@ -38,6 +38,19 @@ use ubi2_runtime::Account;
 const DEV_PRIVKEY_PUBLIC: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
+/// **PUBLIC, NON-SECRET devnet juror set (M3).** The standard Hardhat/Anvil accounts #1..#3 — the
+/// deterministic verifier quorum for the devnet (JURY_SIZE = 3, so every case's jury is exactly this
+/// set). Each juror submits its canonical verdict by signing a `submitVerdict` tx with its matching
+/// key (published in every EVM dev toolkit — NOT SECRETS). Register-only in M3 (staking is M5).
+///   acct #1 key: 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+///   acct #2 key: 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+///   acct #3 key: 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
+const DEVNET_JURORS: [alloy_primitives::Address; 3] = [
+    address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+    address!("3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"),
+    address!("90F79bf6EB2c4f870365E785982E1f101E93b906"),
+];
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -75,6 +88,24 @@ async fn main() -> anyhow::Result<()> {
         settled_balance: 0,
         nonce: 0,
     });
+    // M3 (spec criterion 5): migrate the dev account to a `Verified` human in the proof-of-humanity
+    // registry, so `ubi_getHuman` reports it Verified and the M3 lifecycle treats it as a founder
+    // (it can vouch outward). The account cache above already gates emission; this keeps the two in
+    // sync at genesis.
+    chain.seed_verified_human(&dev_addr.into_array(), genesis_time);
+
+    // M3 (board M3-T4 §4): register a few deterministic devnet jurors so every case has a jury to
+    // draw from (the lifecycle fails closed with `NoJurors` otherwise). Register-only in M3 (staking
+    // is M5); the addresses below are fixed, documented, non-secret devnet constants. With JURY_SIZE
+    // = 3 and these three jurors, every case's jury is exactly this set, and a juror submits its
+    // verdict by signing a `submitVerdict` tx from the matching key (the keys are the standard
+    // Hardhat/Anvil accounts #1..#3, published in every EVM dev toolkit — NOT SECRETS).
+    //   juror #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 (Anvil acct #1)
+    //   juror #2: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC (Anvil acct #2)
+    //   juror #3: 0x90F79bf6EB2c4f870365E785982E1f101E93b906 (Anvil acct #3)
+    for juror in DEVNET_JURORS {
+        chain.register_juror(&juror.into_array(), 0);
+    }
 
     let handle = serve(addr, chain.clone()).await?;
 
@@ -87,6 +118,13 @@ async fn main() -> anyhow::Result<()> {
         hex::encode(dev_addr.as_slice())
     );
     tracing::info!("  dev key (PUBLIC)  : {DEV_PRIVKEY_PUBLIC}");
+    for (i, juror) in DEVNET_JURORS.iter().enumerate() {
+        tracing::info!(
+            "  juror #{}           : 0x{}",
+            i + 1,
+            hex::encode(juror.as_slice())
+        );
+    }
     tracing::info!("  block tick        : {block_ms} ms");
 
     // Block-production loop: tick every `block_ms`, mine pending txs, advance height + newHeads.

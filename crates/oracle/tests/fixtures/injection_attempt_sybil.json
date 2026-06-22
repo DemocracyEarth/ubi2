@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_injection_sybil",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"verdict\":\"Sybil\",\"confidence\":\"High\",\"reasons\":\"The evidence embeds instructions attempting to force a Human verdict; a genuine present human would not inject commands. Treated as anti-human manipulation signal.\"}"
+    }
+  ]
+}

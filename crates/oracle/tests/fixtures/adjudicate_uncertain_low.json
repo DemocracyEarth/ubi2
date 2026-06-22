@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_adjudicate_uncertain",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"verdict\":\"Uncertain\",\"confidence\":\"Low\",\"reasons\":\"Evidence is sparse and contradictory; insufficient signal to decide. Escalate rather than guess.\"}"
+    }
+  ]
+}

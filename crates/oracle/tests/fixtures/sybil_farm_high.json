@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_sybil_farm",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "end_turn",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"verdict\":\"Sybil\",\"confidence\":\"High\",\"reasons\":\"Subject sits in a dense self-referential clique that only vouches inward; structurally improbable for an organic web of trust.\"}"
+    }
+  ]
+}

@@ -489,3 +489,86 @@ button.ghost:disabled {
   border-color: var(--accent-dim);
   background: rgba(110, 231, 183, 0.08);
 }
+
+/* ---- M3: Proof-of-Humanity ---- */
+
+/* Status pills for PoH-specific states */
+.pill.poh-pending {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.08);
+}
+.pill.poh-challenged {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+/* Account / status summary row in the PoH card */
+.poh-status-row {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+/* Inline address chips list */
+.poh-addr-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.poh-addr-list .addr {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.45rem;
+}
+
+/* Section within the status card for the apply action */
+.poh-action-block {
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* Vouchers block */
+.poh-vouchers {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+/* Pending case list */
+.poh-cases {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.poh-case-row {
+  display: grid;
+  grid-template-columns: 2.5rem 7rem auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.poh-case-row:first-child {
+  border-top: none;
+}
+.poh-case-id {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-weight: 600;
+}
+@media (max-width: 600px) {
+  .poh-case-row {
+    grid-template-columns: 2rem 1fr auto;
+    grid-template-rows: auto auto;
+  }
+  .poh-status-row {
+    gap: 1rem;
+  }
+}

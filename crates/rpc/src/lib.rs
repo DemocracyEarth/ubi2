@@ -42,14 +42,23 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    apply_transfer, open_stream, stop_stream, Account, Address, MemState, State, Stream,
-    StreamStatus,
+    apply_transfer, challenge as lc_challenge, finalize_registration, open_stream,
+    request_verification, stop_stream, submit_verdict, system_challenge as lc_system_challenge,
+    vouch as lc_vouch, Account, Address, Case, CaseKind, CaseStatus, Confidence, Human,
+    HumanStatus, HumanityOracle, Juror, LivenessEvidence, MemState, MockOracle, State, Stream,
+    StreamStatus, Verdict,
 };
 
 pub mod streams;
 use streams::{
     decode_token_id, parse_calldata, render_token_uri, CalldataError, CardData, Side, StreamOp,
     STREAM_HUB,
+};
+
+pub mod humanity;
+use humanity::{
+    addr_topic as h_addr_topic, derive_liveness, parse_calldata as parse_humanity_calldata,
+    u64_topic as h_u64_topic, CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
 };
 
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
@@ -91,6 +100,16 @@ pub const M1_METHODS: &[&str] = &[
 /// M2 stream-read methods (custom `ubi_*` surface; `eth_call`/`eth_sendRawTransaction`/`eth_getBalance`
 /// are M1 methods extended in place to recognize StreamHub). Kept for documentation / tests.
 pub const M2_METHODS: &[&str] = &["ubi_getStream", "ubi_getStreams"];
+
+/// M3 proof-of-humanity read methods (custom `ubi_*` surface; the write surface is
+/// `eth_sendRawTransaction` extended in place to recognize the HumanityHub). Kept for docs / tests.
+pub const M3_METHODS: &[&str] = &[
+    "ubi_getHuman",
+    "ubi_getCase",
+    "ubi_getVouches",
+    "ubi_getJurors",
+    "ubi_getPendingCases",
+];
 
 // ---------------------------------------------------------------------------------------------
 // Block / transaction model
@@ -172,6 +191,22 @@ enum PendingKind {
     },
     /// `stopStream` to StreamHub: stop stream `id` (signer must be the sender).
     StopStream { id: u64 },
+
+    // ---- M3: proof-of-humanity ops to HumanityHub ----
+    /// `requestVerification(livenessRef)`: open a registration for the signer.
+    RequestVerification { liveness_ref: [u8; 32] },
+    /// `vouch(vouchee)`: the (Verified) signer vouches for `vouchee`.
+    Vouch { vouchee: AlloyAddr },
+    /// `challenge(subject, evidenceRef)`: open a challenge against `subject`.
+    Challenge {
+        subject: AlloyAddr,
+        evidence_ref: [u8; 32],
+    },
+    /// `submitVerdict(caseId, verdict, confidence)`: a juror's canonical verdict.
+    SubmitVerdict {
+        case_id: u64,
+        verdict: ubi2_runtime::CanonicalVerdict,
+    },
 }
 
 /// A tx that passed validation in `eth_sendRawTransaction` and is queued for the next block.
@@ -298,6 +333,187 @@ fn stream_stop_logs(id: u64, caller: AlloyAddr) -> Vec<TxLog> {
     }]
 }
 
+// ---------------------------------------------------------------------------------------------
+// M3 proof-of-humanity event logs (carried in tx receipts — spec 03 §"RPC / interfaces").
+// ---------------------------------------------------------------------------------------------
+
+/// Topic for `CaseOpened(uint256 indexed caseId, address indexed subject, uint8 kind)` — emitted when
+/// a registration or challenge case is opened. `kind` (0=Registration,1=Challenge) is in `data`.
+fn case_opened_topic() -> B256 {
+    keccak256(b"CaseOpened(uint256,address,uint8)")
+}
+/// Topic for `VerdictSubmitted(uint256 indexed caseId, address indexed juror, uint8 verdict)` —
+/// emitted on each accepted `submitVerdict`. `verdict` byte (0=Human,1=Sybil,2=Uncertain) in `data`.
+fn verdict_submitted_topic() -> B256 {
+    keccak256(b"VerdictSubmitted(uint256,address,uint8)")
+}
+/// Topic for `StatusChanged(address indexed subject, uint8 status)` — emitted when a subject's
+/// `HumanStatus` changes as a lifecycle effect (e.g. Pending→Verified, *→Revoked). `status` in `data`.
+fn status_changed_topic() -> B256 {
+    keccak256(b"StatusChanged(address,uint8)")
+}
+
+/// Encode a [`CaseKind`] as the 1-byte ABI value used in the `CaseOpened` log `data` (0/1).
+fn case_kind_u8(kind: CaseKind) -> u8 {
+    match kind {
+        CaseKind::Registration => 0,
+        CaseKind::Challenge => 1,
+    }
+}
+/// Encode a [`Verdict`] as its 1-byte ABI value (0=Human,1=Sybil,2=Uncertain).
+fn verdict_u8(v: Verdict) -> u8 {
+    match v {
+        Verdict::Human => 0,
+        Verdict::Sybil => 1,
+        Verdict::Uncertain => 2,
+    }
+}
+/// Encode a [`HumanStatus`] as a stable 1-byte ABI value
+/// (0=Unverified,1=Pending,2=Verified,3=Challenged,4=Revoked).
+fn human_status_u8(s: HumanStatus) -> u8 {
+    match s {
+        HumanStatus::Unverified => 0,
+        HumanStatus::Pending => 1,
+        HumanStatus::Verified => 2,
+        HumanStatus::Challenged => 3,
+        HumanStatus::Revoked => 4,
+    }
+}
+
+/// 32-byte right-padded `data` word for a single ABI `uint8` (EVM left-pads small uints).
+fn u8_data(v: u8) -> Vec<u8> {
+    let mut b = [0u8; 32];
+    b[31] = v;
+    b.to_vec()
+}
+
+/// A `CaseOpened(caseId, subject, kind)` log for a freshly opened case.
+fn case_opened_log(case: &Case) -> TxLog {
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            case_opened_topic(),
+            h_u64_topic(case.id),
+            h_addr_topic(&AlloyAddr::from(case.subject)),
+        ],
+        data: u8_data(case_kind_u8(case.kind)),
+    }
+}
+
+/// A `VerdictSubmitted(caseId, juror, verdict)` log for an accepted juror vote.
+fn verdict_submitted_log(case_id: u64, juror: &AlloyAddr, verdict: Verdict) -> TxLog {
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            verdict_submitted_topic(),
+            h_u64_topic(case_id),
+            h_addr_topic(juror),
+        ],
+        data: u8_data(verdict_u8(verdict)),
+    }
+}
+
+/// A `StatusChanged(subject, status)` log for a lifecycle status transition.
+fn status_changed_log(subject: &Address, status: HumanStatus) -> TxLog {
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            status_changed_topic(),
+            h_addr_topic(&AlloyAddr::from(*subject)),
+        ],
+        data: u8_data(human_status_u8(status)),
+    }
+}
+
+/// Fold a block's `(hash, number)` into a `u64` chain-entropy word for deterministic juror selection.
+/// Both inputs are consensus values, so the entropy is byte-reproducible across nodes (spec §"Juror
+/// selection": VRF-style from chain entropy; M3 uses this simpler deterministic-random seed).
+fn block_entropy(hash: B256, number: u64) -> u64 {
+    let b = hash.as_slice();
+    let mut word = [0u8; 8];
+    word.copy_from_slice(&b[..8]);
+    u64::from_be_bytes(word) ^ number
+}
+
+/// Auto-finalize every `Pending` registration whose challenge window has cleared and which satisfies
+/// the finalize gate (liveness passed + ≥MIN_VOUCHES + no open/upheld challenge). `now_block` is the
+/// window clock (block HEIGHT); `verified_at_secs` is the emission epoch (unix SECONDS). Returns the
+/// `StatusChanged(*, Verified)` logs for the humans it finalized. Fail-closed: a human that doesn't
+/// meet the gate is skipped silently (no mutation — I4).
+fn sweep_finalize(state: &mut dyn State, now_block: u64, verified_at_secs: u64) -> Vec<TxLog> {
+    let pending: Vec<Address> = state
+        .humans()
+        .into_iter()
+        .filter(|h| h.status == HumanStatus::Pending)
+        .map(|h| h.address)
+        .collect();
+    let mut logs = Vec::new();
+    for subject in pending {
+        if finalize_registration(state, &subject, now_block, verified_at_secs).is_ok() {
+            logs.push(status_changed_log(&subject, HumanStatus::Verified));
+        }
+    }
+    logs
+}
+
+/// AI sybil-cluster auto-challenge sweep (security finding D / acceptance criterion 6). For each
+/// `Pending` subject (address-sorted, so order-independent — I1), run the node's `oracle.analyze_sybil`
+/// over the deterministic [`graph_view`](State::graph_view) (sorted edges). When the oracle flags the
+/// cluster `Sybil`, auto-file a `system_challenge` against the subject so the jury path adjudicates it
+/// before it can finalize. Skips a subject that already has an open challenge (one-open-per-subject) or
+/// is on cooldown — `system_challenge` enforces both and we ignore those benign errors. Deterministic:
+/// sorted scan, sorted graph, `block_entropy` seed; with the devnet `MockOracle` no model is called.
+fn sweep_sybil_scan(
+    state: &mut dyn State,
+    oracle: &dyn HumanityOracle,
+    block_hash: B256,
+    now_block: u64,
+) -> Vec<TxLog> {
+    let pending: Vec<Address> = state
+        .humans()
+        .into_iter()
+        .filter(|h| h.status == HumanStatus::Pending)
+        .map(|h| h.address)
+        .collect();
+    let mut logs = Vec::new();
+    for subject in pending {
+        let graph = state.graph_view();
+        if oracle.analyze_sybil(&graph, &subject).verdict != Verdict::Sybil {
+            continue;
+        }
+        // The evidence ref commits to "the AI sybil scan flagged this subject's cluster at this block"
+        // (I6: only a commitment on-chain, never the graph/PII). Deterministic from consensus values.
+        let evidence_ref = keccak256(
+            [
+                b"sybil-scan".as_slice(),
+                subject.as_slice(),
+                block_hash.as_slice(),
+            ]
+            .concat(),
+        )
+        .0;
+        let entropy = block_entropy(block_hash, now_block);
+        match lc_system_challenge(
+            state,
+            &HUMANITY_HUB.into_array(),
+            &subject,
+            evidence_ref,
+            entropy,
+            now_block,
+        ) {
+            Ok(case_id) => {
+                if let Some(case) = state.get_case(case_id) {
+                    logs.push(case_opened_log(&case));
+                }
+            }
+            // Benign: subject already has an open challenge, or the system opener is on cooldown for
+            // this subject (a prior scan already cleared Human). No mutation occurred — skip.
+            Err(_) => continue,
+        }
+    }
+    logs
+}
+
 /// Shared node state. Cheaply cloneable (`Arc` inside) so handlers and the tick task share it.
 #[derive(Clone)]
 pub struct Chain {
@@ -309,6 +525,10 @@ pub struct Chain {
     sub_seq: Arc<AtomicU64>,
     /// `newHeads` fan-out: every produced block is broadcast to live WS subscribers.
     heads_tx: broadcast::Sender<Block>,
+    /// The M3 proof-of-humanity oracle each juror node runs (the AI seam, I1/I5). The devnet wires the
+    /// deterministic [`MockOracle`] so the whole lifecycle verifies end-to-end with no model calls; the
+    /// live node swaps a Claude-backed impl behind the same trait via [`Chain::with_oracle`].
+    oracle: Arc<dyn HumanityOracle>,
 }
 
 impl Chain {
@@ -338,12 +558,37 @@ impl Chain {
             genesis_time,
             sub_seq: Arc::new(AtomicU64::new(1)),
             heads_tx,
+            // Devnet default: the deterministic MockOracle (everyone votes a confident `Human` unless
+            // a per-input override is scripted), so registrations verify end-to-end in CI (I5). The
+            // live node swaps a Claude-backed oracle via `with_oracle`.
+            oracle: Arc::new(MockOracle::default()),
         }
+    }
+
+    /// Replace the proof-of-humanity oracle (the AI seam — I1/I5). The devnet uses the deterministic
+    /// [`MockOracle`]; this is the single swap point for a Claude-backed `HumanityOracle` (e.g. wired
+    /// from an env flag by the node). All other behavior is unchanged.
+    pub fn with_oracle(mut self, oracle: Arc<dyn HumanityOracle>) -> Self {
+        self.oracle = oracle;
+        self
     }
 
     /// Insert/replace an account in genesis state (used by the node to seed the dev account).
     pub fn seed_account(&self, account: Account) {
         self.inner.lock().unwrap().state.put(account);
+    }
+
+    /// Register a deterministic devnet juror (register-only in M3; staking is M5). Called by the node
+    /// at genesis to seed the verifier set so cases have a jury to draw from (fail-closed otherwise).
+    pub fn register_juror(&self, addr: &Address, stake: u128) {
+        ubi2_runtime::register_juror(&mut self.inner.lock().unwrap().state, addr, stake);
+    }
+
+    /// Migrate `addr` to a `Verified` human in the M3 registry, with `verified_at` (unix seconds) as
+    /// the emission epoch (M3 spec criterion 5: the genesis dev account is `Verified` for devnet
+    /// continuity). Seeds the M1/M2 account cache too, so emission/streaming are unchanged.
+    pub fn seed_verified_human(&self, addr: &Address, verified_at: u64) {
+        ubi2_runtime::seed_verified_human(&mut self.inner.lock().unwrap().state, addr, verified_at);
     }
 
     /// Live balance of `addr` at `now` (base units). Pure read of `(state, now)` — invariant I2.
@@ -374,6 +619,8 @@ impl Chain {
     /// block, and broadcasts it to `newHeads` subscribers. Called by the node on every clock tick;
     /// empty mempool ⇒ empty block (still advances height — spec §M1-T1.6).
     pub fn produce_block(&self, timestamp: u64) -> Block {
+        // Clone the oracle Arc before locking state (the apply loop calls it for liveness grading).
+        let oracle = Arc::clone(&self.oracle);
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
@@ -421,6 +668,120 @@ impl Chain {
                         })
                         .map(|_refund| stream_stop_logs(*id, p.from))
                 }
+
+                // ---- M3: proof-of-humanity ops ----
+                PendingKind::RequestVerification { liveness_ref } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            // Derive the off-chain liveness bytes from the committed ref (devnet seam — the
+                            // applicant has no off-chain channel to a single-node devnet); the oracle grades
+                            // them deterministically. Window clock = block HEIGHT (`number`); the emission
+                            // epoch is unix SECONDS (`timestamp`), stamped later at finalize.
+                            let (challenge_bytes, response_bytes) = derive_liveness(liveness_ref);
+                            let evidence = LivenessEvidence {
+                                liveness_ref: *liveness_ref,
+                                challenge: &challenge_bytes,
+                                response: &response_bytes,
+                            };
+                            let entropy = block_entropy(hash, number);
+                            request_verification(
+                                &mut g.state,
+                                &*oracle,
+                                &p.from.into_array(),
+                                &evidence,
+                                entropy,
+                                number,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|case_id| {
+                            let mut logs = vec![status_changed_log(
+                                &p.from.into_array(),
+                                HumanStatus::Pending,
+                            )];
+                            if let Some(case) = g.state.get_case(case_id) {
+                                logs.insert(0, case_opened_log(&case));
+                            }
+                            logs
+                        })
+                }
+
+                PendingKind::Vouch { vouchee } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            // Vouch is recorded at block HEIGHT (`number`) — the vouch `at` clock.
+                            lc_vouch(
+                                &mut g.state,
+                                &p.from.into_array(),
+                                &vouchee.into_array(),
+                                number,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|()| Vec::new())
+                }
+
+                PendingKind::Challenge {
+                    subject,
+                    evidence_ref,
+                } => consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                    .and_then(|()| {
+                        let entropy = block_entropy(hash, number);
+                        lc_challenge(
+                            &mut g.state,
+                            &p.from.into_array(),
+                            &subject.into_array(),
+                            *evidence_ref,
+                            entropy,
+                            number,
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                    .map(|case_id| {
+                        let mut logs = Vec::new();
+                        if let Some(case) = g.state.get_case(case_id) {
+                            logs.push(case_opened_log(&case));
+                        }
+                        // A Verified subject flips to Challenged when a challenge opens.
+                        if let Some(h) = g.state.get_human(&subject.into_array()) {
+                            if h.status == HumanStatus::Challenged {
+                                logs.push(status_changed_log(&subject.into_array(), h.status));
+                            }
+                        }
+                        logs
+                    }),
+
+                PendingKind::SubmitVerdict { case_id, verdict } => {
+                    // Snapshot the subject's pre-verdict status so a status change can be logged.
+                    let subject = g.state.get_case(*case_id).map(|c| c.subject);
+                    let pre_status = subject
+                        .and_then(|s| g.state.get_human(&s))
+                        .map(|h| h.status);
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            submit_verdict(
+                                &mut g.state,
+                                *case_id,
+                                &p.from.into_array(),
+                                *verdict,
+                                number,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|_status| {
+                            let mut logs =
+                                vec![verdict_submitted_log(*case_id, &p.from, verdict.verdict)];
+                            // If the committed effect changed the subject's status, log it.
+                            if let Some(subj) = subject {
+                                if let Some(h) = g.state.get_human(&subj) {
+                                    if Some(h.status) != pre_status {
+                                        logs.push(status_changed_log(&subj, h.status));
+                                    }
+                                }
+                            }
+                            logs
+                        })
+                }
             };
 
             match applied {
@@ -444,6 +805,41 @@ impl Chain {
                     tracing::warn!(tx = %p.hash, error = %e, "dropping tx at block time");
                 }
             }
+        }
+
+        // M3 AI sybil-cluster auto-challenge sweep (AC6 / security finding D): before finalizing, run
+        // the node's oracle over the deterministic vouch graph for each Pending subject and auto-file a
+        // `system_challenge` on any flagged sybil cluster — so a vouch farm is challenged (and must
+        // clear the jury) before it can finalize, even when no human happens to challenge it. Runs
+        // BEFORE the finalize sweep so a freshly-opened challenge blocks finalize in the same block.
+        let scan_logs = sweep_sybil_scan(&mut g.state, &*oracle, hash, number);
+
+        // M3 auto-finalize sweep: any `Pending` human whose challenge window has cleared (and which
+        // satisfies liveness + MIN_VOUCHES + no open/upheld challenge) is finalized to `Verified` so
+        // emission starts. `number` is the window clock (block HEIGHT); `timestamp` is the emission
+        // epoch stamped on `verified_at` (unix SECONDS) — the two intentionally-distinct clocks.
+        // Eligibility is checked deterministically by `finalize_registration` (it returns an error and
+        // mutates nothing on any unmet condition — I4), so the sweep only commits clean cases.
+        let mut sweep_logs = scan_logs;
+        sweep_logs.extend(sweep_finalize(&mut g.state, number, timestamp));
+        if !sweep_logs.is_empty() {
+            // Carry the StatusChanged logs in a synthetic system tx so they appear in the block + a
+            // receipt (the tx hash is derived from the block hash so it's stable and unique per block).
+            let sys_hash = keccak256([hash.as_slice(), b"humanity-finalize-sweep"].concat());
+            let tx = StoredTx {
+                hash: sys_hash,
+                from: HUMANITY_HUB,
+                to: Some(HUMANITY_HUB),
+                value: U256::ZERO,
+                nonce: 0,
+                block_number: number,
+                block_hash: hash,
+                tx_index: stored.len() as u64,
+                input: Vec::new(),
+                logs: sweep_logs,
+            };
+            g.txs.insert(sys_hash, tx.clone());
+            stored.push(tx);
         }
 
         let block = Block {
@@ -476,6 +872,39 @@ impl Chain {
     /// Genesis unix time this chain was created at (also the dev account's `verified_at`).
     pub fn genesis_time(&self) -> u64 {
         self.genesis_time
+    }
+
+    // ---- M3: proof-of-humanity reads (pure snapshots — invariants I1/I6) ----
+
+    /// A human record by address (None if `Unverified` / never registered). Pure read.
+    pub fn get_human(&self, addr: &Address) -> Option<Human> {
+        self.inner.lock().unwrap().state.get_human(addr)
+    }
+
+    /// A case by id (None if unknown). Pure read.
+    pub fn get_case(&self, id: u64) -> Option<Case> {
+        self.inner.lock().unwrap().state.get_case(id)
+    }
+
+    /// `addr`'s outgoing vouchees and incoming vouchers (`(vouches_out, vouchers_of)`). Pure read.
+    pub fn vouches_of(&self, addr: &Address) -> (Vec<Address>, Vec<Address>) {
+        let g = self.inner.lock().unwrap();
+        (g.state.vouches_out(addr), g.state.vouchers_of(addr))
+    }
+
+    /// All registered active jurors, sorted ascending. Pure read.
+    pub fn active_jurors(&self) -> Vec<Juror> {
+        let g = self.inner.lock().unwrap();
+        g.state
+            .active_jurors()
+            .into_iter()
+            .filter_map(|a| g.state.get_juror(&a))
+            .collect()
+    }
+
+    /// Ids of all `Open` cases, sorted ascending. Pure read.
+    pub fn open_cases(&self) -> Vec<u64> {
+        self.inner.lock().unwrap().state.open_cases()
     }
 }
 
@@ -703,8 +1132,8 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     let input = env.input().to_vec();
     let value_u256 = env.value();
 
-    // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed only for StreamHub**. A tx to
-    // any other address still must be a plain value transfer (empty calldata).
+    // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed for StreamHub and (M3) the
+    // HumanityHub**. A tx to any other address still must be a plain value transfer (empty calldata).
     let kind = if to == STREAM_HUB {
         // Parse the StreamHub selector + ABI args into a stream op (soulbound selectors revert here).
         match parse_calldata(&input) {
@@ -716,6 +1145,28 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
                 return Err(execution_reverted("soulbound"));
             }
             Err(e) => return Err(invalid_params(format!("StreamHub call: {e}"))),
+        }
+    } else if to == HUMANITY_HUB {
+        // Parse the HumanityHub selector + ABI args into a proof-of-humanity op (M3).
+        match parse_humanity_calldata(&input) {
+            Ok(HumanityOp::RequestVerification { liveness_ref }) => {
+                PendingKind::RequestVerification { liveness_ref }
+            }
+            Ok(HumanityOp::Vouch { vouchee }) => PendingKind::Vouch { vouchee },
+            Ok(HumanityOp::Challenge {
+                subject,
+                evidence_ref,
+            }) => PendingKind::Challenge {
+                subject,
+                evidence_ref,
+            },
+            Ok(HumanityOp::SubmitVerdict { case_id, verdict }) => {
+                PendingKind::SubmitVerdict { case_id, verdict }
+            }
+            Err(HumanityCalldataError::UnknownSelector(_)) => {
+                return Err(execution_reverted("unknown HumanityHub selector"));
+            }
+            Err(e) => return Err(invalid_params(format!("HumanityHub call: {e}"))),
         }
     } else {
         if !input.is_empty() {
@@ -897,6 +1348,117 @@ fn stream_view_json(s: &Stream, now: u64) -> Value {
 }
 
 // ---------------------------------------------------------------------------------------------
+// M3 proof-of-humanity JSON shapes (spec 03 §"RPC / interfaces"). Statuses/verdicts/kinds are
+// rendered as stable lowercase-or-CamelCase strings; addresses + hashes as 0x-hex; ids as numbers.
+// ---------------------------------------------------------------------------------------------
+
+/// String name for a [`HumanStatus`] (the `status` field of `ubi_getHuman`).
+fn human_status_str(s: HumanStatus) -> &'static str {
+    match s {
+        HumanStatus::Unverified => "Unverified",
+        HumanStatus::Pending => "Pending",
+        HumanStatus::Verified => "Verified",
+        HumanStatus::Challenged => "Challenged",
+        HumanStatus::Revoked => "Revoked",
+    }
+}
+
+/// String name for a [`Verdict`].
+fn verdict_str(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Human => "Human",
+        Verdict::Sybil => "Sybil",
+        Verdict::Uncertain => "Uncertain",
+    }
+}
+
+/// String name for a [`Confidence`] bucket.
+fn confidence_str(c: Confidence) -> &'static str {
+    match c {
+        Confidence::Low => "Low",
+        Confidence::Med => "Med",
+        Confidence::High => "High",
+    }
+}
+
+/// String name for a [`CaseKind`].
+fn case_kind_str(k: CaseKind) -> &'static str {
+    match k {
+        CaseKind::Registration => "Registration",
+        CaseKind::Challenge => "Challenge",
+    }
+}
+
+/// 0x-hex of a 20-byte address.
+fn addr_hex(a: &Address) -> String {
+    format!("0x{}", hex::encode(a))
+}
+/// 0x-hex of a 32-byte hash.
+fn hash_hex(h: &[u8; 32]) -> String {
+    format!("0x{}", hex::encode(h))
+}
+
+/// Render a [`Human`] into the `ubi_getHuman` JSON shape. `verified_at` is unix seconds (emission
+/// epoch). Vouchers + commitments are 0x-hex; no PII is ever present (I6).
+fn human_view_json(h: &Human) -> Value {
+    json!({
+        "address": addr_hex(&h.address),
+        "status": human_status_str(h.status),
+        "verified_at": h.verified_at,
+        "liveness_ref": hash_hex(&h.liveness_ref),
+        "vouches_in": h.vouches_in.iter().map(addr_hex).collect::<Vec<_>>(),
+        "reputation": h.reputation,
+    })
+}
+
+/// Render a committed [`CanonicalVerdict`] into a `{verdict, confidence, reasons_hash}` JSON object.
+fn verdict_json(v: &ubi2_runtime::CanonicalVerdict) -> Value {
+    json!({
+        "verdict": verdict_str(v.verdict),
+        "confidence": confidence_str(v.confidence),
+        "reasons_hash": hash_hex(&v.reasons_hash),
+    })
+}
+
+/// Render the case `status` as `{type, ...}` so a `Committed` carries its canonical verdict.
+fn case_status_json(s: &CaseStatus) -> Value {
+    match s {
+        CaseStatus::Open => json!({ "type": "Open" }),
+        CaseStatus::Committed(v) => json!({ "type": "Committed", "verdict": verdict_json(v) }),
+        CaseStatus::Escalated => json!({ "type": "Escalated" }),
+    }
+}
+
+/// Render a [`Case`] into the `ubi_getCase` JSON shape: jury + each submitted juror verdict, the
+/// content-addressed `evidence_ref`, and the case status (with the committed verdict if any).
+fn case_view_json(c: &Case) -> Value {
+    let votes: Vec<Value> = c
+        .votes
+        .iter()
+        .map(|(juror, v)| json!({ "juror": addr_hex(juror), "verdict": verdict_json(v) }))
+        .collect();
+    json!({
+        "id": c.id,
+        "subject": addr_hex(&c.subject),
+        "kind": case_kind_str(c.kind),
+        "evidence_ref": hash_hex(&c.evidence_ref),
+        "jury": c.jury.iter().map(addr_hex).collect::<Vec<_>>(),
+        "votes": votes,
+        "status": case_status_json(&c.status),
+        "opened_at": c.opened_at,
+    })
+}
+
+/// Render a [`Juror`] into the `ubi_getJurors` element shape.
+fn juror_view_json(j: &Juror) -> Value {
+    json!({
+        "address": addr_hex(&j.address),
+        "stake": hex_u128(j.stake),
+        "active": j.active,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------------------------
 
@@ -1050,6 +1612,61 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             .map(|s| stream_view_json(&s, now))
             .collect();
         Ok::<_, ErrorObjectOwned>(json!({ "outgoing": outgoing, "incoming": incoming }))
+    })
+    .unwrap();
+
+    // ---- M3 proof-of-humanity reads (ubi_*) ----
+
+    // ubi_getHuman(address) → the human record, or null if Unverified / never registered.
+    m.register_method("ubi_getHuman", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        match ctx.get_human(&addr) {
+            Some(h) => Ok::<_, ErrorObjectOwned>(human_view_json(&h)),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // ubi_getCase(id) → the case (jury, votes, status), or null if unknown. `id` accepts hex or number.
+    m.register_method("ubi_getCase", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [id]"))?;
+        let id = parse_stream_id_param(seq.first())?;
+        match ctx.get_case(id) {
+            Some(c) => Ok::<_, ErrorObjectOwned>(case_view_json(&c)),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // ubi_getVouches(address) → {outgoing: [vouchees], incoming: [vouchers]} (the web-of-trust edges).
+    m.register_method("ubi_getVouches", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        let (out, inc) = ctx.vouches_of(&addr);
+        Ok::<_, ErrorObjectOwned>(json!({
+            "outgoing": out.iter().map(addr_hex).collect::<Vec<_>>(),
+            "incoming": inc.iter().map(addr_hex).collect::<Vec<_>>(),
+        }))
+    })
+    .unwrap();
+
+    // ubi_getJurors() → the active juror registry.
+    m.register_method("ubi_getJurors", |_, ctx, _| {
+        let jurors: Vec<Value> = ctx.active_jurors().iter().map(juror_view_json).collect();
+        Ok::<_, ErrorObjectOwned>(json!(jurors))
+    })
+    .unwrap();
+
+    // ubi_getPendingCases() → the full case object for every Open case (sorted ascending).
+    m.register_method("ubi_getPendingCases", |_, ctx, _| {
+        let cases: Vec<Value> = ctx
+            .open_cases()
+            .into_iter()
+            .filter_map(|id| ctx.get_case(id))
+            .map(|c| case_view_json(&c))
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(cases))
     })
     .unwrap();
 

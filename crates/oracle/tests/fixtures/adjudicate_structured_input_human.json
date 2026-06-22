@@ -1,0 +1,18 @@
+{
+  "id": "msg_fixture_adjudicate_structured",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "stop_reason": "tool_use",
+  "content": [
+    {
+      "type": "tool_use",
+      "name": "humanity_verdict",
+      "input": {
+        "verdict": "Human",
+        "confidence": "Med",
+        "reasons": "Evidence on balance supports a unique present human and rebuts the challenge."
+      }
+    }
+  ]
+}

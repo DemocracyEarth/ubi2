@@ -11,6 +11,7 @@ import {
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, NETWORK } from "./config";
 import { Streams } from "./streams";
+import { Humanity } from "./humanity";
 
 type Conn = "connecting" | "ok" | "bad";
 
@@ -178,6 +179,9 @@ export default function Home() {
           </p>
         )}
       </section>
+
+      {/* M3: Proof of Humanity */}
+      <Humanity account={DEV_ACCOUNT} />
 
       {/* M2: streaming */}
       <Streams account={DEV_ACCOUNT} />
