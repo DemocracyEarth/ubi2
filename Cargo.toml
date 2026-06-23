@@ -43,6 +43,10 @@ derive_more = { version = "1", features = ["display", "from"] }
 # wired into jsonrpsee via `set_http_middleware`. tower 0.4 matches jsonrpsee 0.24's tower.
 tower = "0.4"
 tower-http = { version = "0.6", features = ["cors"] }
+# hyper 1.x: the RPC `serve` uses jsonrpsee's manual accept loop to capture the peer SocketAddr (for the
+# localhost-only admin RPC). We name `hyper::body::Incoming` for the request type; jsonrpsee 0.24 already
+# pulls hyper 1.x + hyper-util, so this adds no new transitive weight.
+hyper = "1"
 # M3 (ai-engineer / crates/oracle): the live Claude-backed `HumanityOracle`. `reqwest` (rustls, no
 # OpenSSL dep) is the HTTP client for the Anthropic Messages API; the oracle's live path is gated on
 # `ANTHROPIC_API_KEY` and is NEVER exercised in tests/CI (I5 — tests replay recorded fixtures). `serde`

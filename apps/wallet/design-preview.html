@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UBI — design preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#07080c; --bg-2:#0a0c12; --ink:#eef1f7; --muted:#8b91a4; --faint:#5b6072;
+    --accent:#4fe7a8; --accent-2:#8b7bff; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.14);
+    --glass:rgba(255,255,255,.035); --glass-2:rgba(255,255,255,.06);
+    --good:#4fe7a8; --warn:#fbbf5c; --danger:#ff6b6b;
+    --r:16px; --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:'Inter',system-ui,sans-serif; color:var(--ink);
+    background:var(--bg);
+    background-image:
+      radial-gradient(900px 500px at 12% -8%, rgba(79,231,168,.14), transparent 60%),
+      radial-gradient(800px 520px at 92% -4%, rgba(139,123,255,.13), transparent 60%),
+      radial-gradient(700px 600px at 50% 120%, rgba(79,231,168,.06), transparent 60%);
+    background-attachment:fixed; -webkit-font-smoothing:antialiased; letter-spacing:-.01em;
+    min-height:100vh;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:0 22px 80px}
+  a{color:inherit;text-decoration:none}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:9;display:flex;align-items:center;gap:18px;padding:16px 22px;
+      margin:0 -22px 30px; backdrop-filter:blur(18px) saturate(1.2);
+      background:linear-gradient(180deg,rgba(7,8,12,.86),rgba(7,8,12,.52)); border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;letter-spacing:-.02em}
+  .brand .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
+      box-shadow:0 0 0 4px rgba(79,231,168,.16),0 0 22px rgba(79,231,168,.6)}
+  .tabs{display:flex;gap:4px;margin-left:8px}
+  .tab{padding:8px 14px;border-radius:11px;color:var(--muted);font-weight:500;font-size:14px;transition:.18s}
+  .tab:hover{color:var(--ink);background:var(--glass)}
+  .tab.active{color:var(--bg);background:linear-gradient(180deg,#7af0c0,var(--accent));font-weight:600;
+      box-shadow:0 6px 20px -6px rgba(79,231,168,.5)}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--muted);
+      padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:var(--glass)}
+  .pill .live{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 2.2s infinite}
+  .gear{width:38px;height:38px;display:grid;place-items:center;border:1px solid var(--line);border-radius:11px;
+      background:var(--glass);color:var(--muted);cursor:pointer;transition:.18s;font-size:17px}
+  .gear:hover{color:var(--ink);border-color:var(--line-2)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(79,231,168,.5)}50%{box-shadow:0 0 0 7px rgba(79,231,168,0)}}
+
+  /* glass card */
+  .card{position:relative;background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+      padding:22px 24px;backdrop-filter:blur(14px);overflow:hidden}
+  .card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent)}
+  .label{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:600}
+
+  /* hero */
+  .hero{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;margin-bottom:18px}
+  .bal{font-family:var(--mono);font-weight:700;font-size:clamp(34px,6vw,58px);line-height:1.02;letter-spacing:-.03em;
+      background:linear-gradient(180deg,#ffffff 10%,#9af3cf 130%);-webkit-background-clip:text;background-clip:text;color:transparent;
+      font-variant-numeric:tabular-nums;margin:.5rem 0 0}
+  .bal .u{font-size:.34em;color:var(--accent);-webkit-text-fill-color:var(--accent);margin-left:.35em;font-weight:600}
+  .rate{display:inline-flex;align-items:center;gap:7px;margin-top:14px;font-size:13px;color:var(--accent);
+      background:rgba(79,231,168,.08);border:1px solid rgba(79,231,168,.25);border-radius:999px;padding:6px 12px}
+  .rate .drip{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:drip 1.6s ease-in-out infinite}
+  @keyframes drip{0%{transform:translateY(-2px);opacity:.4}50%{transform:translateY(2px);opacity:1}100%{transform:translateY(-2px);opacity:.4}}
+  .acct{display:flex;align-items:center;gap:10px;margin-top:20px}
+  .acct .chip{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--glass-2);
+      border:1px solid var(--line);border-radius:9px;padding:7px 10px}
+  .verified{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#06150f;
+      background:linear-gradient(180deg,#7af0c0,var(--accent));border-radius:999px;padding:5px 11px}
+
+  .mini{display:flex;flex-direction:column;justify-content:center;gap:14px}
+  .stat .label{margin-bottom:6px}
+  .stat .v{font-family:var(--mono);font-size:22px;font-weight:600}
+  .stat .v.green{color:var(--accent)} .stat .v.violet{color:var(--accent-2)}
+
+  /* grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .ch h3{margin:0;font-size:15px;font-weight:600}
+  .tag{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:4px 9px;border-radius:7px}
+  .tag.live{color:var(--accent);background:rgba(79,231,168,.1);border:1px solid rgba(79,231,168,.25)}
+  .tag.ai{color:var(--accent-2);background:rgba(139,123,255,.12);border:1px solid rgba(139,123,255,.3)}
+
+  .flow{font-family:var(--mono);font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  .flow .arrow{flex:1;height:2px;border-radius:2px;background:
+      linear-gradient(90deg,var(--accent),transparent);background-size:200% 100%;animation:stream 1.4s linear infinite}
+  @keyframes stream{to{background-position:-200% 0}}
+  .accrued{font-family:var(--mono);font-size:26px;font-weight:600;color:var(--ink);margin:14px 0 4px;font-variant-numeric:tabular-nums}
+  .bar{height:7px;border-radius:7px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:12px}
+  .bar > i{display:block;height:100%;width:64%;border-radius:7px;background:linear-gradient(90deg,var(--accent),#7af0c0)}
+
+  .row{display:flex;align-items:center;justify-content:space-between;font-size:13.5px;padding:9px 0;border-top:1px solid var(--line)}
+  .row:first-of-type{border-top:0}
+  .row .k{color:var(--muted)} .row .vv{font-family:var(--mono)}
+  .avatars{display:flex} .avatars span{width:26px;height:26px;border-radius:50%;margin-left:-7px;border:2px solid var(--bg);
+      background:linear-gradient(135deg,#2a3550,#46406e);display:grid;place-items:center;font-size:10px;color:#cdd3e6;font-family:var(--mono)}
+
+  .contract{font-size:13.5px;line-height:1.6;color:#c7ccda;background:rgba(139,123,255,.06);
+      border:1px solid rgba(139,123,255,.22);border-radius:12px;padding:13px 15px;margin-bottom:14px}
+  .contract b{color:var(--accent-2);font-weight:600}
+  .effect{font-family:var(--mono);font-size:12.5px;color:var(--accent);display:flex;align-items:center;gap:8px}
+  .effect .ok{width:18px;height:18px;border-radius:50%;background:rgba(79,231,168,.14);display:grid;place-items:center;font-size:11px}
+
+  /* explorer strip */
+  .explorer{margin-top:18px}
+  .tx{display:grid;grid-template-columns:90px 1fr auto;gap:14px;align-items:center;padding:12px 0;border-top:1px solid var(--line);font-size:13.5px}
+  .tx:first-of-type{border-top:0}
+  .kind{font-size:11px;font-weight:600;font-family:var(--mono);padding:4px 9px;border-radius:7px;text-align:center}
+  .k-transfer{color:#9ec1ff;background:rgba(99,138,255,.12)} .k-vouch{color:var(--accent);background:rgba(79,231,168,.1)}
+  .k-deploy{color:var(--accent-2);background:rgba(139,123,255,.12)} .k-invoke{color:var(--warn);background:rgba(251,191,92,.12)}
+  .tx .h{font-family:var(--mono);color:var(--muted);font-size:12.5px} .tx .meta{font-family:var(--mono);color:var(--faint);font-size:12px;text-align:right}
+  .footnote{margin-top:36px;color:var(--faint);font-size:12.5px;text-align:center;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand"><span class="dot"></span>UBI</div>
+  <div class="tabs">
+    <span class="tab active">Wallet</span>
+    <span class="tab">Explorer</span>
+    <span class="tab">Identity</span>
+    <span class="tab">Contracts</span>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill"><span class="live"></span>devnet · 21826</span>
+  <div class="gear" title="Settings — choose your node's LLM (Ollama / Anthropic / OpenAI)">⚙</div>
+</nav>
+
+<div class="wrap">
+  <div class="hero">
+    <div class="card">
+      <div class="label">Streaming balance</div>
+      <div class="bal" id="bal">14.20571904<span class="u">UBI</span></div>
+      <span class="rate"><span class="drip"></span> +1 UBI / hour · live</span>
+      <div class="acct">
+        <span class="verified">✓ Verified human</span>
+        <span class="chip">0xf39F…2266</span>
+      </div>
+    </div>
+    <div class="card mini">
+      <div class="stat"><div class="label">Vouches</div><div class="v green">5 in · 3 out</div></div>
+      <div class="stat"><div class="label">Open streams</div><div class="v">2 in · 1 out</div></div>
+      <div class="stat"><div class="label">Contracts</div><div class="v violet">4</div></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="ch"><h3>Incoming stream</h3><span class="tag live">live</span></div>
+      <div class="flow"><span>0x70a9…b3c8</span><span class="arrow"></span><span>you</span></div>
+      <div class="accrued" id="accrued">2.6841</div>
+      <div class="label">received · of 10 UBI · 1 UBI/hr</div>
+      <div class="bar"><i></i></div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><h3>Proof of humanity</h3><span class="verified">Verified</span></div>
+      <div class="row"><span class="k">Verified by quorum</span><span class="vv">3 / 3 jurors</span></div>
+      <div class="row"><span class="k">Vouched by</span>
+        <span class="avatars"><span>AB</span><span>9F</span><span>3C</span><span>D1</span><span>+1</span></span></div>
+      <div class="row"><span class="k">Reputation</span><span class="vv" style="color:var(--accent)">+120</span></div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><h3>Prompt contract</h3><span class="tag ai">AI · quorum</span></div>
+      <div class="contract">“Pay <b>half the escrow</b> to Bob when delivery is confirmed, refund the rest.”</div>
+      <div class="effect"><span class="ok">✓</span> Committed · Transfer 1.75 UBI → 0x9c…aB</div>
+    </div>
+  </div>
+
+  <div class="card explorer">
+    <div class="ch"><h3>Latest activity</h3><span class="label">block #1241 · 2s ago</span></div>
+    <div class="tx"><span class="kind k-invoke">invoke</span><span><span class="h">0x8af3…21c0</span> &nbsp;contract #1 · effect committed</span><span class="meta">#1241 · fee 0.00007 UBI</span></div>
+    <div class="tx"><span class="kind k-vouch">vouch</span><span><span class="h">0x15d3…6a65</span> &nbsp;→ 0x70a9…b3c8</span><span class="meta">#1240 · fee 0.00005 UBI</span></div>
+    <div class="tx"><span class="kind k-deploy">deploy</span><span><span class="h">0x4b2e…99af</span> &nbsp;UBI contract #4</span><span class="meta">#1238 · fee 0.00009 UBI</span></div>
+    <div class="tx"><span class="kind k-transfer">transfer</span><span><span class="h">0xc0ff…ee00</span> &nbsp;0.50 UBI → 0xdead…beef</span><span class="meta">#1236 · fee 0.00002 UBI</span></div>
+  </div>
+
+  <div class="footnote">UBI — verified by AI · streaming at 1/hour · contracts in plain language &nbsp;|&nbsp; design preview</div>
+</div>
+
+<script>
+  (function(){
+    var bal=14.20571904, rate=1/3600;        // UBI per second
+    var acc=2.6841, arate=1/3600;
+    var balEl=document.getElementById('bal'), accEl=document.getElementById('accrued');
+    var last=performance.now();
+    function frame(now){
+      var dt=(now-last)/1000; last=now;
+      bal+=rate*dt; acc+=arate*dt;
+      balEl.firstChild.nodeValue=bal.toFixed(8);
+      accEl.textContent=acc.toFixed(4);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+</body>
+</html>

@@ -41,7 +41,7 @@ use ubi2_rpc::humanity::{
 use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
 use ubi2_runtime::{
     Account, CanonicalVerdict, Confidence, GraphView, HumanityOracle, MockOracle, Verdict,
-    EMISSION_PERIOD_SECS,
+    EMISSION_PERIOD_SECS, UBI,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,12 +221,23 @@ async fn boot_chain(
             verified: true,
             verified_at: t,
             last_settled_at: t,
-            settled_balance: 0,
+            // Prefund so the founders can pay the UBI gas fee on hub ops mined at the genesis
+            // timestamp itself (when their emission since `verified_at` is still 0).
+            settled_balance: UBI,
             nonce: 0,
         });
         chain.seed_verified_human(&a.into_array(), t);
     }
+    // Jurors are verified, funded humans (they pay the real UBI gas fee on every `submitVerdict`).
     for j in [JUROR1, JUROR2, JUROR3] {
+        chain.seed_account(Account {
+            address: j.into_array(),
+            verified: true,
+            verified_at: genesis,
+            last_settled_at: genesis,
+            settled_balance: UBI,
+            nonce: 0,
+        });
         chain.register_juror(&j.into_array(), 0);
     }
     let handle = serve(addr, chain.clone()).await.expect("serve");

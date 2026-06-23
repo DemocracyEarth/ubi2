@@ -3,23 +3,51 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Ubi2Client,
+  ExplorerReader,
   formatUbi,
   projectBalance,
+  sendTransferTx,
   DEVNET_CHAIN_ID,
   type BalanceSample,
+  type ActivityRow,
 } from "@ubi2/sdk";
-import { RPC_URL, DEV_ACCOUNT, NETWORK } from "./config";
+import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY, NETWORK } from "./config";
 import { Nav, type Section } from "./nav";
 import { Streams } from "./streams";
 import { Humanity } from "./humanity";
 import { Explorer } from "./explorer";
 import { Contracts } from "./contracts";
+import { Settings } from "./settings";
 
 type Conn = "connecting" | "ok" | "bad";
 
 const POLL_MS = 4000;
 
 const client = new Ubi2Client({ url: RPC_URL });
+const explorerReader = new ExplorerReader(client);
+
+// UBI fee constants (gas * 1 gwei) for display in transfer preview
+const TRANSFER_FEE_BASE = 21_000n * 1_000_000_000n;   // 0.000021 UBI
+
+function short(addr: string): string {
+  if (!addr || addr.length < 12) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function shortHash(h: string): string {
+  if (!h || h.length < 14) return h;
+  return `${h.slice(0, 8)}…${h.slice(-6)}`;
+}
+
+function hexToUbi(hex: string, frac = 4): string {
+  try { return formatUbi(BigInt(hex), frac); } catch { return "0 UBI"; }
+}
+
+function fmtTs(hexSecs: string): string {
+  const secs = parseInt(hexSecs, 16);
+  if (!Number.isFinite(secs)) return "—";
+  return new Date(secs * 1000).toLocaleTimeString();
+}
 
 function Copy({ value }: { value: string }) {
   const [done, setDone] = useState(false);
@@ -39,18 +67,237 @@ function Copy({ value }: { value: string }) {
   );
 }
 
+function kindBadgeCls(kind: string): string {
+  if (kind === "Transfer") return "kind-badge k-transfer";
+  if (kind.includes("Stream")) return "kind-badge k-stream";
+  if (kind === "Vouch" || kind.includes("Verification") || kind.includes("Verdict") || kind === "Challenge") return "kind-badge k-vouch";
+  if (kind.includes("Deploy") || kind.includes("Contract")) return "kind-badge k-deploy";
+  if (kind.includes("Invoke") || kind.includes("Fund") || kind.includes("Effect")) return "kind-badge k-invoke";
+  return "kind-badge k-system";
+}
+
+function kindLabel(kind: string): string {
+  const map: Record<string, string> = {
+    Transfer: "transfer", OpenStream: "open stream", StopStream: "stop stream",
+    RequestVerification: "apply PoH", Vouch: "vouch", Challenge: "challenge",
+    SubmitVerdict: "verdict", DeployContract: "deploy", FundContract: "fund",
+    InvokeContract: "invoke", SubmitEffect: "effect",
+  };
+  return map[kind] ?? kind.toLowerCase();
+}
+
+// ---- Transfer form ---------------------------------------------------------------
+
+interface Injected {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+}
+
+function getInjected(): Injected | null {
+  if (typeof window === "undefined") return null;
+  const eth = (window as unknown as { ethereum?: Injected }).ethereum;
+  return eth ?? null;
+}
+
+function errMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const o = e as Record<string, unknown>;
+    const nested = (o.data as { message?: string } | undefined)?.message;
+    const msg = (o.shortMessage ?? o.message ?? nested) as string | undefined;
+    if (msg) return typeof o.code === "number" ? `${msg} (code ${o.code})` : msg;
+    try { return JSON.stringify(e); } catch { /* fall through */ }
+  }
+  return String(e);
+}
+
+function TransferForm() {
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [injected, setInjected] = useState<Injected | null>(null);
+  const [connected, setConnected] = useState<string | null>(null);
+
+  useEffect(() => setInjected(getInjected()), []);
+
+  const connect = useCallback(async () => {
+    if (!injected) { setNote({ kind: "err", text: "No injected wallet — install MetaMask." }); return; }
+    try {
+      const accounts = (await injected.request({ method: "eth_requestAccounts" })) as string[];
+      setConnected(accounts[0] ?? DEV_ACCOUNT);
+      setNote(null);
+    } catch (e) { setNote({ kind: "err", text: errMessage(e) }); }
+  }, [injected]);
+
+  const send = useCallback(async () => {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) {
+      setNote({ kind: "err", text: "Recipient must be a 0x address (42 chars)." });
+      return;
+    }
+    let valueBase: bigint;
+    try {
+      const trimmed = amount.trim();
+      const [whole = "0", frac = ""] = trimmed.split(".");
+      const fracPadded = (frac + "0".repeat(18)).slice(0, 18);
+      valueBase = BigInt(whole || "0") * (10n ** 18n) + BigInt(fracPadded || "0");
+      if (valueBase <= 0n) throw new Error("amount must be > 0");
+    } catch {
+      setNote({ kind: "err", text: "Invalid amount." });
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const from = connected ?? DEV_ACCOUNT;
+      let hash: string;
+      if (injected) {
+        const res = await sendTransferTx({
+          to, value: valueBase, from,
+          provider: injected as Parameters<typeof sendTransferTx>[0]["provider"],
+        });
+        hash = res.hash;
+      } else {
+        const res = await sendTransferTx({ to, value: valueBase, privateKey: DEV_PRIVATE_KEY, rpcUrl: RPC_URL });
+        hash = res.hash;
+      }
+      setNote({
+        kind: "ok",
+        text: `Sent · ${shortHash(hash)} · fee ${formatUbi(TRANSFER_FEE_BASE, 6)}`,
+      });
+      setTo(""); setAmount("");
+    } catch (e) {
+      setNote({ kind: "err", text: errMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  }, [to, amount, injected, connected]);
+
+  const signerLabel = connected
+    ? `MetaMask · ${short(connected)}`
+    : injected ? "MetaMask (not connected)" : "devnet dev key";
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3>Send UBI</h3>
+        <span className="tag green">native transfer</span>
+      </div>
+
+      <div className="field">
+        <label>Recipient address</label>
+        <input placeholder="0x…" value={to} onChange={(e) => setTo(e.target.value.trim())} spellCheck={false} />
+      </div>
+
+      <div className="field">
+        <label>Amount (UBI)</label>
+        <input inputMode="decimal" placeholder="e.g. 1.0" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      </div>
+
+      {/* Fee preview */}
+      <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: ".75rem", flexWrap: "wrap" }}>
+        <span className="muted small">
+          fee: <span style={{ fontFamily: "var(--mono)", color: "var(--warn)" }}>{formatUbi(TRANSFER_FEE_BASE, 6)}</span>
+        </span>
+        <span className="muted small" style={{ fontSize: ".72rem" }}>gas 21000 × 1 gwei</span>
+      </div>
+
+      <button className="primary" onClick={send} disabled={busy}>{busy ? "Sending…" : "Send"}</button>
+
+      <div className="signer" style={{ marginTop: ".5rem" }}>
+        signing with <b>{signerLabel}</b>
+        {injected && !connected && (
+          <button className="ghost" style={{ marginLeft: ".5rem" }} onClick={connect}>Connect MetaMask</button>
+        )}
+      </div>
+
+      {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
+    </div>
+  );
+}
+
+// ---- Activity Feed ---------------------------------------------------------------
+
+function ActivityFeed({ account }: { account: string }) {
+  const [rows, setRows] = useState<ActivityRow[]>([]);
+  const [blockNum, setBlockNum] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const [activity, head] = await Promise.all([
+          explorerReader.getAddressActivity(account, 10),
+          client.blockNumber(),
+        ]);
+        if (alive) { setRows(activity); setBlockNum(head); }
+      } catch { /* node down */ }
+    };
+    poll();
+    const id = setInterval(poll, POLL_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, [account]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3>Latest activity</h3>
+        {blockNum != null && <span className="faint small" style={{ fontFamily: "var(--mono)" }}>block #{blockNum}</span>}
+      </div>
+      <div>
+        {rows.map((row, i) => {
+          const blockN = parseInt(row.blockNumber, 16);
+          const feeUbi = row.fee ? hexToUbi(row.fee, 6) : null;
+          return (
+            <div
+              key={`${row.hash}-${i}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "7rem 1fr auto",
+                gap: ".6rem",
+                alignItems: "center",
+                padding: ".55rem 0",
+                borderTop: i === 0 ? "none" : "1px solid var(--line)",
+                fontSize: ".82rem",
+              }}
+            >
+              <span className={kindBadgeCls(row.kind)}>{kindLabel(row.kind)}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: "var(--mono)", color: "var(--muted)", fontSize: ".72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {shortHash(row.hash)}
+                  {row.counterparty && (
+                    <span style={{ color: "var(--faint)", marginLeft: ".4rem" }}>→ {short(row.counterparty)}</span>
+                  )}
+                </div>
+              </div>
+              <span style={{ fontFamily: "var(--mono)", color: "var(--faint)", fontSize: ".72rem", textAlign: "right", whiteSpace: "nowrap" }}>
+                #{blockN}
+                {feeUbi && <span style={{ color: "var(--warn)", marginLeft: ".4rem" }}>· {feeUbi}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---- Home page ---------------------------------------------------------------
+
 export default function Home() {
   const [section, setSection] = useState<Section>("wallet");
   const [conn, setConn] = useState<Conn>("connecting");
   const [chainId, setChainId] = useState<number | null>(null);
   const [display, setDisplay] = useState<string>("—");
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isVerified, setIsVerified] = useState(false);
 
-  // Latest balance sample — read by rAF loop without re-rendering on every poll.
   const sampleRef = useRef<BalanceSample | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  // Check connection + chain id.
   const checkConn = useCallback(async () => {
     try {
       const id = await client.chainId();
@@ -71,19 +318,22 @@ export default function Home() {
     }
   }, []);
 
-  // Poll: re-anchor the balance sample.
   const poll = useCallback(async () => {
     const live = await checkConn();
     if (!live) return;
     try {
       const sample = await client.sampleBalance(DEV_ACCOUNT);
       sampleRef.current = sample;
+      // Also check humanity status
+      try {
+        const acct = await explorerReader.getAccount(DEV_ACCOUNT);
+        setIsVerified(acct.human_status === "Verified");
+      } catch { /* ignore */ }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [checkConn]);
 
-  // Polling loop.
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -92,94 +342,137 @@ export default function Home() {
     };
     tick();
     const id = setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+    return () => { cancelled = true; clearInterval(id); };
   }, [poll]);
 
-  // Animation loop: interpolate balance forward between polls for a smooth tick.
   useEffect(() => {
     const frame = () => {
       const s = sampleRef.current;
-      // 8 decimals so the streaming drip is visibly moving frame-to-frame (>= the 2-dp floor).
       if (s) setDisplay(formatUbi(projectBalance(s), 8));
       rafRef.current = requestAnimationFrame(frame);
     };
     rafRef.current = requestAnimationFrame(frame);
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    };
+    return () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); };
   }, []);
+
+  const balanceNum = display.replace(" UBI", "").replace("—", "");
 
   return (
     <>
-      <Nav active={section} onSelect={setSection} conn={conn} chainId={chainId} />
+      <Nav
+        active={section}
+        onSelect={setSection}
+        conn={conn}
+        chainId={chainId}
+        onSettings={() => setSettingsOpen((v) => !v)}
+        settingsOpen={settingsOpen}
+      />
+
+      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
 
       <main className="app-main">
         {/* ------------------------------------------------------------------ */}
-        {/* WALLET section                                                       */}
+        {/* WALLET                                                               */}
         {/* ------------------------------------------------------------------ */}
         {section === "wallet" && (
           <div>
-            {/* Streaming balance */}
-            <section className="card">
-              <h2>Verified account balance</h2>
-              <div className="balance">{display}</div>
-              <div className="balance-sub">
-                Streaming live
-                <span className="rate-badge">1 UBI / hr</span>
-              </div>
-              <div className="mt">
-                <div className="label">Account</div>
-                <div className="row">
-                  <span className="addr">{DEV_ACCOUNT}</span>
+            {/* Hero grid */}
+            <div className="hero-grid">
+              {/* Main balance card */}
+              <div className="card">
+                <div className="label">Streaming balance</div>
+                <div className="hero-bal">
+                  {balanceNum || "—"}
+                  <span className="hero-unit">UBI</span>
+                </div>
+                <div>
+                  <span className="rate-badge">
+                    <span className="drip" />
+                    +1 UBI / hour · live
+                  </span>
+                </div>
+                <div className="acct-row">
+                  {isVerified && (
+                    <span className="verified-badge">&#10003; Verified human</span>
+                  )}
+                  <span className="addr-chip">{short(DEV_ACCOUNT)}</span>
                   <Copy value={DEV_ACCOUNT} />
                 </div>
+                {error && conn === "bad" && (
+                  <p className="small mt" style={{ color: "var(--danger)", margin: "1rem 0 0" }}>
+                    {error} — is the devnet node running on {RPC_URL}?
+                  </p>
+                )}
               </div>
-              {conn === "bad" && error && (
-                <p className="small mt" style={{ color: "var(--danger)" }}>
-                  {error} — is the devnet node running on {RPC_URL}?
-                </p>
-              )}
-            </section>
+
+              {/* Mini stat card */}
+              <div className="card mini-stats">
+                <div className="mini-stat">
+                  <div className="label">Network</div>
+                  <div className="v">
+                    <span style={{ fontFamily: "var(--mono)", fontSize: "14px", color: "var(--ink)" }}>
+                      {NETWORK.chainName}
+                    </span>
+                  </div>
+                </div>
+                <div className="mini-stat">
+                  <div className="label">Chain ID</div>
+                  <div className="v">
+                    <span className="green" style={{ fontFamily: "var(--mono)", fontSize: "22px", fontWeight: 600 }}>
+                      {NETWORK.chainIdDec}
+                    </span>
+                  </div>
+                </div>
+                <div className="mini-stat">
+                  <div className="label">Symbol</div>
+                  <div className="v violet">{NETWORK.symbol}</div>
+                </div>
+              </div>
+            </div>
 
             {/* Add to MetaMask */}
-            <section className="card">
-              <h2>Add to MetaMask</h2>
+            <div className="card">
+              <div className="card-header">
+                <h3>Add to MetaMask</h3>
+                <Copy value={NETWORK.rpcUrl} />
+              </div>
               <dl className="kv">
                 <dt>Network name</dt>
                 <dd>{NETWORK.chainName}</dd>
                 <dt>RPC URL</dt>
                 <dd>{NETWORK.rpcUrl}</dd>
                 <dt>Chain ID</dt>
-                <dd>{NETWORK.chainIdDec}</dd>
+                <dd>{NETWORK.chainIdDec} (0x{DEVNET_CHAIN_ID.toString(16)})</dd>
                 <dt>Symbol</dt>
                 <dd>{NETWORK.symbol}</dd>
+                <dt>Decimals</dt>
+                <dd>{NETWORK.decimals}</dd>
               </dl>
-              <div className="row mt">
-                <span className="muted small">Add this network manually in MetaMask.</span>
-                <Copy value={NETWORK.rpcUrl} />
-              </div>
-            </section>
+            </div>
 
-            {/* M2: streaming */}
+            {/* Transfer form — shows UBI fee */}
+            <TransferForm />
+
+            {/* Recent activity with fees */}
+            <ActivityFeed account={DEV_ACCOUNT} />
+
+            {/* Streams */}
             <Streams account={DEV_ACCOUNT} />
           </div>
         )}
 
         {/* ------------------------------------------------------------------ */}
-        {/* EXPLORER section                                                     */}
+        {/* EXPLORER                                                             */}
         {/* ------------------------------------------------------------------ */}
         {section === "explorer" && <Explorer />}
 
         {/* ------------------------------------------------------------------ */}
-        {/* IDENTITY section (Proof of Humanity)                                */}
+        {/* IDENTITY                                                             */}
         {/* ------------------------------------------------------------------ */}
         {section === "identity" && <Humanity account={DEV_ACCOUNT} />}
 
         {/* ------------------------------------------------------------------ */}
-        {/* CONTRACTS section                                                   */}
+        {/* CONTRACTS                                                            */}
         {/* ------------------------------------------------------------------ */}
         {section === "contracts" && <Contracts account={DEV_ACCOUNT} />}
       </main>

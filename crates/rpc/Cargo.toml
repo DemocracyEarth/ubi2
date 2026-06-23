@@ -23,9 +23,17 @@ base64.workspace = true
 derive_more.workspace = true
 tower.workspace = true
 tower-http.workspace = true
+# Manual jsonrpsee accept loop (`serve`): captures each connection's peer SocketAddr and injects it into
+# the per-request extensions so the localhost-only admin RPC can enforce its loopback gate. `hyper`
+# names the incoming-body request type; both crates are already in the tree via jsonrpsee 0.24.
+hyper.workspace = true
 
 [dev-dependencies]
 # QA (M1-T7) integration tests: sign EIP-155 legacy txs with the well-known devnet key and drive the
 # live HTTP JSON-RPC like a standard EVM client. k256 is the secp256k1 signer; alloy-rlp re-exported
 # for encode_2718. No extra HTTP crate — the test POSTs raw HTTP/1.1 over tokio TcpStream.
 k256 = { version = "0.13", features = ["ecdsa"] }
+# Security PoC (C5-SEC-3): drive a STUBBED live-style backend (a blocking reqwest client, no network)
+# through `produce_block` to prove the block-production task never panics dropping a blocking runtime.
+ubi2-oracle = { path = "../oracle" }
+reqwest = { workspace = true }

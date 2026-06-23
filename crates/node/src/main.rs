@@ -22,12 +22,36 @@
 //!
 //! Import the dev account below to sign txs (its key is PUBLIC — see the constant).
 
+mod oracle_cfg;
+
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use std::sync::Arc;
+
 use alloy_primitives::address;
-use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
+use ubi2_rpc::{serve, AdminAccess, Chain, DEVNET_CHAIN_ID};
 use ubi2_runtime::Account;
+
+/// Env var: comma-separated list of browser origins allowed to call the loopback admin RPC
+/// (`ubi_getOracleConfig`/`ubi_setOracleConfig`). Default: the local wallet at `http://localhost:3000`.
+/// A foreign `Origin` (a malicious page) is refused regardless; absent `Origin` (curl) is allowed.
+const ENV_ADMIN_ALLOWED_ORIGINS: &str = "UBI2_ADMIN_ALLOWED_ORIGINS";
+
+/// Resolve the admin-method `Origin` allowlist from the env (or the default wallet origin).
+fn admin_access_from_env() -> AdminAccess {
+    match std::env::var(ENV_ADMIN_ALLOWED_ORIGINS) {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let origins: Vec<String> = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            AdminAccess::with_allowed_origins(origins)
+        }
+        _ => AdminAccess::default(),
+    }
+}
 
 /// **PUBLIC, NON-SECRET devnet key.** This is the well-known Hardhat/Anvil test account #0. It is
 /// published in every Ethereum dev toolkit and is the standard MetaMask-import key for local nets.
@@ -75,7 +99,30 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(2_000);
 
     let genesis_time = now_secs();
-    let chain = Chain::new(DEVNET_CHAIN_ID, genesis_time);
+
+    // Select the AI backend (proof-of-humanity oracle + prompt-contract interpreter) from the node's
+    // config file (`<data_dir>/oracle.json`) + `UBI2_ORACLE_*` env overrides. Absent a provider — or if
+    // the backend can't be built (missing key, etc.) — the chain runs the deterministic Mock impls so the
+    // devnet always boots (I4). The wallet's Settings panel can hot-swap this at runtime over the
+    // localhost-only `ubi_setOracleConfig` admin RPC.
+    let data_dir = oracle_cfg::data_dir();
+    let oracle_config = oracle_cfg::load_config(&data_dir);
+    // Build the admin on the blocking pool: constructing a live backend creates a blocking HTTP client,
+    // which must not run on the async runtime thread. (For the default Mock config this is a no-op build,
+    // but the blocking hop keeps the live-config boot path safe too.)
+    let admin_data_dir = data_dir.clone();
+    let oracle_admin =
+        tokio::task::spawn_blocking(move || oracle_cfg::build_admin(admin_data_dir, oracle_config))
+            .await?;
+
+    // Admin-RPC browser access policy (C5-SEC-2): the loopback admin methods additionally enforce
+    // Host-header pinning (DNS-rebinding defense) + an Origin allowlist (browser-CSRF defense). The
+    // default allows only the local wallet origin (`http://localhost:3000`); override via
+    // `UBI2_ADMIN_ALLOWED_ORIGINS`.
+    let admin_access = Arc::new(admin_access_from_env());
+    let chain = Chain::new(DEVNET_CHAIN_ID, genesis_time)
+        .with_oracle_admin(oracle_admin)
+        .with_admin_access(admin_access);
 
     // Genesis: the pre-verified dev account (M3 proof-of-humanity stands in for this `verified` flag
     // via the runtime `Verifier` trait). Streams 1 UBI/hour from genesis.
@@ -138,8 +185,33 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  HumanityHub       : 0x0000000000000000000000000000000000005048 (\"PH\")");
     tracing::info!("  ContractHub       : 0x0000000000000000000000000000000000005043 (\"PC\")");
     tracing::info!("  block tick        : {block_ms} ms");
+    // AI backend: which impl ended up active after resolving the config (Mock unless a reachable live
+    // provider was configured). The admin RPC (`ubi_getOracleConfig`/`ubi_setOracleConfig`) is
+    // localhost-only; the secret-free config lives at `<data_dir>/oracle.json`.
+    let admin_status = chain.oracle_admin().get_config_json();
+    tracing::info!(
+        "  AI backend        : {} (provider={}, model={})",
+        admin_status["active"].as_str().unwrap_or("mock"),
+        admin_status["health"]["provider"]
+            .as_str()
+            .unwrap_or("mock"),
+        admin_status["health"]["model"].as_str().unwrap_or(""),
+    );
+    tracing::info!(
+        "  oracle config     : {} (admin RPC: ubi_getOracleConfig/ubi_setOracleConfig, localhost-only)",
+        oracle_cfg::config_path(&data_dir).display()
+    );
 
     // Block-production loop: tick every `block_ms`, mine pending txs, advance height + newHeads.
+    //
+    // `produce_block` invokes the oracle/interpreter inline, and a LIVE backend uses a **blocking**
+    // reqwest client. Calling that on the async runtime thread panics on inner-runtime drop ("Cannot
+    // drop a runtime in a context where blocking is not allowed") and would kill the node — and the op
+    // that triggers it (`requestVerification`) is fee-exempt and submittable by anyone, so it was a
+    // remotely-triggerable node-kill (C5-SEC-3). We therefore run each block tick on the blocking pool
+    // via `spawn_blocking`, so the blocking HTTP client is dropped on a blocking-allowed thread and the
+    // async loop never panics. A `JoinError` (a panic *inside* a tick) is logged and the loop continues —
+    // block production stays alive even if one tick's backend call panics.
     let block_chain = chain.clone();
     let mut ticker = tokio::time::interval(Duration::from_millis(block_ms));
     ticker.tick().await; // consume the immediate first tick
@@ -148,8 +220,11 @@ async fn main() -> anyhow::Result<()> {
         _ = async {
             loop {
                 ticker.tick().await;
-                let b = block_chain.produce_block(now_secs());
-                tracing::debug!(number = b.number, txs = b.txs.len(), "block produced");
+                let tick_chain = block_chain.clone();
+                match tokio::task::spawn_blocking(move || tick_chain.produce_block(now_secs())).await {
+                    Ok(b) => tracing::debug!(number = b.number, txs = b.txs.len(), "block produced"),
+                    Err(e) => tracing::error!(error = %e, "block tick panicked; continuing"),
+                }
             }
         } => {},
         _ = tokio::signal::ctrl_c() => {

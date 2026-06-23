@@ -110,6 +110,7 @@
 //! // a fooled or failing interpreter is bounded to a fail-closed Abort (I4/I6).
 //! ```
 
+pub mod backend;
 pub mod client;
 pub mod contract_prompt;
 pub mod effect_schema;
@@ -118,7 +119,12 @@ pub mod juror;
 pub mod oracle;
 pub mod prompt;
 pub mod schema;
+pub mod url_policy;
 
+pub use backend::{
+    Backend, OllamaTransport, OpenAiTransport, Provider, DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
+};
 pub use client::{ClaudeConfig, HttpTransport, OracleError, Transport, DEFAULT_MODEL};
 pub use effect_schema::{
     effect_json_schema, EffectDecodeError, OpTag, StructuredEffect, StructuredOp,
@@ -128,3 +134,4 @@ pub use interpreter::{abort_effect, ClaudeInterpreter, ABORT_REASON};
 pub use juror::{juror_verdict, SubmitVerdictTx};
 pub use oracle::{abort_verdict, ClaudeOracle};
 pub use schema::{ConfidenceTag, StructuredVerdict, VerdictTag};
+pub use url_policy::{is_internal_ip, validate_base_url, UrlPolicyError, ANTHROPIC_HOST};

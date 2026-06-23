@@ -85,8 +85,8 @@ function ExecCaseBadge({ execCase }: { execCase: ExecCaseView }) {
   return (
     <div
       style={{
-        background: "var(--panel-2)",
-        border: "1px solid var(--border)",
+        background: "var(--glass-2)",
+        border: "1px solid var(--line)",
         borderRadius: "8px",
         padding: "0.65rem 0.75rem",
         marginTop: "0.5rem",
@@ -217,11 +217,11 @@ function ContractCard({
   return (
     <div
       style={{
-        border: "1px solid var(--border)",
+        border: "1px solid var(--line)",
         borderRadius: "12px",
         padding: "1rem 1.25rem",
         marginBottom: "1rem",
-        background: "var(--panel)",
+        background: "var(--glass)",
       }}
     >
       <div className="row" style={{ marginBottom: "0.5rem" }}>
@@ -245,16 +245,16 @@ function ContractCard({
       </div>
 
       {contract.status === "Active" && (
-        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: "0.75rem" }}>
           {/* Fund */}
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
             <input
               style={{
                 width: "6rem",
-                background: "var(--panel-2)",
-                border: "1px solid var(--border)",
+                background: "var(--glass-2)",
+                border: "1px solid var(--line)",
                 borderRadius: "6px",
-                color: "var(--fg)",
+                color: "var(--ink)",
                 fontFamily: "var(--mono)",
                 fontSize: "0.82rem",
                 padding: "0.4rem 0.5rem",
@@ -274,10 +274,10 @@ function ContractCard({
             <input
               style={{
                 flex: 1,
-                background: "var(--panel-2)",
-                border: "1px solid var(--border)",
+                background: "var(--glass-2)",
+                border: "1px solid var(--line)",
                 borderRadius: "6px",
-                color: "var(--fg)",
+                color: "var(--ink)",
                 fontFamily: "var(--mono)",
                 fontSize: "0.82rem",
                 padding: "0.4rem 0.5rem",
@@ -443,10 +443,10 @@ export function Contracts({ account }: { account: string }) {
             value={contractText}
             onChange={(e) => setContractText(e.target.value)}
             style={{
-              background: "var(--panel-2)",
-              border: "1px solid var(--border)",
+              background: "var(--glass-2)",
+              border: "1px solid var(--line)",
               borderRadius: "8px",
-              color: "var(--fg)",
+              color: "var(--ink)",
               fontFamily: "ui-sans-serif, system-ui, sans-serif",
               fontSize: "0.9rem",
               padding: "0.6rem 0.75rem",

@@ -51,6 +51,123 @@ pub const UBI: u128 = 1_000_000_000_000_000_000;
 /// Seconds per hour — the emission period (1 UBI per hour).
 pub const EMISSION_PERIOD_SECS: u64 = 3_600;
 
+// ---------------------------------------------------------------------------------------------
+// Fee model (M5 fee-recycling foundation) — a **real, deterministic UBI gas fee** on every tx.
+//
+// Gas is charged in UBI (the native currency): `fee = gas_used * gas_price` in base units, deducted
+// from the sender's settled balance at apply time *before* the op runs, and credited to the reserved
+// `TREASURY` account. Both `gas_used` (a small per-kind constant) and `gas_price` (a flat constant)
+// are part of consensus state, so the fee is a pure integer function of the tx kind (invariant I2):
+// two nodes charge the same sender the same fee to the base unit. Fees never leave the system — they
+// move sender → treasury, conserving total supply to the base unit (the basis for M5 redistribution).
+// ---------------------------------------------------------------------------------------------
+
+/// The flat devnet gas price in UBI base units per gas unit. **1 gwei** (`10^9`), matching the value
+/// `eth_gasPrice` advertises so a wallet's `fee = gasLimit * gasPrice` preview equals what is charged.
+/// At `21000` gas a transfer costs `21000 * 10^9 = 2.1 * 10^13` base units (`0.000021` UBI) — small
+/// relative to the `10^18`-per-hour emission, so verified accounts always cover it.
+pub const GAS_PRICE_WEI: u128 = 1_000_000_000;
+
+/// Gas a plain value transfer costs (the EVM intrinsic, `21000`).
+pub const GAS_TRANSFER: u64 = 21_000;
+
+/// Gas a StreamHub op (`openStream` / `stopStream`) costs — modestly above a transfer to reflect the
+/// extra escrow/index bookkeeping. Deterministic per-kind constant (no metering).
+pub const GAS_STREAM: u64 = 60_000;
+
+/// Gas a HumanityHub op (vouch / challenge / submitVerdict) costs.
+pub const GAS_HUMANITY: u64 = 80_000;
+
+/// Gas a `requestVerification` (onboarding) op costs — **0, fee-exempt**. This is the network's
+/// bootstrap gate: an account requesting verification is by construction not yet `Verified`, so it has
+/// no streaming UBI and *cannot* pay a fee (chicken-and-egg). The network subsidizes onboarding — the
+/// only fee-free tx kind — so a brand-new human can request verification from a zero balance. Every
+/// other action (vouch / challenge / verdict / stream / contract) is taken by an account that already
+/// earns UBI and pays the real fee. Documented deviation (spec 03 §"Bootstrapping").
+pub const GAS_ONBOARD: u64 = 0;
+
+/// Gas a ContractHub op (deploy / fund / invoke / submitEffect) costs — the heaviest tx kind
+/// (interpreter quorum + effect application), so it pays the most gas.
+pub const GAS_CONTRACT: u64 = 120_000;
+
+/// The reserved **TREASURY / commons** system account that collected fees accrue to (whitepaper fee
+/// recycling; the basis for M5 redistribution). A documented, well-known address in the system-address
+/// space: `0x…5542`, distinct from the StreamHub (`0x…5742`), HumanityHub (`0x…5048`) and ContractHub
+/// (`0x…5043`). It is never a signer (no key); value only ever flows *into* it via fees, so total
+/// supply is conserved (sender → treasury) to the base unit.
+pub const TREASURY: Address = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x55, 0x42,
+];
+
+/// The UBI fee (base units) for a tx whose `gas_used` is `gas`. Pure integer math (I2).
+pub const fn fee_for_gas(gas: u64) -> u128 {
+    (gas as u128) * GAS_PRICE_WEI
+}
+
+/// Why a fee charge was rejected. Deterministic so two nodes reject identically (invariant I2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeError {
+    /// Sender's settled balance (after settlement) is below the required `fee`.
+    InsufficientForFee { have: u128, fee: u128 },
+}
+
+impl std::fmt::Display for FeeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FeeError::InsufficientForFee { have, fee } => write!(
+                f,
+                "insufficient balance for gas fee: have {have}, fee {fee}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FeeError {}
+
+/// Charge `gas`-worth of UBI gas fee to `from` and credit it to the [`TREASURY`] at unix second `now`.
+///
+/// Order (load-bearing for I2 / conservation): settle the sender's emission first so the check runs on
+/// the materialized balance, require `settled_balance >= fee`, debit the sender, then credit the
+/// treasury by the **same** amount (settling the treasury too so its own clock stays consistent — it is
+/// unverified so this only advances `last_settled_at`). Fail-closed: on insufficient balance nothing is
+/// written (no partial state, I4) and the op the fee precedes must not run.
+///
+/// Returns the fee charged on success. Total supply is conserved: the sender loses exactly `fee` and
+/// the treasury gains exactly `fee`.
+pub fn charge_fee(
+    state: &mut dyn State,
+    from: &Address,
+    gas: u64,
+    now: u64,
+) -> Result<u128, FeeError> {
+    let fee = fee_for_gas(gas);
+
+    let mut sender = state.get(from).unwrap_or(Account {
+        address: *from,
+        ..Default::default()
+    });
+    sender.settle(now);
+    if sender.settled_balance < fee {
+        return Err(FeeError::InsufficientForFee {
+            have: sender.settled_balance,
+            fee,
+        });
+    }
+    sender.settled_balance -= fee;
+
+    let mut treasury = state.get(&TREASURY).unwrap_or(Account {
+        address: TREASURY,
+        ..Default::default()
+    });
+    treasury.settle(now);
+    treasury.settled_balance = treasury.settled_balance.saturating_add(fee);
+
+    state.put(sender);
+    state.put(treasury);
+    Ok(fee)
+}
+
 /// A sequential stream identifier, assigned at `open_stream` (spec D2/Q3 — `u64`, fits a log topic).
 pub type StreamId = u64;
 
@@ -1458,5 +1575,112 @@ mod tests {
                 baseline - total
             );
         }
+    }
+
+    // =========================================================================================
+    // Fee model — a real, deterministic UBI gas fee on every tx (M5 fee-recycling foundation).
+    // =========================================================================================
+
+    /// `fee_for_gas` is exact integer math: `gas * GAS_PRICE_WEI`, with the documented per-kind values.
+    #[test]
+    fn fee_for_gas_is_per_kind_integer_math() {
+        assert_eq!(fee_for_gas(GAS_TRANSFER), 21_000 * GAS_PRICE_WEI);
+        assert_eq!(fee_for_gas(GAS_STREAM), 60_000 * GAS_PRICE_WEI);
+        assert_eq!(fee_for_gas(GAS_HUMANITY), 80_000 * GAS_PRICE_WEI);
+        assert_eq!(fee_for_gas(GAS_CONTRACT), 120_000 * GAS_PRICE_WEI);
+        // Onboarding is fee-exempt (bootstrap gate): a zero-gas tx costs nothing.
+        assert_eq!(fee_for_gas(GAS_ONBOARD), 0);
+        // A transfer fee is ~2.1e13 base units — tiny vs the 1e18/hour emission, so a verified human
+        // always covers it after a few seconds of streaming.
+        assert_eq!(fee_for_gas(GAS_TRANSFER), 21_000_000_000_000);
+    }
+
+    /// Charging a fee debits the sender by exactly `fee` and credits the TREASURY by exactly `fee` —
+    /// total supply is conserved to the base unit (sender → treasury, value never leaves the system).
+    #[test]
+    fn charge_fee_conserves_sender_to_treasury() {
+        let mut s = MemState::new();
+        seed_funded(&mut s, addr(1), 10 * UBI);
+        let now = EMISSION_PERIOD_SECS;
+        let pre_total = s.balance(&addr(1), now) + s.balance(&TREASURY, now);
+
+        let fee = charge_fee(&mut s, &addr(1), GAS_CONTRACT, now).unwrap();
+        assert_eq!(fee, fee_for_gas(GAS_CONTRACT));
+        assert_eq!(
+            s.balance(&TREASURY, now),
+            fee,
+            "treasury credited exactly the fee"
+        );
+        let post_total = s.balance(&addr(1), now) + s.balance(&TREASURY, now);
+        assert_eq!(pre_total, post_total, "fee conserves total supply exactly");
+    }
+
+    /// A fee charge settles the sender's emission first, so the insufficiency check runs on the
+    /// materialized balance — a verified account with enough streamed UBI pays even with 0 prefund.
+    #[test]
+    fn charge_fee_settles_emission_before_charging() {
+        let mut s = MemState::new();
+        seed(&mut s, addr(1), 0); // verified at t=0, no prefund
+                                  // After 1 hour it has streamed exactly 1 UBI — ample for any fee.
+        let fee = charge_fee(&mut s, &addr(1), GAS_TRANSFER, EMISSION_PERIOD_SECS).unwrap();
+        assert_eq!(fee, fee_for_gas(GAS_TRANSFER));
+        assert_eq!(
+            s.get(&addr(1)).unwrap().settled_balance,
+            UBI - fee,
+            "sender pays the fee out of settled emission"
+        );
+    }
+
+    /// Insufficient balance for the fee is rejected (fail-closed, I4): no debit, no treasury credit,
+    /// and a clear error carrying the shortfall.
+    #[test]
+    fn charge_fee_insufficient_is_rejected_without_mutation() {
+        let mut s = MemState::new();
+        // Unverified, zero-balance account cannot pay a non-zero fee.
+        s.put(Account {
+            address: addr(1),
+            ..Default::default()
+        });
+        let now = 5 * EMISSION_PERIOD_SECS;
+        let err = charge_fee(&mut s, &addr(1), GAS_TRANSFER, now).unwrap_err();
+        assert_eq!(
+            err,
+            FeeError::InsufficientForFee {
+                have: 0,
+                fee: fee_for_gas(GAS_TRANSFER)
+            }
+        );
+        // Nothing moved: sender still 0, treasury untouched.
+        assert_eq!(s.balance(&addr(1), now), 0);
+        assert_eq!(s.balance(&TREASURY, now), 0);
+    }
+
+    /// A zero-gas (onboarding) charge always succeeds even from a zero balance and moves nothing — the
+    /// bootstrap gate a brand-new, not-yet-verified human passes through.
+    #[test]
+    fn charge_zero_gas_fee_is_free_for_onboarding() {
+        let mut s = MemState::new();
+        s.put(Account {
+            address: addr(1),
+            ..Default::default()
+        });
+        let now = 0;
+        let fee = charge_fee(&mut s, &addr(1), GAS_ONBOARD, now).unwrap();
+        assert_eq!(fee, 0, "onboarding is fee-exempt");
+        assert_eq!(s.balance(&TREASURY, now), 0, "treasury unchanged");
+    }
+
+    /// The TREASURY is a documented system address distinct from every hub, and it never streams
+    /// emission (it is unverified) — value only ever flows *into* it via fees.
+    #[test]
+    fn treasury_is_a_distinct_unverified_system_account() {
+        assert_ne!(TREASURY, CONTRACT_HUB);
+        let mut s = MemState::new();
+        // After collecting a fee, the treasury holds it and does not accrue emission over time.
+        seed_funded(&mut s, addr(1), 10 * UBI);
+        charge_fee(&mut s, &addr(1), GAS_CONTRACT, 0).unwrap();
+        let at_open = s.balance(&TREASURY, 0);
+        let a_year = s.balance(&TREASURY, 365 * 24 * EMISSION_PERIOD_SECS);
+        assert_eq!(at_open, a_year, "treasury never streams (unverified)");
     }
 }

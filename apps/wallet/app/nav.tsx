@@ -1,10 +1,7 @@
 "use client";
 
 /**
- * Top navigation bar — switches between the four app sections (Wallet, Explorer, Identity,
- * Contracts) via a simple tab state passed down from the root.  No router needed: the whole
- * app is a single page with section-based rendering, which keeps the streaming balance alive
- * across tab switches without remounting.
+ * Obsidian-glass sticky nav: brand dot, tab rail, connection pill, settings gear.
  */
 
 export type Section = "wallet" | "explorer" | "identity" | "contracts";
@@ -14,52 +11,69 @@ interface NavProps {
   onSelect: (s: Section) => void;
   conn: "connecting" | "ok" | "bad";
   chainId: number | null;
+  onSettings: () => void;
+  settingsOpen: boolean;
 }
 
-const TABS: { id: Section; label: string }[] = [
+const TABS: { id: Section; label: string; violet?: boolean }[] = [
   { id: "wallet", label: "Wallet" },
   { id: "explorer", label: "Explorer" },
   { id: "identity", label: "Identity" },
-  { id: "contracts", label: "Contracts" },
+  { id: "contracts", label: "Contracts", violet: true },
 ];
 
-export function Nav({ active, onSelect, conn, chainId }: NavProps) {
-  const statusClass =
-    conn === "ok" ? "status ok" : conn === "bad" ? "status bad" : "status warn";
-  const statusText =
+export function Nav({ active, onSelect, conn, chainId, onSettings, settingsOpen }: NavProps) {
+  const pillClass =
+    conn === "ok" ? "conn-pill ok" : conn === "bad" ? "conn-pill bad" : "conn-pill warn";
+  const pillText =
     conn === "ok"
-      ? `Connected · chain ${chainId}`
+      ? `devnet · ${chainId ?? "…"}`
       : conn === "connecting"
-        ? "Connecting…"
-        : "Disconnected";
+        ? "connecting…"
+        : "disconnected";
 
   return (
     <div className="top-nav">
-      <div className="top-nav-inner">
-        <div className="brand">
-          <span className="brand-name">
-            ubi<span style={{ color: "var(--accent)" }}>2</span>
-          </span>
-          <span className="brand-tag">devnet</span>
-        </div>
+      {/* Brand */}
+      <div className="brand">
+        <span className="brand-dot" />
+        <span>UBI</span>
+      </div>
 
-        <nav className="nav-tabs">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              className={`nav-tab ${active === t.id ? "active" : ""}`}
-              onClick={() => onSelect(t.id)}
-            >
+      {/* Tab rail */}
+      <nav className="nav-tabs">
+        {TABS.map((t) => {
+          const isActive = active === t.id;
+          const cls = isActive
+            ? t.violet
+              ? "nav-tab active-violet"
+              : "nav-tab active"
+            : "nav-tab";
+          return (
+            <button key={t.id} className={cls} onClick={() => onSelect(t.id)}>
               {t.label}
             </button>
-          ))}
-        </nav>
+          );
+        })}
+      </nav>
 
-        <span className={statusClass} style={{ fontSize: "0.75rem" }}>
-          <span className="dot" />
-          {statusText}
-        </span>
-      </div>
+      <div className="nav-spacer" />
+
+      {/* Connection pill */}
+      <span className={pillClass}>
+        <span className="conn-dot" />
+        {pillText}
+      </span>
+
+      {/* Settings gear */}
+      <button
+        className={`gear-btn ${settingsOpen ? "active" : ""}`}
+        title="Settings — configure the node's LLM backend (Ollama / Anthropic / OpenAI)"
+        onClick={onSettings}
+        aria-label="Settings"
+      >
+        ⚙
+      </button>
     </div>
   );
 }

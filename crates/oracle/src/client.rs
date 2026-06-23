@@ -79,6 +79,9 @@ impl ClaudeConfig {
 pub enum OracleError {
     /// `ANTHROPIC_API_KEY` is unset/empty — the node should use `MockOracle` instead.
     MissingApiKey,
+    /// The configured `base_url` was refused by the per-provider URL policy (SSRF / key-exfiltration
+    /// defense, C5-SEC-1). Carries a secret-free, operator-facing reason (the offending URL/host only).
+    BadConfig(String),
     /// The HTTP transport failed (network, timeout, non-2xx). Carries a short, key-free description.
     Transport(String),
     /// The response could not be parsed into the pinned structured schema (deterministic abort).
@@ -92,6 +95,7 @@ impl fmt::Display for OracleError {
                 f,
                 "ANTHROPIC_API_KEY is not set; node should fall back to MockOracle"
             ),
+            OracleError::BadConfig(m) => write!(f, "oracle config rejected: {m}"),
             OracleError::Transport(m) => write!(f, "oracle transport error: {m}"),
             OracleError::Decode(m) => write!(f, "oracle response decode error: {m}"),
         }
@@ -195,6 +199,22 @@ pub struct ContentBlock {
 }
 
 impl MessagesResponse {
+    /// Wrap a single structured-output JSON document (delivered as text by a non-Anthropic backend's
+    /// reply envelope — Ollama `message.content`, OpenAI `choices[0].message.content`) as a one-block
+    /// `text` response, so the existing schema decoders ([`structured_verdict`](Self::structured_verdict)
+    /// / `crate::interpreter`'s effect decoder) parse it unchanged. This is the single normalization
+    /// point: every provider funnels its reply through here, so all backends share one decode path and
+    /// therefore produce byte-identical canonical outputs (I1/I5).
+    pub fn from_text(text: impl Into<String>) -> Self {
+        Self {
+            content: vec![ContentBlock {
+                kind: "text".to_string(),
+                text: Some(text.into()),
+                input: None,
+            }],
+        }
+    }
+
     /// Extract the [`StructuredVerdict`] from the response, deterministically. Tries a structured
     /// `input` object first, then a `text` block parsed as JSON. Any miss is a [`OracleError::Decode`]
     /// — a deterministic abort, never a guess.
@@ -227,6 +247,16 @@ pub trait Transport: Send + Sync {
     fn send(&self, req: &MessagesRequest) -> Result<MessagesResponse, OracleError>;
 }
 
+/// A boxed transport is itself a transport. This lets the backend constructor select a provider at
+/// runtime (`Box<dyn Transport>`) while [`ClaudeOracle`](crate::ClaudeOracle) /
+/// [`ClaudeInterpreter`](crate::ClaudeInterpreter) stay generic over `T: Transport` — the same grading
+/// code runs over a static fixture transport (tests) or a dynamic provider transport (node).
+impl Transport for Box<dyn Transport> {
+    fn send(&self, req: &MessagesRequest) -> Result<MessagesResponse, OracleError> {
+        (**self).send(req)
+    }
+}
+
 /// Live transport: a blocking `reqwest` client against the Anthropic Messages API. Constructed only on
 /// the live path (gated behind `ANTHROPIC_API_KEY`); **never** instantiated in tests/CI.
 pub struct HttpTransport {
@@ -237,7 +267,12 @@ pub struct HttpTransport {
 impl HttpTransport {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            // Disable HTTP redirects: a `3xx` must never be able to bounce the request — and the
+            // `x-api-key` header — to a different host (cross-host credential leak, C5-SEC-1).
+            client: reqwest::blocking::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
             api_key,
         }
     }
