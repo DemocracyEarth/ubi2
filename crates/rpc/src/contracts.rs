@@ -35,7 +35,10 @@
 use alloy_primitives::{Address as AlloyAddr, B256, U256};
 use alloy_sol_types::{sol, SolCall};
 
-use ubi2_runtime::{CanonicalEffect, Hash, Op, StreamId, CONTRACT_HUB as RT_CONTRACT_HUB};
+use ubi2_runtime::{
+    CanonicalEffect, Hash, Op, StreamId, CONTRACT_HUB as RT_CONTRACT_HUB, MAX_CONTRACT_PARTIES,
+    MAX_CONTRACT_TEXT_BYTES,
+};
 
 /// The reserved ContractHub system address (`0x…5043`) — prompt-contract write ops target it. Re-uses
 /// the runtime constant so the RPC hub and the escrow address space share one source of truth.
@@ -105,6 +108,13 @@ pub enum CalldataError {
     Overflow(&'static str),
     /// `submitEffect`'s ops blob failed to decode into a canonical effect.
     BadEffect(&'static str),
+    /// `deployContract`'s UTF-8 `text` exceeds [`MAX_CONTRACT_TEXT_BYTES`]. Rejected here — at parse,
+    /// before the bytes are retained in the mempool — so an oversized deploy fails synchronously at
+    /// `eth_sendRawTransaction` and never bloats state (C6-SEC-1). Carries the length and the cap.
+    TextTooLarge { len: usize, max: usize },
+    /// `deployContract`'s `parties` count exceeds [`MAX_CONTRACT_PARTIES`] (C6-SEC-1). Carries the
+    /// count and the cap.
+    TooManyParties { count: usize, max: usize },
 }
 
 impl std::fmt::Display for CalldataError {
@@ -118,6 +128,18 @@ impl std::fmt::Display for CalldataError {
             CalldataError::BadArgs(e) => write!(f, "bad ContractHub calldata args: {e}"),
             CalldataError::Overflow(which) => write!(f, "{which} exceeds the runtime range"),
             CalldataError::BadEffect(which) => write!(f, "ops blob: {which}"),
+            CalldataError::TextTooLarge { len, max } => {
+                write!(
+                    f,
+                    "contract text is {len} bytes, exceeds the {max}-byte cap"
+                )
+            }
+            CalldataError::TooManyParties { count, max } => {
+                write!(
+                    f,
+                    "contract declares {count} parties, exceeds the {max} cap"
+                )
+            }
         }
     }
 }
@@ -134,6 +156,23 @@ pub fn parse_calldata(data: &[u8]) -> Result<ContractOp, CalldataError> {
         s if s == deployContractCall::SELECTOR => {
             let call = deployContractCall::abi_decode(data, true)
                 .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            // C6-SEC-1: bound the on-chain text + parties HERE, at parse time — `ingest_raw_tx` calls
+            // this before the tx is pushed onto the mempool, so an oversized deploy is rejected
+            // synchronously at `eth_sendRawTransaction` (invalid-params) and its bytes are never
+            // retained. The runtime `deploy_contract` re-checks as defense in depth. `call.text` is a
+            // Rust `String` (UTF-8), so `len()` is the exact on-chain byte count.
+            if call.text.len() > MAX_CONTRACT_TEXT_BYTES {
+                return Err(CalldataError::TextTooLarge {
+                    len: call.text.len(),
+                    max: MAX_CONTRACT_TEXT_BYTES,
+                });
+            }
+            if call.parties.len() > MAX_CONTRACT_PARTIES {
+                return Err(CalldataError::TooManyParties {
+                    count: call.parties.len(),
+                    max: MAX_CONTRACT_PARTIES,
+                });
+            }
             Ok(ContractOp::DeployContract {
                 text: call.text,
                 parties: call.parties,
@@ -390,6 +429,64 @@ mod tests {
         assert_eq!(
             parse_calldata(&data).unwrap(),
             ContractOp::DeployContract { text, parties }
+        );
+    }
+
+    #[test]
+    fn parse_rejects_oversized_text_at_parse_time() {
+        // C6-SEC-1: a text exactly at the cap parses; one byte over is rejected at parse time, so the
+        // bytes never reach the mempool (the submit gate calls `parse_calldata` before pushing).
+        let at_cap = "A".repeat(MAX_CONTRACT_TEXT_BYTES);
+        let data = deployContractCall {
+            text: at_cap.clone(),
+            parties: vec![AlloyAddr::from([0x11; 20])],
+        }
+        .abi_encode();
+        assert!(parse_calldata(&data).is_ok(), "at-cap text must parse");
+
+        let over = "A".repeat(MAX_CONTRACT_TEXT_BYTES + 1);
+        let data = deployContractCall {
+            text: over,
+            parties: vec![AlloyAddr::from([0x11; 20])],
+        }
+        .abi_encode();
+        assert_eq!(
+            parse_calldata(&data).unwrap_err(),
+            CalldataError::TextTooLarge {
+                len: MAX_CONTRACT_TEXT_BYTES + 1,
+                max: MAX_CONTRACT_TEXT_BYTES,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_rejects_too_many_parties_at_parse_time() {
+        // C6-SEC-1: `MAX_CONTRACT_PARTIES` parties parse; one more is rejected at parse time.
+        let at_cap: Vec<AlloyAddr> = (0..MAX_CONTRACT_PARTIES as u8)
+            .map(|i| AlloyAddr::from([i; 20]))
+            .collect();
+        let data = deployContractCall {
+            text: "ok".to_string(),
+            parties: at_cap,
+        }
+        .abi_encode();
+        assert!(parse_calldata(&data).is_ok(), "at-cap parties must parse");
+
+        let over: Vec<AlloyAddr> = (0..(MAX_CONTRACT_PARTIES as u8 + 1))
+            .map(|i| AlloyAddr::from([i; 20]))
+            .collect();
+        let count = over.len();
+        let data = deployContractCall {
+            text: "too many".to_string(),
+            parties: over,
+        }
+        .abi_encode();
+        assert_eq!(
+            parse_calldata(&data).unwrap_err(),
+            CalldataError::TooManyParties {
+                count,
+                max: MAX_CONTRACT_PARTIES,
+            }
         );
     }
 

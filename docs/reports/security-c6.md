@@ -1,21 +1,72 @@
 # Security Gate 3 — Cycle 6 (failed-tx receipts, on-chain contract text, vouch UX)
 
-- **Branch / commit:** `feat/cycle6-contracts-vouch-docs` @ `d6cbbe5`
+- **Branch / commit:** `feat/cycle6-contracts-vouch-docs` @ `a23a219` (re-gate of the C6-SEC-1 fix; not
+  yet committed at audit time).
 - **Scope:** the cycle-6 diff over M1–M4 + cycle 5 — (1) failed-tx mined as `status: 0x0` receipts;
   (2) full NL contract text stored on-chain via `deployContract(string text, address[])`; (3) the
   `p.nonce + 1` failed-tx nonce SET; (4) regression on cycle-5 oracle-admin / escrow defenses.
 - **Method:** static audit of the diff + **live PoCs on `:38545`** (`crates/rpc/tests/sec_c6_poc.rs`,
-  5 tests, all green). Node booted on the non-default security port and torn down after; no listeners
-  left bound.
-- **Verdict: FAIL** — one **High** finding open (C6-SEC-1, unbounded contract-text DoS). All other
-  vectors (failed-tx griefing economics, nonce/replay, prompt-injection regression, escrow least-
-  authority) are clean.
+  5 tests, all green) + an independent boundary/gas-monotonicity live re-gate (throwaway, removed
+  after) that exercised the exact at-cap / over-cap edges on a real `serve()`. Node booted on the
+  non-default security port and torn down after; no listeners left bound.
+- **Verdict: PASS** — C6-SEC-1 is **CLOSED** by the protocol-engineer's size-cap + fee-by-size fix
+  (re-verified below). No High/Critical open. All other vectors (failed-tx griefing economics,
+  nonce/replay, prompt-injection regression, escrow least-authority) remain clean.
+
+> **Re-gate note (2026-06-23):** a leftover orphan `ubi2-node` (PID 82092, PPID 1) was found squatting
+> `:38545` from a prior run; killed before re-verification. No listener / node process remained after.
 
 ---
 
 ## Findings
 
-### C6-SEC-1 — Unbounded contract-text storage / mempool DoS (flat fee, no size bound) — **HIGH**  [OPEN]
+### C6-SEC-1 — Unbounded contract-text storage / mempool DoS (flat fee, no size bound) — **HIGH**  [CLOSED — re-verified 2026-06-23]
+
+**Fix re-verified.** The protocol-engineer applied a submit-time hard cap + size-metered fee +
+defense-in-depth body cap. Independent re-verification (live `:38545`, full workspace tests, static
+read of every cited line) confirms all four required properties:
+
+1. **Over-cap text rejected at submit, never mempool'd, no state.** `parse_calldata`'s
+   `deployContract` arm (`crates/rpc/src/contracts.rs:164`) returns `CalldataError::TextTooLarge` when
+   `text.len() > MAX_CONTRACT_TEXT_BYTES` (8192). `ingest_raw_tx` calls `parse_contract_calldata`
+   (`crates/rpc/src/lib.rs:1997`) and maps the error to `invalid_params` at `lib.rs:2011` — **before**
+   the `mempool.push` at `lib.rs:2093`. So an oversized deploy fails synchronously at
+   `eth_sendRawTransaction` and its bytes are never retained. Boundary checked live: text == MAX (8192)
+   is **accepted and mined** (no off-by-one blocking legit contracts); text == MAX+1 is **rejected**.
+   Runtime re-checks fail-closed in `deploy_contract` (`crates/runtime/src/contracts.rs:626`) before
+   `next_contract_id`/`put_contract` — no partial state (I4).
+2. **Too-many-parties rejected.** Same path, `MAX_CONTRACT_PARTIES = 16`. Live: 16 parties accepted,
+   17 rejected at submit with a "parties" error.
+3. **Fee scales with text length.** `gas_for_deploy(text_len) = GAS_CONTRACT + 16 * text_len`
+   (`crates/runtime/src/lib.rs:117`, saturating). Threaded into `gas_for_kind`
+   (`crates/rpc/src/lib.rs:118`, the apply-path fee + submit affordability) and `gas_for_call_obj`
+   (`lib.rs:159`, `eth_estimateGas`). Live: `eth_estimateGas` is strictly monotonic in text length and
+   equals `gas_for_deploy(len)`; a ~1 KiB contract's charged fee strictly exceeds the flat base fee.
+   No overflow: text is bounded at 8192, so max metered gas is `251_072` (`fee_for_gas` = `2.51e14`
+   base units, well within u128); `gas_for_deploy(usize::MAX)` saturates to `u64::MAX` without
+   wrapping.
+4. **Legit plain-language contract still deploys and reads back verbatim** (`status: 0x1`, text stored
+   exactly, `text_ref = keccak256(text)` unchanged — I1).
+
+**Defense in depth.** `max_request_body_size(1 MiB)` in `serve` (`crates/rpc/src/lib.rs:3499–3501`),
+down from jsonrpsee's 10 MB default. An 8 KiB-text deploy's raw-tx hex is ~17 KiB, so legit deploys
+have ample headroom.
+
+**Tests (all green).** `cargo test -p ubi2-rpc --test sec_c6_poc` 5/5; new unit tests
+`parse_rejects_oversized_text_at_parse_time`, `parse_rejects_too_many_parties_at_parse_time` (RPC),
+`deploy_rejects_oversized_text_fail_closed`, `deploy_rejects_too_many_parties_fail_closed`,
+`deploy_gas_scales_with_text_length` (runtime); `cargo test --workspace` fully green (every binary
+`ok`, 0 failures). An independent boundary + gas-monotonicity live test (at-cap accepted / MAX+1
+rejected / parties edge / estimate monotonic / saturation) passed and was removed.
+
+Invariants held: **I1** (text length is consensus input; `text_ref` commitment unchanged), **I2** (pure
+integer, deterministic gas), **I4** (fail-closed, no partial state on rejected/over-cap deploy), **I6**
+(escrow least-authority untouched). **No new High/Critical introduced by the fix.**
+
+---
+
+#### Original finding (now remediated)
+
 
 **What.** `deployContract(string text, address[] parties)` carries the **full** NL text in calldata,
 into the mempool, and into permanent on-chain state (`PromptContract.text`) with **no size limit
@@ -123,16 +174,27 @@ protections) are unchanged.
 
 ---
 
-## Tests / checks run
+## Tests / checks run (re-gate 2026-06-23)
 
-- `cargo test -p ubi2-rpc --test sec_c6_poc` — **5/5 green** (the live PoCs above, on `:38545`/`:38546`
-  …`:38549`).
-- `cargo test -p ubi2-rpc --test c6_failed_tx` — 3/3 green (cycle-6 failed-tx regression unaffected).
-- `cargo fmt` clean on the new file; `cargo clippy -p ubi2-rpc --tests` — no warnings from
-  `sec_c6_poc` (the 3 pre-existing `c6_qa` doc-comment lints are unrelated to this gate).
+- `cargo test -p ubi2-rpc --test sec_c6_poc` — **5/5 green** on `:38545`+ (`poc_unbounded_contract_text_dos`
+  now asserts the attack is BLOCKED at the boundary; `poc_mempool_text_amplification` asserts a burst of
+  over-cap deploys is all rejected and the next block has 0 txs).
+- New unit tests green: `parse_rejects_oversized_text_at_parse_time`,
+  `parse_rejects_too_many_parties_at_parse_time` (RPC `contracts.rs`);
+  `deploy_rejects_oversized_text_fail_closed`, `deploy_rejects_too_many_parties_fail_closed`,
+  `deploy_gas_scales_with_text_length` (runtime `contracts.rs`).
+- `cargo test --workspace` — **fully green**, every test binary `ok`, 0 failures.
+- Independent live re-gate (throwaway `sec_c6_regate.rs`, removed): at-cap (==8192) accepted+mined,
+  MAX+1 rejected at submit, parties 16 accepted / 17 rejected, `eth_estimateGas` strictly monotonic and
+  == `gas_for_deploy(len)`, `gas_for_deploy(usize::MAX)` saturates — no off-by-one, no post-mempool
+  check, no gas overflow.
 
 ## Gate decision
 
-**FAIL.** C6-SEC-1 (unbounded contract-text DoS) is an open High. Remediate with a `text` (and
-`parties`) size cap at submit + fee-by-size, then re-run `sec_c6_poc` (the DoS PoC should flip to a
-rejected-at-submit assertion) to clear the gate. All other cycle-6 vectors pass.
+**PASS.** C6-SEC-1 (unbounded contract-text / parties DoS) is **CLOSED**: an oversized `text` or
+`parties` array is rejected synchronously at `eth_sendRawTransaction` before the mempool push (with a
+fail-closed runtime re-check), the `DeployContract` fee now scales linearly with stored text length, a
+legit under-cap plain-language contract still deploys/reads back verbatim, and the request body is
+capped at 1 MiB. No High/Critical finding remains open on the cycle-6 diff. All other cycle-6 vectors
+(C6-SEC-2 failed-tx economics, C6-SEC-3 nonce/replay, C6-SEC-4 prompt-injection + escrow regression)
+remain PASS.

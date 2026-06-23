@@ -29,8 +29,8 @@ use ubi2_rpc::contracts::{
 use ubi2_rpc::humanity::{requestVerificationCall, vouchCall};
 use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
 use ubi2_runtime::{
-    fee_for_gas, Account, CanonicalEffect, MockInterpreter, Op, GAS_CONTRACT, GAS_HUMANITY,
-    GAS_STREAM, GAS_TRANSFER, TREASURY, UBI,
+    fee_for_gas, gas_for_deploy, Account, CanonicalEffect, MockInterpreter, Op, GAS_CONTRACT,
+    GAS_HUMANITY, GAS_STREAM, GAS_TRANSFER, TREASURY, UBI,
 };
 
 // Hub addresses (documented system addresses).
@@ -304,13 +304,15 @@ async fn every_tx_kind_pays_a_ubi_fee_into_the_treasury() {
         "vouch paid exactly the humanity fee into the treasury"
     );
 
-    // ── 3. Deploy: DEV deploys a NL contract (nonce 2). Fee = GAS_CONTRACT * price → treasury. ──
+    // ── 3. Deploy: DEV deploys a NL contract (nonce 2). The deploy fee is SIZE-METERED (base +
+    // per-byte on the stored text), so it scales with the text length (C6-SEC-1). ──
+    let deploy_text = "pay the payee from escrow".to_string();
     let raw = sign_tx(
         &DEV_PRIVKEY,
         CONTRACT_HUB,
         0,
         deployContractCall {
-            text: "pay the payee from escrow".to_string(),
+            text: deploy_text.clone(),
             parties: vec![DEV_ADDR, PAYEE],
         }
         .abi_encode(),
@@ -320,11 +322,12 @@ async fn every_tx_kind_pays_a_ubi_fee_into_the_treasury() {
     let mine3 = now_secs();
     chain.produce_block(mine3);
 
+    let deploy_gas = gas_for_deploy(deploy_text.len());
     let t_after_deploy = chain.balance(&TREASURY, mine3);
     assert_eq!(
         t_after_deploy - t_after_vouch,
-        fee_for_gas(GAS_CONTRACT),
-        "deploy paid exactly the contract fee into the treasury"
+        fee_for_gas(deploy_gas),
+        "deploy paid exactly the size-metered contract fee into the treasury"
     );
     let receipt = rpc(
         addr,
@@ -332,11 +335,11 @@ async fn every_tx_kind_pays_a_ubi_fee_into_the_treasury() {
         serde_json::json!([deploy_hash]),
     )
     .await;
-    // The receipt surfaces the per-kind gas the fee was charged on.
+    // The receipt surfaces the per-kind gas the fee was charged on (size-metered for a deploy).
     assert_eq!(
         hex_u128(&receipt["result"]["gasUsed"]),
-        GAS_CONTRACT as u128,
-        "receipt gasUsed = contract per-kind gas"
+        deploy_gas as u128,
+        "receipt gasUsed = size-metered deploy gas"
     );
     let logs = receipt["result"]["logs"].as_array().expect("deploy logs");
     let contract_id = u64::from_str_radix(
@@ -399,9 +402,12 @@ async fn every_tx_kind_pays_a_ubi_fee_into_the_treasury() {
         "the invoked contract paid the payee from escrow"
     );
 
-    // Total fees collected == sum of the per-kind fees of the five fee-bearing txs.
-    let expected_fees =
-        fee_for_gas(GAS_TRANSFER) + fee_for_gas(GAS_HUMANITY) + fee_for_gas(GAS_CONTRACT) * 3; // deploy + fund + invoke
+    // Total fees collected == sum of the per-kind fees of the five fee-bearing txs (the deploy fee is
+    // size-metered; fund + invoke pay the flat contract tier).
+    let expected_fees = fee_for_gas(GAS_TRANSFER)
+        + fee_for_gas(GAS_HUMANITY)
+        + fee_for_gas(deploy_gas)
+        + fee_for_gas(GAS_CONTRACT) * 2; // deploy (metered) + fund + invoke
     assert_eq!(
         chain.balance(&TREASURY, mine4),
         expected_fees,
@@ -575,18 +581,20 @@ async fn estimate_gas_is_per_kind() {
         est(HUMANITY_HUB, vouchCall { vouchee: NEWBIE }.abi_encode()).await,
         GAS_HUMANITY
     );
-    // ContractHub deploy → contract gas.
+    // ContractHub deploy → SIZE-METERED contract gas (base + per-byte on the text), so MetaMask's
+    // preflight estimate scales with the contract text (C6-SEC-1).
+    let est_text = "gas estimate contract".to_string();
     assert_eq!(
         est(
             CONTRACT_HUB,
             deployContractCall {
-                text: "gas estimate contract".to_string(),
+                text: est_text.clone(),
                 parties: vec![DEV_ADDR],
             }
             .abi_encode()
         )
         .await,
-        GAS_CONTRACT
+        gas_for_deploy(est_text.len())
     );
 
     handle.stop().unwrap();

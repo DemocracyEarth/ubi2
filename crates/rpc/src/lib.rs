@@ -50,7 +50,7 @@ use tokio::sync::broadcast;
 
 use ubi2_runtime::{
     apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
-    fee_for_gas, finalize_registration, fund_contract as lc_fund_contract,
+    fee_for_gas, finalize_registration, fund_contract as lc_fund_contract, gas_for_deploy,
     invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
     submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
     vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
@@ -98,9 +98,12 @@ const GAS_PRICE_WEI: u64 = RT_GAS_PRICE_WEI as u64;
 const TRANSFER_GAS: u64 = GAS_TRANSFER;
 
 /// Deterministic per-kind gas for a queued tx — the `gas_used` the UBI fee is charged on and the value
-/// `eth_estimateGas` returns. A small constant per tx kind (no metering): transfers pay the EVM
-/// intrinsic; hub ops pay progressively more to reflect their bookkeeping (escrow/index/quorum). This
-/// is consensus state (I2): every node charges the same sender the same fee for the same tx kind.
+/// `eth_estimateGas` returns. A small constant per tx kind (no metering) for most kinds: transfers pay
+/// the EVM intrinsic; hub ops pay progressively more to reflect their bookkeeping (escrow/index/quorum).
+/// A `deployContract` is the exception — its gas SCALES with the stored text length (`gas_for_deploy`),
+/// so permanent on-chain storage has a real per-byte cost (C6-SEC-1) and a larger contract pays a
+/// larger UBI fee. This is consensus state (I2): the text length is a consensus input, so every node
+/// charges the same sender the same fee for the same tx.
 fn gas_for_kind(kind: &PendingKind) -> u64 {
     match kind {
         PendingKind::Transfer { .. } => GAS_TRANSFER,
@@ -110,8 +113,10 @@ fn gas_for_kind(kind: &PendingKind) -> u64 {
         PendingKind::Vouch { .. }
         | PendingKind::Challenge { .. }
         | PendingKind::SubmitVerdict { .. } => GAS_HUMANITY,
-        PendingKind::DeployContract { .. }
-        | PendingKind::FundContract { .. }
+        // Size-metered: base contract gas + per-byte surcharge on the stored UTF-8 text (the text is
+        // already capped at submit, so the length is bounded; storing more costs more).
+        PendingKind::DeployContract { text, .. } => gas_for_deploy(text.len()),
+        PendingKind::FundContract { .. }
         | PendingKind::InvokeContract { .. }
         | PendingKind::SubmitEffect { .. } => GAS_CONTRACT,
     }
@@ -144,7 +149,17 @@ fn gas_for_call_obj(call: &Value) -> u64 {
                 _ => GAS_HUMANITY,
             }
         }
-        Some(a) if a == CONTRACT_HUB.as_slice() => GAS_CONTRACT,
+        Some(a) if a == CONTRACT_HUB.as_slice() => {
+            // A `deployContract` is size-metered (per-byte surcharge on the stored text), so MetaMask's
+            // preflight estimate scales with the text and matches the larger UBI fee the apply path
+            // charges. Other ContractHub ops pay the flat contract tier. Parsing also enforces the size
+            // cap, so an oversized estimate request surfaces the same invalid-params error the wallet
+            // would get at submit. We fall back to the flat tier on a non-deploy/unparsable call.
+            match parse_contract_calldata(&data) {
+                Ok(ContractOp::DeployContract { text, .. }) => gas_for_deploy(text.len()),
+                _ => GAS_CONTRACT,
+            }
+        }
         _ => GAS_TRANSFER,
     }
 }
@@ -3475,7 +3490,15 @@ pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<S
 
     // jsonrpsee's service speaks both HTTP and WS on one socket, so eth_subscribe (WS) and the plain
     // HTTP request/response methods share the same `:8545` (spec §M1-T1.3).
+    //
+    // Defense in depth (C6-SEC-1): cap the request body well below jsonrpsee's 10 MB default. The
+    // primary fix is the hard text/parties cap enforced at parse (`MAX_CONTRACT_TEXT_BYTES`), but a
+    // tight body limit also stops an attacker forcing the node to buffer multi-MB payloads before the
+    // calldata is even decoded. 1 MiB is generous headroom for any legit tx (an 8 KiB-text deploy's
+    // hex-encoded raw tx is ~17 KiB) while shrinking the abuse surface by 10x.
+    const MAX_REQUEST_BODY_BYTES: u32 = 1024 * 1024;
     let svc_builder = Server::builder()
+        .max_request_body_size(MAX_REQUEST_BODY_BYTES)
         .set_http_middleware(http_middleware)
         .to_service_builder();
     let methods: jsonrpsee::Methods = build_module(chain).into();

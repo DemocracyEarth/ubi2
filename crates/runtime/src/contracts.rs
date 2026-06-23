@@ -542,6 +542,13 @@ pub enum ContractError {
     /// `deploy_contract` with an empty parties list (a contract must have at least one party so a
     /// `Refund` always has a valid target — fail-closed).
     NoParties,
+    /// `deploy_contract` whose on-chain UTF-8 `text` exceeds [`crate::MAX_CONTRACT_TEXT_BYTES`]. The
+    /// text is permanent state, so an unbounded blob is a state-bloat DoS (C6-SEC-1); reject it. Carries
+    /// the offending length and the cap.
+    TextTooLarge { len: usize, max: usize },
+    /// `deploy_contract` whose declared `parties` exceed [`crate::MAX_CONTRACT_PARTIES`] (C6-SEC-1).
+    /// Carries the offending count and the cap.
+    TooManyParties { count: usize, max: usize },
     /// An op references an unknown contract id.
     NoSuchContract(ContractId),
     /// An op targets a contract that is `Terminated`.
@@ -566,6 +573,18 @@ impl std::fmt::Display for ContractError {
         use ContractError::*;
         match self {
             NoParties => write!(f, "a contract must declare at least one party"),
+            TextTooLarge { len, max } => {
+                write!(
+                    f,
+                    "contract text is {len} bytes, exceeds the {max}-byte cap"
+                )
+            }
+            TooManyParties { count, max } => {
+                write!(
+                    f,
+                    "contract declares {count} parties, exceeds the {max} cap"
+                )
+            }
             NoSuchContract(id) => write!(f, "no such contract: {id}"),
             ContractTerminated(id) => write!(f, "contract {id} is terminated"),
             NoInterpreters => write!(f, "no active interpreters to interpret the contract"),
@@ -599,6 +618,22 @@ pub fn deploy_contract(
 ) -> Result<ContractId, ContractError> {
     if parties.is_empty() {
         return Err(ContractError::NoParties);
+    }
+    // Defense in depth (C6-SEC-1): the RPC submit gate rejects an oversized text/parties before the tx
+    // ever enters the mempool, but the runtime is the consensus authority — re-check here so the bound
+    // holds regardless of how the op reached `deploy_contract`. `String` is UTF-8, so `len()` is the
+    // exact on-chain byte count. Fail-closed: no contract is created.
+    if text.len() > crate::MAX_CONTRACT_TEXT_BYTES {
+        return Err(ContractError::TextTooLarge {
+            len: text.len(),
+            max: crate::MAX_CONTRACT_TEXT_BYTES,
+        });
+    }
+    if parties.len() > crate::MAX_CONTRACT_PARTIES {
+        return Err(ContractError::TooManyParties {
+            count: parties.len(),
+            max: crate::MAX_CONTRACT_PARTIES,
+        });
     }
     let id = state.next_contract_id();
     state.put_contract(PromptContract::new(id, text, text_ref, parties));
@@ -1548,6 +1583,59 @@ mod tests {
             deploy_contract(&mut s, "no parties".to_string(), [0u8; 32], vec![]).unwrap_err(),
             ContractError::NoParties
         );
+    }
+
+    #[test]
+    fn deploy_rejects_oversized_text_fail_closed() {
+        // C6-SEC-1: a text exactly at the cap deploys; one byte over is rejected with no state change.
+        let mut s = MemState::new();
+        let at_cap = "x".repeat(crate::MAX_CONTRACT_TEXT_BYTES);
+        let id = deploy_contract(&mut s, at_cap, [1u8; 32], vec![addr(1)]).unwrap();
+        assert_eq!(id, 0);
+
+        let mut s2 = MemState::new();
+        let over = "y".repeat(crate::MAX_CONTRACT_TEXT_BYTES + 1);
+        assert_eq!(
+            deploy_contract(&mut s2, over, [2u8; 32], vec![addr(1)]).unwrap_err(),
+            ContractError::TextTooLarge {
+                len: crate::MAX_CONTRACT_TEXT_BYTES + 1,
+                max: crate::MAX_CONTRACT_TEXT_BYTES,
+            }
+        );
+        // No contract was created on the rejected deploy (fail-closed, I4).
+        assert!(s2.get_contract(0).is_none());
+    }
+
+    #[test]
+    fn deploy_rejects_too_many_parties_fail_closed() {
+        // C6-SEC-1: `MAX_CONTRACT_PARTIES` distinct parties deploy; one more is rejected, no state.
+        let mut s = MemState::new();
+        let at_cap: Vec<Address> = (0..crate::MAX_CONTRACT_PARTIES as u8).map(addr).collect();
+        deploy_contract(&mut s, "ok".to_string(), [3u8; 32], at_cap).unwrap();
+
+        let mut s2 = MemState::new();
+        let over: Vec<Address> = (0..(crate::MAX_CONTRACT_PARTIES as u8 + 1))
+            .map(addr)
+            .collect();
+        let count = over.len();
+        assert_eq!(
+            deploy_contract(&mut s2, "too many".to_string(), [4u8; 32], over).unwrap_err(),
+            ContractError::TooManyParties {
+                count,
+                max: crate::MAX_CONTRACT_PARTIES,
+            }
+        );
+        assert!(s2.get_contract(0).is_none());
+    }
+
+    #[test]
+    fn deploy_gas_scales_with_text_length() {
+        // The size-metered gas grows linearly with text length (storing more costs more — I2).
+        use crate::{gas_for_deploy, GAS_CONTRACT, GAS_PER_TEXT_BYTE};
+        assert_eq!(gas_for_deploy(0), GAS_CONTRACT);
+        assert_eq!(gas_for_deploy(100), GAS_CONTRACT + 100 * GAS_PER_TEXT_BYTE);
+        // Larger text ⇒ strictly larger gas (and thus fee).
+        assert!(gas_for_deploy(8192) > gas_for_deploy(10));
     }
 
     #[test]

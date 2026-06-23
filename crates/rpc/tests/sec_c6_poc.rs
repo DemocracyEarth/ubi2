@@ -1,11 +1,12 @@
 //! GATE 3 — Cycle-6 security PoCs (defender, this project only). Live RPC on :38545.
 //!
 //! Vectors exercised:
-//!   1. CONTRACT-TEXT DoS (HIGH): `deployContract(string text, address[])` puts attacker-controlled
-//!      text in calldata + on-chain state with NO size bound and a FLAT fee (`GAS_CONTRACT`,
-//!      ~0.00012 UBI) regardless of text length. We show a single ~1 MB-text deploy is accepted, the
-//!      full blob is stored on-chain verbatim, and the per-byte cost is ~0 — so storage/mempool grows
-//!      unbounded for a trivial fee. This is the headline finding.
+//!   1. CONTRACT-TEXT DoS (HIGH — now FIXED, C6-SEC-1): `deployContract(string text, address[])` is
+//!      now bounded. An oversized `text` (> `MAX_CONTRACT_TEXT_BYTES`) and an over-cap `parties` array
+//!      (> `MAX_CONTRACT_PARTIES`) are REJECTED synchronously at `eth_sendRawTransaction` (invalid
+//!      params) — before the bytes enter the mempool, so no perpetual pending and no state. A legit
+//!      under-cap contract STILL deploys, and its fee SCALES with text length (size-metered gas), so
+//!      storing more bytes costs more. These tests assert the attack is blocked.
 //!   2. FAILED-TX griefing economics (assessed): a failed tx costs the full fee and stores only a
 //!      small bounded reason string; demonstrate the fee is actually charged + no partial op state.
 //!   3. NONCE/replay (PASS): the failed-tx `nonce = p.nonce+1` SET consumes the nonce exactly once —
@@ -27,8 +28,8 @@ use k256::ecdsa::SigningKey;
 use ubi2_rpc::contracts::{deployContractCall, CONTRACT_HUB};
 use ubi2_rpc::{serve, Chain, DEVNET_CHAIN_ID};
 use ubi2_runtime::{
-    fee_for_gas, Account, MockInterpreter, MockOracle, EMISSION_PERIOD_SECS, GAS_CONTRACT,
-    TREASURY, UBI,
+    fee_for_gas, gas_for_deploy, Account, MockInterpreter, MockOracle, EMISSION_PERIOD_SECS,
+    GAS_CONTRACT, MAX_CONTRACT_PARTIES, MAX_CONTRACT_TEXT_BYTES, TREASURY, UBI,
 };
 
 const DEV_PRIVKEY: [u8; 32] =
@@ -188,27 +189,62 @@ async fn boot(addr: SocketAddr, genesis: u64) -> (Chain, jsonrpsee::server::Serv
     (chain, handle)
 }
 
-/// FINDING 1 (HIGH) — UNBOUNDED CONTRACT-TEXT DoS.
-/// A single `deployContract` with ~1 MB of text is accepted, mined, and stored on-chain verbatim for
-/// a FLAT fee (`GAS_CONTRACT`), i.e. the marginal per-byte cost of on-chain storage is ZERO. There is
-/// NO max-text-size check and NO fee-by-size. An attacker with ~1 UBI/hour of emission can store
-/// megabytes of permanent state per cheap tx.
+/// FINDING 1 (HIGH — NOW FIXED, C6-SEC-1) — CONTRACT-TEXT DoS is BLOCKED.
+/// An oversized `deployContract` text (> `MAX_CONTRACT_TEXT_BYTES`) is rejected SYNCHRONOUSLY at
+/// `eth_sendRawTransaction` (invalid-params) — the size check runs in `parse_calldata`, before the tx
+/// is pushed onto the mempool, so there is no perpetual pending and no on-chain state. A legit
+/// under-cap contract STILL deploys, and its fee SCALES with the text length (size-metered gas).
 #[tokio::test]
 async fn poc_unbounded_contract_text_dos() {
     let addr: SocketAddr = "127.0.0.1:38545".parse().unwrap();
     let genesis = now_secs() - 2000 * EMISSION_PERIOD_SECS;
     let (chain, _handle) = boot(addr, genesis).await;
 
-    // ~1 MiB of attacker text. No size bound exists, so this is accepted.
-    let big = "A".repeat(1_000_000);
+    // ---- (a) An over-cap text is REJECTED at submit (no mempool, no state). ----
+    let big = "A".repeat(MAX_CONTRACT_TEXT_BYTES + 1);
     let data = deployContractCall {
         text: big.clone(),
         parties: vec![DEV_ADDR, PARTY],
     }
     .abi_encode();
-    // The calldata alone is > 1 MB; the signed-tx hex on the wire is > 2 MB.
-    assert!(data.len() > 1_000_000, "calldata carries the full text");
+    let resp = send(addr, sign_tx(&DEV_PRIVKEY, CONTRACT_HUB, 0, data, 0)).await;
+    assert!(
+        resp["result"].is_null() && resp["error"]["message"].as_str().is_some(),
+        "oversized-text deploy must be REJECTED at submit (no accepted hash): {resp}"
+    );
+    let err_msg = resp["error"]["message"].as_str().unwrap();
+    assert!(
+        err_msg.contains("exceeds") && err_msg.contains("cap"),
+        "rejection cites the size cap: {err_msg}"
+    );
 
+    // Mining a block proves the rejected tx never entered the mempool: no contract id 0 exists.
+    chain.produce_block(now_secs());
+    let c = rpc(addr, "ubi_getContract", serde_json::json!([0u64])).await;
+    assert!(
+        c["result"].is_null(),
+        "the oversized deploy left NO state (never mempool'd, never mined): {c}"
+    );
+
+    // ---- (b) An over-cap parties array is REJECTED at submit too. ----
+    let many: Vec<AlloyAddr> = (0..(MAX_CONTRACT_PARTIES as u8 + 1))
+        .map(|i| AlloyAddr::from([i.wrapping_add(1); 20]))
+        .collect();
+    let data = deployContractCall {
+        text: "fine text".to_string(),
+        parties: many,
+    }
+    .abi_encode();
+    let resp = send(addr, sign_tx(&DEV_PRIVKEY, CONTRACT_HUB, 0, data, 0)).await;
+    assert!(
+        resp["result"].is_null()
+            && resp["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("parties")),
+        "too-many-parties deploy must be REJECTED at submit: {resp}"
+    );
+
+    // ---- (c) A legit under-cap contract STILL deploys, and its fee SCALES with text length. ----
     let treasury_hex = format!("0x{}", h::encode(TREASURY.as_slice()));
     let t_pre = hex_u128(
         &rpc(
@@ -219,15 +255,21 @@ async fn poc_unbounded_contract_text_dos() {
         .await["result"],
     );
 
+    // A realistic ~1 KiB agreement — well under the 8 KiB cap.
+    let legit = "pay 5 UBI to the payee on signal. ".repeat(30);
+    assert!(legit.len() <= MAX_CONTRACT_TEXT_BYTES);
+    let data = deployContractCall {
+        text: legit.clone(),
+        parties: vec![DEV_ADDR, PARTY],
+    }
+    .abi_encode();
     let resp = send(addr, sign_tx(&DEV_PRIVKEY, CONTRACT_HUB, 0, data, 0)).await;
     let tx_hash = resp["result"]
         .as_str()
-        .unwrap_or_else(|| panic!("1MB deploy should be accepted (NO size bound): {resp}"))
+        .unwrap_or_else(|| panic!("a legit under-cap contract must still deploy: {resp}"))
         .to_string();
+    chain.produce_block(now_secs());
 
-    let _block = chain.produce_block(now_secs());
-
-    // The full 1 MB text is stored on-chain and read back verbatim — unbounded permanent state growth.
     let receipt = rpc(
         addr,
         "eth_getTransactionReceipt",
@@ -237,19 +279,17 @@ async fn poc_unbounded_contract_text_dos() {
     assert_eq!(
         receipt["result"]["status"].as_str(),
         Some("0x1"),
-        "the oversized deploy succeeded: {receipt}"
+        "the legit deploy succeeded: {receipt}"
     );
     let contract = rpc(addr, "ubi_getContract", serde_json::json!([0u64])).await;
-    let stored_text = contract["result"]["text"]
-        .as_str()
-        .expect("contract text stored on-chain");
     assert_eq!(
-        stored_text.len(),
-        1_000_000,
-        "the FULL 1 MB attacker text is stored on-chain verbatim — no truncation, no bound"
+        contract["result"]["text"].as_str().map(|s| s.len()),
+        Some(legit.len()),
+        "the legit text is stored on-chain verbatim"
     );
 
-    // The fee charged is the FLAT GAS_CONTRACT fee — identical to a 10-byte contract. Per-byte cost ~0.
+    // The fee is the SIZE-METERED fee (base + per-byte), strictly LARGER than the flat base fee. So a
+    // bigger contract pays more — storage is no longer free.
     let t_post = hex_u128(
         &rpc(
             addr,
@@ -259,31 +299,52 @@ async fn poc_unbounded_contract_text_dos() {
         .await["result"],
     );
     let fee_charged = t_post - t_pre;
-    let flat_fee = fee_for_gas(GAS_CONTRACT);
+    let expected_fee = fee_for_gas(gas_for_deploy(legit.len()));
     assert_eq!(
-        fee_charged, flat_fee,
-        "fee is the FLAT GAS_CONTRACT fee regardless of text size (storage is effectively free)"
+        fee_charged, expected_fee,
+        "fee is the size-metered deploy fee (base + per-byte * text.len())"
     );
-    // Cost per stored byte, in UBI: flat_fee / 1e6 bytes / 1e18 base-units-per-UBI ≈ 1.2e-19 UBI/byte.
-    // i.e. ~0.00012 UBI buys 1 MB of permanent on-chain state. This is the unbounded-input DoS.
     assert!(
-        flat_fee < UBI,
-        "deploy fee ({flat_fee} base units) is a tiny fraction of one UBI for ANY text size"
+        fee_charged > fee_for_gas(GAS_CONTRACT),
+        "the metered fee for a {}-byte contract exceeds the flat base fee (storage costs more now)",
+        legit.len()
+    );
+    assert!(
+        fee_charged < UBI,
+        "but a normal contract is still affordable"
+    );
+
+    // eth_estimateGas reports the same size-metered gas so MetaMask shows the correct (larger) UBI fee.
+    let est = rpc(
+        addr,
+        "eth_estimateGas",
+        serde_json::json!([{
+            "to": format!("0x{}", h::encode(CONTRACT_HUB.as_slice())),
+            "data": format!("0x{}", h::encode(&deployContractCall {
+                text: legit.clone(),
+                parties: vec![DEV_ADDR, PARTY],
+            }.abi_encode())),
+        }]),
+    )
+    .await;
+    assert_eq!(
+        hex_u64(&est["result"]),
+        gas_for_deploy(legit.len()),
+        "eth_estimateGas returns the size-metered deploy gas"
     );
 }
 
-/// FINDING 1b — mempool amplification: many large-text deploys queue in an UNBOUNDED in-memory mempool
-/// before a block is produced. Each is admitted by the submit gate (it only checks fee affordability,
-/// not text size or mempool depth). We queue several hundred-KB deploys without producing a block to
-/// show they all accumulate in RAM.
+/// FINDING 1b (NOW FIXED) — mempool amplification is blocked: an over-cap deploy is rejected at submit
+/// (in `parse_calldata`, before the mempool push), so a burst of oversized deploys cannot accumulate
+/// in RAM. We attempt to queue 8 large-text deploys; every one is rejected and no block carries them.
 #[tokio::test]
 async fn poc_mempool_text_amplification() {
     let addr: SocketAddr = "127.0.0.1:38546".parse().unwrap();
     let genesis = now_secs() - 5000 * EMISSION_PERIOD_SECS;
     let (chain, _handle) = boot(addr, genesis).await;
 
-    let text = "Z".repeat(200_000);
-    // Queue 8 deploys (~1.6 MB of text) without mining — they sit in the unbounded mempool.
+    let text = "Z".repeat(MAX_CONTRACT_TEXT_BYTES + 1);
+    // Attempt to queue 8 oversized deploys — each must be rejected synchronously (never mempool'd).
     for n in 0..8u64 {
         let data = deployContractCall {
             text: text.clone(),
@@ -292,22 +353,21 @@ async fn poc_mempool_text_amplification() {
         .abi_encode();
         let resp = send(addr, sign_tx(&DEV_PRIVKEY, CONTRACT_HUB, 0, data, n)).await;
         assert!(
-            resp["result"].as_str().is_some(),
-            "deploy #{n} accepted into mempool with no size/depth bound: {resp}"
+            resp["result"].is_null() && resp["error"]["message"].as_str().is_some(),
+            "oversized deploy #{n} must be rejected at submit, not mempool'd: {resp}"
         );
     }
-    // All 8 mine into one block — ~1.6 MB of new permanent contract state in a single block.
+    // The next block is empty of deploys — none of the rejected txs accumulated.
     let block = chain.produce_block(now_secs());
     assert_eq!(
         block.txs.len(),
-        8,
-        "all 8 oversized deploys mined in one block (no per-block byte cap)"
+        0,
+        "no oversized deploy reached the mempool / a block (amplification blocked)"
     );
-    let c = rpc(addr, "ubi_getContract", serde_json::json!([7u64])).await;
-    assert_eq!(
-        c["result"]["text"].as_str().map(|s| s.len()),
-        Some(200_000),
-        "the 8th contract's full 200 KB text is stored"
+    let c = rpc(addr, "ubi_getContract", serde_json::json!([0u64])).await;
+    assert!(
+        c["result"].is_null(),
+        "no contract state was created from the rejected burst: {c}"
     );
 }
 
@@ -331,8 +391,9 @@ async fn poc_failed_tx_charges_fee_bounded_reason_no_partial_state() {
     );
 
     // Deploy with ZERO parties → runtime returns NoParties → mined as a FAILED tx.
+    let failed_text = "no parties here".to_string();
     let data = deployContractCall {
-        text: "no parties here".to_string(),
+        text: failed_text.clone(),
         parties: vec![],
     }
     .abi_encode();
@@ -371,10 +432,17 @@ async fn poc_failed_tx_charges_fee_bounded_reason_no_partial_state() {
         )
         .await["result"],
     );
+    // The fee is the SIZE-METERED deploy fee (base + per-byte), charged in full even on the failed op
+    // (EVM-correct: the node still parsed + did the work). It is identical to what a SUCCEEDING deploy
+    // of the same text would pay, so a failed deploy is no cheaper than a successful one.
     assert_eq!(
         t_post - t_pre,
-        fee_for_gas(GAS_CONTRACT),
-        "failed deploy still pays the full GAS_CONTRACT fee"
+        fee_for_gas(gas_for_deploy(failed_text.len())),
+        "failed deploy still pays the full size-metered deploy fee"
+    );
+    assert!(
+        t_post - t_pre >= fee_for_gas(GAS_CONTRACT),
+        "the metered fee is at least the base contract fee"
     );
     // No partial state: contract id 1 was never created.
     let c = rpc(addr, "ubi_getContract", serde_json::json!([0u64])).await;
