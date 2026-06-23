@@ -251,22 +251,25 @@ async fn deploy_fund_invoke_transfers_from_escrow() {
 
     let payee_hex = format!("0x{}", hex::encode(PAYEE.as_slice()));
 
-    // --- deployContract(textRef, [dev, payee]) → an Active contract. ---
-    let text_ref = B256::from([0x42u8; 32]);
+    // --- deployContract(text, [dev, payee]) → an Active contract. The FULL plain-language text is
+    // carried in calldata and stored on-chain; the node derives text_ref = keccak256(utf8(text)). ---
+    let contract_text =
+        "On the agreed signal, pay 5 UBI from this contract's escrow to the payee.".to_string();
+    let expected_text_ref = alloy_primitives::keccak256(contract_text.as_bytes());
     let parties = vec![DEV_ADDR, PAYEE];
     let raw = sign_tx(
         &DEV_PRIVKEY,
         CONTRACT_HUB,
         0,
         deployContractCall {
-            textRef: text_ref,
+            text: contract_text.clone(),
             parties: parties.clone(),
         }
         .abi_encode(),
         0,
     );
     let deploy_hash = send_ok(addr, raw).await;
-    chain.produce_block(now_secs());
+    let deploy_block = chain.produce_block(now_secs()).number;
 
     // The ContractDeployed log carries the new contract id in topic[1].
     let receipt = rpc(
@@ -288,10 +291,37 @@ async fn deploy_fund_invoke_transfers_from_escrow() {
     .unwrap();
     println!("[contract] deployed contract #{contract_id}");
 
-    // ubi_getContract reports it Active with zero escrow and the two parties.
+    // ubi_getContract reports it Active with zero escrow, the two parties, AND the exact on-chain
+    // plain-language text + its derived text_ref + the deploy block/tx (transparency — the whole point).
     let c = rpc(addr, "ubi_getContract", serde_json::json!([contract_id])).await;
     assert_eq!(c["result"]["status"], "Active");
     assert_eq!(hex_u128(&c["result"]["escrow"]), 0);
+    assert_eq!(
+        c["result"]["text"].as_str().unwrap(),
+        contract_text,
+        "ubi_getContract returns the exact on-chain plain-language text"
+    );
+    assert_eq!(
+        c["result"]["text_ref"].as_str().unwrap(),
+        format!("0x{}", hex::encode(expected_text_ref.as_slice())),
+        "text_ref is keccak256(utf8(text))"
+    );
+    assert_eq!(
+        c["result"]["deploy_block"].as_u64().unwrap(),
+        deploy_block,
+        "deploy_block records the deploy height"
+    );
+    assert_eq!(
+        c["result"]["deploy_tx"].as_str().unwrap(),
+        deploy_hash.to_lowercase(),
+        "deploy_tx records the deploy tx hash"
+    );
+    // A fresh contract has no exec cases yet.
+    assert_eq!(
+        c["result"]["cases"].as_array().unwrap().len(),
+        0,
+        "no exec cases before any invoke"
+    );
     assert_eq!(
         c["result"]["parties"].as_array().unwrap().len(),
         2,
@@ -419,13 +449,31 @@ async fn deploy_fund_invoke_transfers_from_escrow() {
         "escrow drained by 5 UBI"
     );
 
-    // --- ubi_getContractsOf(payee) lists the contract the payee is a party of. ---
+    // --- ubi_getContract now lists the invocation under `cases`, with its committed effect. ---
+    let cases = c["result"]["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), 1, "exactly one exec case after one invoke");
+    assert_eq!(cases[0]["id"].as_u64(), Some(case_id));
+    assert_eq!(cases[0]["status"]["type"], "Committed");
+    assert!(
+        cases[0]["resolved_at"].as_u64().is_some(),
+        "a committed case records the block it resolved in"
+    );
+    let case_ops = cases[0]["status"]["effect"]["ops"]
+        .as_array()
+        .expect("committed effect ops in the case");
+    assert_eq!(case_ops[0]["type"], "Transfer");
+    assert_eq!(hex_u128(&case_ops[0]["amount"]), 5 * UBI);
+
+    // --- ubi_getContractsOf(payee) lists the contract the payee is a party of, with its text. ---
     let mine = rpc(addr, "ubi_getContractsOf", serde_json::json!([payee_hex])).await;
     let arr = mine["result"].as_array().expect("contracts array");
-    assert!(
-        arr.iter().any(|c| c["id"].as_u64() == Some(contract_id)),
-        "payee is a party of the contract"
-    );
+    let listed = arr
+        .iter()
+        .find(|c| c["id"].as_u64() == Some(contract_id))
+        .expect("payee is a party of the contract");
+    // The list view surfaces enough for a list row: text + escrow + deploy block.
+    assert_eq!(listed["text"].as_str().unwrap(), contract_text);
+    assert_eq!(listed["deploy_block"].as_u64(), Some(deploy_block));
 
     handle.stop().unwrap();
     let _ = handle.stopped().await;
@@ -459,7 +507,7 @@ async fn submit_effect_via_tx_commits() {
         CONTRACT_HUB,
         0,
         deployContractCall {
-            textRef: B256::from([0x21u8; 32]),
+            text: "pay 3 UBI from escrow to the payee on signal".to_string(),
             parties: vec![DEV_ADDR, PAYEE],
         }
         .abi_encode(),
@@ -619,7 +667,7 @@ async fn address_indexer_shapes() {
         CONTRACT_HUB,
         0,
         deployContractCall {
-            textRef: B256::from([0x11u8; 32]),
+            text: "pay 2 UBI from escrow to the payee on signal".to_string(),
             parties: vec![DEV_ADDR, PAYEE],
         }
         .abi_encode(),

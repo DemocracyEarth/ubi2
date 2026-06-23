@@ -305,13 +305,12 @@ async fn every_tx_kind_pays_a_ubi_fee_into_the_treasury() {
     );
 
     // ── 3. Deploy: DEV deploys a NL contract (nonce 2). Fee = GAS_CONTRACT * price → treasury. ──
-    let text_ref = B256::from([0x42u8; 32]);
     let raw = sign_tx(
         &DEV_PRIVKEY,
         CONTRACT_HUB,
         0,
         deployContractCall {
-            textRef: text_ref,
+            text: "pay the payee from escrow".to_string(),
             parties: vec![DEV_ADDR, PAYEE],
         }
         .abi_encode(),
@@ -581,7 +580,7 @@ async fn estimate_gas_is_per_kind() {
         est(
             CONTRACT_HUB,
             deployContractCall {
-                textRef: B256::ZERO,
+                text: "gas estimate contract".to_string(),
                 parties: vec![DEV_ADDR],
             }
             .abi_encode()

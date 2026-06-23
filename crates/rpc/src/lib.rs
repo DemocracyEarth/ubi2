@@ -74,9 +74,9 @@ use humanity::{
 
 pub mod contracts;
 use contracts::{
-    addr_topic as c_addr_topic, derive_text, derive_trigger,
-    parse_calldata as parse_contract_calldata, u64_topic as c_u64_topic,
-    CalldataError as ContractCalldataError, ContractOp, CONTRACT_HUB,
+    addr_topic as c_addr_topic, derive_trigger, parse_calldata as parse_contract_calldata,
+    text_commitment, u64_topic as c_u64_topic, CalldataError as ContractCalldataError, ContractOp,
+    CONTRACT_HUB,
 };
 
 pub mod oracle_admin;
@@ -328,9 +328,10 @@ enum PendingKind {
     },
 
     // ---- M4: prompt-contract ops to ContractHub ----
-    /// `deployContract(textRef, parties)`: register an `Active` contract for the signer.
+    /// `deployContract(text, parties)`: register an `Active` contract for the signer. Carries the
+    /// **full** plain-language text (stored on-chain); the node derives `text_ref = keccak256(utf8)`.
     DeployContract {
-        text_ref: [u8; 32],
+        text: String,
         parties: Vec<AlloyAddr>,
     },
     /// `fundContract(id)`: fund contract `id`'s escrow with the tx's value (carried in `PendingTx`).
@@ -1190,15 +1191,27 @@ impl Chain {
                 }
 
                 // ---- M4: prompt-contract ops ----
-                PendingKind::DeployContract { text_ref, parties } => {
+                PendingKind::DeployContract { text, parties } => {
+                    // The full NL text now lives on-chain; the node derives the content commitment
+                    // `text_ref = keccak256(utf8(text))` and stamps the deploy block/tx onto the record
+                    // (so the contract detail view can show where it was deployed).
+                    let text_ref = text_commitment(text);
                     consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
                         .and_then(|()| {
                             let parties: Vec<Address> =
                                 parties.iter().map(|a| a.into_array()).collect();
-                            lc_deploy_contract(&mut g.state, *text_ref, parties)
+                            lc_deploy_contract(&mut g.state, text.clone(), text_ref, parties)
                                 .map_err(|e| e.to_string())
                         })
-                        .map(|id| vec![contract_deployed_log(id, &p.from, text_ref)])
+                        .map(|id| {
+                            // Stamp the deploy block height + tx hash onto the stored contract.
+                            if let Some(mut c) = g.state.get_contract(id) {
+                                c.deploy_block = number;
+                                c.deploy_tx = p.hash.0;
+                                g.state.put_contract(c);
+                            }
+                            vec![contract_deployed_log(id, &p.from, &text_ref)]
+                        })
                 }
 
                 PendingKind::FundContract { id } => {
@@ -1222,27 +1235,23 @@ impl Chain {
                 PendingKind::InvokeContract { id, trigger_ref } => {
                     consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
                         .and_then(|()| {
-                            // Derive the off-chain contract text + trigger bytes from the committed refs
-                            // (the devnet seam — no prose/PII on-chain, I6); the deterministic
-                            // interpreter computes the same canonical effect for every juror so the
-                            // quorum forms reproducibly (I1/I5). `entropy` folds chain entropy into
-                            // interpreter selection.
-                            let contract = g
-                                .state
-                                .get_contract(*id)
-                                .ok_or_else(|| "no such contract".to_string())?;
-                            let text = derive_text(&contract.text_ref);
+                            // The interpreter reads the contract's stored on-chain text (so
+                            // interpretation is reproducible from chain state); we only derive the
+                            // off-chain trigger bytes from the committed `triggerRef` (the devnet seam).
+                            // The deterministic interpreter computes the same canonical effect for every
+                            // juror so the quorum forms reproducibly (I1/I5). `entropy` folds chain
+                            // entropy into interpreter selection; `number` is the resolving block.
                             let trigger = derive_trigger(trigger_ref);
                             let entropy = block_entropy(hash, number);
                             lc_invoke_contract(
                                 &mut g.state,
                                 &*interpreter,
                                 *id,
-                                &text,
                                 *trigger_ref,
                                 &trigger,
                                 p.from.into_array(),
                                 entropy,
+                                number,
                                 timestamp,
                             )
                             .map_err(|e| e.to_string())
@@ -1269,6 +1278,7 @@ impl Chain {
                                 *case_id,
                                 &p.from.into_array(),
                                 effect.clone(),
+                                number,
                                 timestamp,
                             )
                             .map_err(|e| e.to_string())
@@ -1480,6 +1490,21 @@ impl Chain {
             .into_iter()
             .filter(|c| c.is_party(addr))
             .collect()
+    }
+
+    /// A prompt contract by id together with all its exec cases (sorted by id), for the full
+    /// `ubi_getContract` detail view. None if the contract is unknown. Pure read (I1: sorted output).
+    pub fn get_contract_detail(&self, id: u64) -> Option<(PromptContract, Vec<ExecCase>)> {
+        let g = self.inner.lock().unwrap();
+        let contract = g.state.get_contract(id)?;
+        let mut cases: Vec<ExecCase> = g
+            .state
+            .exec_cases()
+            .into_iter()
+            .filter(|c| c.contract == id)
+            .collect();
+        cases.sort_by_key(|c| c.id);
+        Some((contract, cases))
     }
 
     // ---- EXPL-1: address index reads ----
@@ -1955,8 +1980,8 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     } else if to == CONTRACT_HUB {
         // Parse the ContractHub selector + ABI args into a prompt-contract op (M4).
         match parse_contract_calldata(&input) {
-            Ok(ContractOp::DeployContract { text_ref, parties }) => {
-                PendingKind::DeployContract { text_ref, parties }
+            Ok(ContractOp::DeployContract { text, parties }) => {
+                PendingKind::DeployContract { text, parties }
             }
             Ok(ContractOp::FundContract { id }) => PendingKind::FundContract { id },
             Ok(ContractOp::InvokeContract { id, trigger_ref }) => {
@@ -2334,9 +2359,11 @@ fn effect_json(e: &CanonicalEffect) -> Value {
     })
 }
 
-/// Render a [`PromptContract`] into the `ubi_getContract` JSON shape: escrow (0x-hex base units), the
-/// declared parties, the `text_ref` commitment, the contract-local vars, the derived escrow address,
-/// and status. No prose/PII ever (I6 — only the `text_ref` commitment).
+/// Render a [`PromptContract`] into the contract JSON shape: the **full** plain-language `text` (stored
+/// on-chain — transparency), its `text_ref` content commitment, escrow (0x-hex base units) + derived
+/// escrow address, the declared parties, the contract-local vars, the status, and where it was deployed
+/// (`deploy_block` number + `deploy_tx` hash). Used for both `ubi_getContract` (enriched with `cases`
+/// by [`contract_detail_json`]) and the `ubi_getContractsOf` list view.
 fn contract_view_json(c: &PromptContract) -> Value {
     let mut vars: Vec<([u8; 32], [u8; 32])> = c.vars.iter().map(|(k, v)| (*k, *v)).collect();
     vars.sort_unstable();
@@ -2346,12 +2373,43 @@ fn contract_view_json(c: &PromptContract) -> Value {
         .collect();
     json!({
         "id": c.id,
+        "text": c.text,
+        "text_ref": hash_hex(&c.text_ref),
         "escrow": hex_u128(c.escrow),
         "escrow_address": addr_hex(&ubi2_runtime::contract_address(c.id)),
         "parties": c.parties.iter().map(addr_hex).collect::<Vec<_>>(),
-        "text_ref": hash_hex(&c.text_ref),
         "vars": vars_json,
         "status": contract_status_str(c.status),
+        "deploy_block": c.deploy_block,
+        "deploy_tx": hash_hex(&c.deploy_tx),
+    })
+}
+
+/// Render the **full** `ubi_getContract` detail: every [`contract_view_json`] field plus the contract's
+/// list of exec cases (each a [`exec_case_summary_json`]: id, invoker, trigger, status, the resulting
+/// canonical effect / abort, and the block it resolved in). Everything about the contract from chain
+/// state in one read — for the explorer / wallet contract page.
+fn contract_detail_json(c: &PromptContract, cases: &[ExecCase]) -> Value {
+    let mut v = contract_view_json(c);
+    let cases_json: Vec<Value> = cases.iter().map(exec_case_summary_json).collect();
+    v.as_object_mut()
+        .expect("contract_view_json is an object")
+        .insert("cases".to_string(), json!(cases_json));
+    v
+}
+
+/// A compact exec-case summary for the contract detail view: the case id, who invoked it, the trigger
+/// commitment, the case status (Open / Committed / Aborted), and — when resolved — the resulting
+/// canonical effect ops (for Committed) and the block it resolved in. Lets a contract page list every
+/// invocation and its outcome without a second `ubi_getExecCase` round-trip.
+fn exec_case_summary_json(c: &ExecCase) -> Value {
+    json!({
+        "id": c.id,
+        "invoker": addr_hex(&c.invoker),
+        "trigger_ref": hash_hex(&c.trigger_ref),
+        "status": exec_status_json(&c.status),
+        "opened_at": c.opened_at,
+        "resolved_at": c.resolved_at,
     })
 }
 
@@ -2382,6 +2440,7 @@ fn exec_case_view_json(c: &ExecCase) -> Value {
         "effects": effects,
         "status": exec_status_json(&c.status),
         "opened_at": c.opened_at,
+        "resolved_at": c.resolved_at,
     })
 }
 
@@ -2532,10 +2591,11 @@ fn decode_call_json(tx: &StoredTx) -> Value {
         }
     } else if to == CONTRACT_HUB {
         match parse_contract_calldata(&tx.input) {
-            Ok(ContractOp::DeployContract { text_ref, parties }) => json!({
+            Ok(ContractOp::DeployContract { text, parties }) => json!({
                 "kind": "HubCall", "hub": "ContractHub", "method": "deployContract",
                 "args": {
-                    "text_ref": hash_hex(&text_ref),
+                    "text": text,
+                    "text_ref": hash_hex(&text_commitment(&text)),
                     "parties": parties.iter().map(hex_addr).collect::<Vec<_>>(),
                 },
             }),
@@ -3052,15 +3112,16 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
 
     // ---- M4 prompt-contract reads (ubi_*) ----
 
-    // ubi_getContract(id) → the contract (escrow, parties, text_ref, vars, status), or null. `id`
+    // ubi_getContract(id) → the FULL contract detail (text, text_ref, escrow, parties, vars, status,
+    // deploy_block/deploy_tx, and the list of its exec cases with their outcomes), or null. `id`
     // accepts hex or number.
     m.register_method("ubi_getContract", |params, ctx, _| {
         let seq: Vec<Value> = params
             .parse()
             .map_err(|_| invalid_params("expected [id]"))?;
         let id = parse_stream_id_param(seq.first())?;
-        match ctx.get_contract(id) {
-            Some(c) => Ok::<_, ErrorObjectOwned>(contract_view_json(&c)),
+        match ctx.get_contract_detail(id) {
+            Some((c, cases)) => Ok::<_, ErrorObjectOwned>(contract_detail_json(&c, &cases)),
             None => Ok(Value::Null),
         }
     })

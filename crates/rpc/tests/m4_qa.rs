@@ -225,12 +225,15 @@ async fn deploy_and_fund(
     escrow: u128,
     dev_nonce: &mut u64,
 ) -> u64 {
+    // `text_ref_val` distinguishes contracts; derive a plain-language text from it (the full text now
+    // lives on-chain and the node derives the ref).
+    let text = format!("prompt-contract variant {text_ref_val}");
     let raw = sign_tx(
         &DEV_PRIVKEY,
         CONTRACT_HUB,
         0,
         deployContractCall {
-            textRef: B256::from([text_ref_val; 32]),
+            text,
             parties: parties.clone(),
         }
         .abi_encode(),

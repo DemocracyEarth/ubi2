@@ -426,9 +426,11 @@ pub enum ContractStatus {
     Terminated,
 }
 
-/// A deployed natural-language prompt contract (spec §"Data model"). The NL text itself lives
-/// off-chain / in calldata; on-chain we hold only a commitment (`text_ref`) — I6. `escrow` is the
-/// **only** value the contract can move (least authority).
+/// A deployed natural-language prompt contract (spec §"Data model"). The **full** NL text now lives
+/// on-chain (in the deploy tx calldata and in this record) — transparency is the whole point: the
+/// explorer can show the agreement, and interpretation is fully reproducible from chain state (no
+/// off-chain text fetch). `text_ref = keccak256(utf8(text))` is kept as a stable content commitment.
+/// `escrow` is the **only** value the contract can move (least authority — I6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptContract {
     pub id: ContractId,
@@ -436,25 +438,39 @@ pub struct PromptContract {
     pub escrow: u128,
     /// Declared parties — the only addresses a `Refund` may target (sorted, deduped).
     pub parties: Vec<Address>,
-    /// Commitment to the NL contract text (text stored off-chain / in calldata).
+    /// The **full** natural-language contract text (stored on-chain — transparency). The interpreter
+    /// reads this at invoke time, so interpretation is reproducible from chain state alone.
+    pub text: String,
+    /// Content commitment `keccak256(utf8(text))` (a stable id for the text; kept for compatibility).
     pub text_ref: Hash,
     /// Contract-local key/value state, set by `SetVar` ops.
     pub vars: HashMap<Hash, Hash>,
     pub status: ContractStatus,
+    /// Block height the contract was deployed at (for the explorer / contract detail view).
+    pub deploy_block: u64,
+    /// Hash of the deploy tx (for the explorer / contract detail view). Zero until stamped by the node.
+    pub deploy_tx: Hash,
 }
 
 impl PromptContract {
-    /// A fresh `Active` contract with zero escrow and the given parties + text commitment.
-    pub fn new(id: ContractId, text_ref: Hash, mut parties: Vec<Address>) -> Self {
+    /// A fresh `Active` contract with zero escrow, the given parties, the full NL `text`, and its
+    /// content commitment `text_ref` (the node computes `text_ref = keccak256(utf8(text))` — the
+    /// runtime stays dependency-free, so the hash is supplied by the caller). Deploy block/tx are
+    /// stamped to zero here and set by the node when the deploy tx is mined (see the RPC
+    /// `DeployContract` apply arm).
+    pub fn new(id: ContractId, text: String, text_ref: Hash, mut parties: Vec<Address>) -> Self {
         parties.sort_unstable();
         parties.dedup();
         Self {
             id,
             escrow: 0,
             parties,
+            text,
             text_ref,
             vars: HashMap::new(),
             status: ContractStatus::Active,
+            deploy_block: 0,
+            deploy_tx: [0u8; 32],
         }
     }
 
@@ -501,6 +517,9 @@ pub struct ExecCase {
     pub status: ExecStatus,
     /// Block height the case opened at (for explorer / future timeout policy).
     pub opened_at: u64,
+    /// Block height the case **resolved** in (committed or aborted), if it has resolved. `None` while
+    /// the case is still `Open`. Set by the node when the resolving block is mined.
+    pub resolved_at: Option<u64>,
 }
 
 impl ExecCase {
@@ -565,14 +584,16 @@ impl std::error::Error for ContractError {}
 // Lifecycle (pure, deterministic, fail-closed) — the contract-execution state machine.
 // ---------------------------------------------------------------------------------------------
 
-/// Deploy a natural-language prompt contract: register it `Active` with zero escrow, `text_ref`
-/// committed and the declared `parties`. Returns the new contract id. Fail-closed: at least one party
-/// is required (so a `Refund` always has a valid target).
+/// Deploy a natural-language prompt contract: register it `Active` with zero escrow, the **full** NL
+/// `text` stored on-chain, its content commitment `text_ref` (the node passes
+/// `keccak256(utf8(text))`), and the declared `parties`. Returns the new contract id. Fail-closed: at
+/// least one party is required (so a `Refund` always has a valid target).
 ///
 /// The escrow account at [`contract_address`] is left at zero balance; funding raises it (see
 /// [`fund_contract`]).
 pub fn deploy_contract(
     state: &mut dyn State,
+    text: String,
     text_ref: Hash,
     parties: Vec<Address>,
 ) -> Result<ContractId, ContractError> {
@@ -580,7 +601,7 @@ pub fn deploy_contract(
         return Err(ContractError::NoParties);
     }
     let id = state.next_contract_id();
-    state.put_contract(PromptContract::new(id, text_ref, parties));
+    state.put_contract(PromptContract::new(id, text, text_ref, parties));
     Ok(id)
 }
 
@@ -649,9 +670,10 @@ fn state_view(state: &dyn State, contract: &PromptContract, now: u64) -> Contrac
 /// validated + applied atomically and the case `Committed`/`Aborted` in this call. Otherwise the case
 /// stays `Open` for later [`submit_effect`] submissions.
 ///
-/// `contract_text` is the off-chain NL text the caller supplies for this invocation (its commitment is
-/// the contract's `text_ref`); `trigger` is the off-chain trigger bytes (committed by `trigger_ref`).
-/// `entropy` folds chain entropy into interpreter selection; `now` is the unix second of invocation.
+/// The interpreter reads the contract's **stored on-chain text** (`contract.text`) — interpretation is
+/// reproducible from chain state alone (no off-chain text fetch). `trigger` is the off-chain trigger
+/// bytes (committed by `trigger_ref`). `entropy` folds chain entropy into interpreter selection; `now`
+/// is the unix second of invocation.
 ///
 /// Fail-closed: no active interpreters ⇒ `NoInterpreters` and no case is opened (I4). An unknown or
 /// terminated contract is rejected with no state change.
@@ -660,11 +682,11 @@ pub fn invoke_contract(
     state: &mut dyn State,
     interpreter: &dyn ContractInterpreter,
     id: ContractId,
-    contract_text: &[u8],
     trigger_ref: Hash,
     trigger: &[u8],
     invoker: Address,
     entropy: u64,
+    block: u64,
     now: u64,
 ) -> Result<ExecCaseId, ContractError> {
     let contract = state
@@ -682,7 +704,10 @@ pub fn invoke_contract(
     let case_id = state.next_exec_case_id();
     let jury = select_jury(candidates, JURY_SIZE, interpreter_seed(case_id, entropy));
 
-    // Each interpreter computes its effect from the same content-addressed inputs (I1).
+    // Each interpreter computes its effect from the same content-addressed inputs (I1): the contract's
+    // own stored text + the deterministic state view + the trigger. Reading `contract.text` from chain
+    // state (not an off-chain ref) makes interpretation fully reproducible across nodes.
+    let contract_text = contract.text.as_bytes();
     let view = state_view(state, &contract, now);
     let mut effects: Vec<(Address, CanonicalEffect)> = Vec::with_capacity(jury.len());
     for interp_addr in &jury {
@@ -698,10 +723,11 @@ pub fn invoke_contract(
         jury,
         effects,
         status: ExecStatus::Open,
-        opened_at: now,
+        opened_at: block,
+        resolved_at: None,
     };
 
-    resolve_case(state, &mut case, now);
+    resolve_case(state, &mut case, block, now);
     state.put_exec_case(case);
     Ok(case_id)
 }
@@ -716,6 +742,7 @@ pub fn submit_effect(
     case_id: ExecCaseId,
     interpreter: &Address,
     effect: CanonicalEffect,
+    block: u64,
     now: u64,
 ) -> Result<ExecStatus, ContractError> {
     let mut case = state
@@ -732,7 +759,7 @@ pub fn submit_effect(
     }
 
     case.effects.push((*interpreter, effect));
-    resolve_case(state, &mut case, now);
+    resolve_case(state, &mut case, block, now);
     let status = case.status.clone();
     state.put_exec_case(case);
     Ok(status)
@@ -745,14 +772,19 @@ pub fn submit_effect(
 ///   * `Committed(effect)` ⇒ validate every op against escrow/authority; if all valid, apply
 ///     atomically and set `Committed(effect)`; if any op is invalid (over-escrow / non-party refund /
 ///     a pure `Abort`), set `Aborted` and make no state change (I4 fail-closed).
-fn resolve_case(state: &mut dyn State, case: &mut ExecCase, now: u64) {
+fn resolve_case(state: &mut dyn State, case: &mut ExecCase, block: u64, now: u64) {
     match tally_effects(&case.effects, JURY_SIZE, QUORUM) {
+        // Still gathering submissions — the case stays Open and unresolved.
         EffectTally::Pending => case.status = ExecStatus::Open,
-        EffectTally::NoQuorum => case.status = ExecStatus::Aborted,
+        EffectTally::NoQuorum => {
+            case.status = ExecStatus::Aborted;
+            case.resolved_at = Some(block);
+        }
         EffectTally::Committed(effect) => {
             // An explicit single-Abort effect: a quorum agreed to abort — no state change (I4).
             if effect.is_abort() {
                 case.status = ExecStatus::Aborted;
+                case.resolved_at = Some(block);
                 return;
             }
             match apply_effect(state, case.contract, &effect, now) {
@@ -761,6 +793,7 @@ fn resolve_case(state: &mut dyn State, case: &mut ExecCase, now: u64) {
                 // all-or-nothing: it only commits to `state` after validating the whole effect).
                 Err(_) => case.status = ExecStatus::Aborted,
             }
+            case.resolved_at = Some(block);
         }
     }
 }
@@ -959,6 +992,22 @@ mod tests {
         });
     }
 
+    /// A deterministic stand-in text commitment for tests (the node uses keccak; the runtime only
+    /// stores whatever ref it is handed). Distinct per text so two contracts don't alias.
+    fn tref(text: &str) -> Hash {
+        let mut h = [0u8; 32];
+        for (i, b) in text.bytes().enumerate() {
+            h[i % 32] ^= b;
+        }
+        h[31] ^= text.len() as u8;
+        h
+    }
+
+    /// Deploy a contract with the given plain-language `text`, deriving its `text_ref` via [`tref`].
+    fn deploy(state: &mut MemState, text: &str, parties: Vec<Address>) -> ContractId {
+        deploy_contract(state, text.to_string(), tref(text), parties).unwrap()
+    }
+
     // -----------------------------------------------------------------------------------------
     // Canonical encoding / hashing.
     // -----------------------------------------------------------------------------------------
@@ -1023,25 +1072,33 @@ mod tests {
         seed_funded(&mut s, funder, 100 * UBI);
 
         // Deploy a contract whose plain-language intent is "pay 5 UBI to the payee".
+        let text = "pay 5 UBI to the payee on signal";
         let parties = vec![funder, payee];
-        let id = deploy_contract(&mut s, [9u8; 32], parties).unwrap();
+        let id = deploy(&mut s, text, parties);
         let escrow_addr = contract_address(id);
+        // The full text is stored on-chain verbatim.
+        assert_eq!(s.get_contract(id).unwrap().text, text);
 
         // Fund the escrow with 10 UBI.
         fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
         assert_eq!(s.get_contract(id).unwrap().escrow, 10 * UBI);
         assert_eq!(s.balance(&escrow_addr, 0), 10 * UBI);
 
-        // The interpreter maps the trigger to "Transfer 5 UBI to payee".
-        let text = b"pay 5 UBI to the payee on signal";
+        // The interpreter keys off the *stored* contract text + the trigger ⇒ "Transfer 5 UBI to
+        // payee". (If the interpreter read anything but `contract.text`, this override would miss and
+        // the no-op default would commit instead.)
         let trigger = b"signal";
-        let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
-            to: payee,
-            amount: 5 * UBI,
-        }]));
+        let interp = MockInterpreter::default().with(
+            text.as_bytes(),
+            trigger,
+            CanonicalEffect::new(vec![Op::Transfer {
+                to: payee,
+                amount: 5 * UBI,
+            }]),
+        );
 
         let case_id = invoke_contract(
-            &mut s, &interp, id, text, [7u8; 32], trigger, funder, 0xABCD, 0,
+            &mut s, &interp, id, [7u8; 32], trigger, funder, 0xABCD, 1, 0,
         )
         .unwrap();
 
@@ -1065,7 +1122,7 @@ mod tests {
         let funder = addr(1);
         let payee = addr(2);
         seed_funded(&mut s, funder, 100 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+        let id = deploy(&mut s, "pay the payee from escrow", vec![funder, payee]);
         fund_contract(&mut s, &funder, id, 3 * UBI, 0, 0).unwrap();
         let escrow_addr = contract_address(id);
 
@@ -1075,7 +1132,7 @@ mod tests {
             amount: 5 * UBI,
         }]));
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
 
         assert_eq!(
             s.get_exec_case(case_id).unwrap().status,
@@ -1094,7 +1151,7 @@ mod tests {
         let funder = addr(1);
         let stranger = addr(50); // NOT a declared party
         seed_funded(&mut s, funder, 100 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder]).unwrap();
+        let id = deploy(&mut s, "single-party escrow agreement", vec![funder]);
         fund_contract(&mut s, &funder, id, 8 * UBI, 0, 0).unwrap();
 
         // Refund to a non-party ⇒ authority violation ⇒ abort (I6).
@@ -1103,7 +1160,7 @@ mod tests {
             amount: UBI,
         }]));
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
 
         assert_eq!(
             s.get_exec_case(case_id).unwrap().status,
@@ -1123,7 +1180,7 @@ mod tests {
         let a = addr(2);
         let b = addr(3);
         seed_funded(&mut s, funder, 100 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, a, b]).unwrap();
+        let id = deploy(&mut s, "split escrow to a and b", vec![funder, a, b]);
         fund_contract(&mut s, &funder, id, 6 * UBI, 0, 0).unwrap();
 
         let interp = MockInterpreter::always(CanonicalEffect::new(vec![
@@ -1137,7 +1194,7 @@ mod tests {
             },
         ]));
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
 
         assert_eq!(
             s.get_exec_case(case_id).unwrap().status,
@@ -1160,13 +1217,13 @@ mod tests {
         register_interpreters(&mut s, 3);
         let funder = addr(1);
         seed_funded(&mut s, funder, 100 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, addr(2)]).unwrap();
+        let id = deploy(&mut s, "two-party escrow agreement", vec![funder, addr(2)]);
         fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
         // All three jurors run the same MockInterpreter (no-op default) ⇒ unanimous ⇒ Committed.
         let interp = MockInterpreter::default();
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 7, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 7, 1, 0).unwrap();
         assert!(matches!(
             s.get_exec_case(case_id).unwrap().status,
             ExecStatus::Committed(_)
@@ -1215,15 +1272,14 @@ mod tests {
             let funder = addr(1);
             let payee = addr(2);
             seed_funded(&mut s, funder, 100 * UBI);
-            let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+            let id = deploy(&mut s, "pay the payee from escrow", vec![funder, payee]);
             fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
             let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
                 to: payee,
                 amount: 4 * UBI,
             }]));
             let case_id =
-                invoke_contract(&mut s, &interp, id, b"pay", [1u8; 32], b"go", funder, 99, 0)
-                    .unwrap();
+                invoke_contract(&mut s, &interp, id, [1u8; 32], b"go", funder, 99, 1, 0).unwrap();
             (s, case_id)
         };
         let (sa, ca) = build();
@@ -1320,7 +1376,7 @@ mod tests {
         let funder = addr(1);
         let bob = addr(2);
         seed_funded(&mut s, funder, 1_000 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, bob]).unwrap();
+        let id = deploy(&mut s, "stream to bob from escrow", vec![funder, bob]);
         let escrow_addr = contract_address(id);
 
         // "stream to Bob for 10 hours from escrow". We use an exact 1-base-unit/sec rate so the
@@ -1337,10 +1393,8 @@ mod tests {
             rate,
             deposit,
         }]));
-        let case_id = invoke_contract(
-            &mut s, &interp, id, b"stream", [0u8; 32], b"go", funder, 1, 0,
-        )
-        .unwrap();
+        let case_id =
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"go", funder, 1, 1, 0).unwrap();
         assert!(matches!(
             s.get_exec_case(case_id).unwrap().status,
             ExecStatus::Committed(_)
@@ -1366,7 +1420,7 @@ mod tests {
         let funder = addr(1);
         let bob = addr(2);
         seed_funded(&mut s, funder, 1_000 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, bob]).unwrap();
+        let id = deploy(&mut s, "stream to bob from escrow", vec![funder, bob]);
         let escrow_addr = contract_address(id);
 
         // Exact 1-base-unit/sec rate so the stop/refund split is exact (see the open test for why).
@@ -1385,10 +1439,10 @@ mod tests {
             &mut s,
             &open_interp,
             id,
-            b"stream",
             [0u8; 32],
             b"open",
             funder,
+            1,
             1,
             0,
         )
@@ -1403,11 +1457,11 @@ mod tests {
             &mut s,
             &stop_interp,
             id,
-            b"stream",
             [0u8; 32],
             b"stop",
             funder,
             2,
+            1,
             stop_at,
         )
         .unwrap();
@@ -1436,11 +1490,11 @@ mod tests {
             &mut s,
             &refund_interp,
             id,
-            b"stream",
             [0u8; 32],
             b"refund",
             funder,
             3,
+            1,
             stop_at,
         )
         .unwrap();
@@ -1458,12 +1512,12 @@ mod tests {
         register_interpreters(&mut s, 3);
         let funder = addr(1);
         seed_funded(&mut s, funder, 10 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder]).unwrap();
+        let id = deploy(&mut s, "single-party escrow agreement", vec![funder]);
 
         let key = [3u8; 32];
         let value = [4u8; 32];
         let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::SetVar { key, value }]));
-        invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+        invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
 
         assert_eq!(s.get_contract(id).unwrap().vars.get(&key), Some(&value));
     }
@@ -1474,12 +1528,12 @@ mod tests {
         register_interpreters(&mut s, 3);
         let funder = addr(1);
         seed_funded(&mut s, funder, 10 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, addr(2)]).unwrap();
+        let id = deploy(&mut s, "two-party escrow agreement", vec![funder, addr(2)]);
         fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
 
         let interp = MockInterpreter::always(CanonicalEffect::abort([1u8; 32]));
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
         assert_eq!(
             s.get_exec_case(case_id).unwrap().status,
             ExecStatus::Aborted
@@ -1491,7 +1545,7 @@ mod tests {
     fn deploy_requires_at_least_one_party() {
         let mut s = MemState::new();
         assert_eq!(
-            deploy_contract(&mut s, [0u8; 32], vec![]).unwrap_err(),
+            deploy_contract(&mut s, "no parties".to_string(), [0u8; 32], vec![]).unwrap_err(),
             ContractError::NoParties
         );
     }
@@ -1501,10 +1555,10 @@ mod tests {
         let mut s = MemState::new();
         let funder = addr(1);
         seed_funded(&mut s, funder, 10 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder]).unwrap();
+        let id = deploy(&mut s, "single-party escrow agreement", vec![funder]);
         let interp = MockInterpreter::default();
         assert_eq!(
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap_err(),
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap_err(),
             ContractError::NoInterpreters
         );
     }
@@ -1516,7 +1570,7 @@ mod tests {
         register_juror(&mut s, &addr(101), 0);
         let funder = addr(1);
         seed_funded(&mut s, funder, 10 * UBI);
-        let id = deploy_contract(&mut s, [9u8; 32], vec![funder, addr(2)]).unwrap();
+        let id = deploy(&mut s, "two-party escrow agreement", vec![funder, addr(2)]);
         fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
         let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
             to: addr(2),
@@ -1524,17 +1578,17 @@ mod tests {
         }]));
         // Only one interpreter ⇒ one submission ⇒ Pending (needs QUORUM=2).
         let case_id =
-            invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+            invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
         assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
 
         // A non-juror cannot submit.
         assert_eq!(
-            submit_effect(&mut s, case_id, &addr(200), CanonicalEffect::noop(), 0).unwrap_err(),
+            submit_effect(&mut s, case_id, &addr(200), CanonicalEffect::noop(), 1, 0).unwrap_err(),
             ContractError::NotOnJury
         );
         // The juror already submitted during invoke ⇒ AlreadySubmitted.
         assert_eq!(
-            submit_effect(&mut s, case_id, &addr(101), CanonicalEffect::noop(), 0).unwrap_err(),
+            submit_effect(&mut s, case_id, &addr(101), CanonicalEffect::noop(), 1, 0).unwrap_err(),
             ContractError::AlreadySubmitted
         );
     }

@@ -38,7 +38,7 @@ const DEPLOY_CONTRACT_ABI = [
     name: "deployContract",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "textRef", type: "bytes32" },
+      { name: "text", type: "string" },
       { name: "parties", type: "address[]" },
     ],
     outputs: [],
@@ -86,15 +86,16 @@ const SUBMIT_EFFECT_ABI = [
 // ---------------------------------------------------------------------------
 
 /**
- * ABI-encode a `deployContract(textRef, parties)` call.
- * `textRef` is a 32-byte commitment to the off-chain NL contract text.
+ * ABI-encode a `deployContract(text, parties)` call.
+ * `text` is the FULL plain-language contract text — it travels in calldata and is stored on-chain
+ * (transparency). The node derives `text_ref = keccak256(utf8(text))`; the client no longer derives it.
  * `parties` are the declared counterparties (authority/escrow scope).
  */
-export function encodeDeployContract(textRef: Hex, parties: string[]): Hex {
+export function encodeDeployContract(text: string, parties: string[]): Hex {
   return encodeFunctionData({
     abi: DEPLOY_CONTRACT_ABI,
     functionName: "deployContract",
-    args: [textRef, parties as Hex[]],
+    args: [text, parties as Hex[]],
   });
 }
 
@@ -163,20 +164,51 @@ export type ExecStatus =
   | { type: "Committed"; effect: CanonicalEffect }
   | { type: "Aborted" };
 
-/** A prompt contract as returned by `ubi_getContract(id)`. */
+/**
+ * A compact exec-case summary as it appears inside `ContractView.cases` (from `ubi_getContract`):
+ * one invocation of the contract and its outcome, without the full jury / per-juror submissions.
+ */
+export interface ExecCaseSummary {
+  id: number;
+  /** Who invoked the contract. */
+  invoker: string;
+  /** 32-byte hex commitment to the trigger input. */
+  trigger_ref: string;
+  /** Open | Committed(effect) | Aborted. For Committed, `effect` holds the resulting ops. */
+  status: ExecStatus;
+  /** Block height the case opened at. */
+  opened_at: number;
+  /** Block height the case resolved (committed/aborted) in, or null while still Open. */
+  resolved_at: number | null;
+}
+
+/**
+ * The FULL prompt-contract detail as returned by `ubi_getContract(id)`. Everything about the contract
+ * lives on-chain now: the plain-language `text`, its `text_ref` commitment, escrow, parties, vars,
+ * status, where it was deployed (`deploy_block`/`deploy_tx`), and the list of its exec `cases`.
+ * `ubi_getContractsOf` returns the same shape minus `cases` (it is omitted for the list view).
+ */
 export interface ContractView {
   id: number;
+  /** The FULL plain-language contract text, stored on-chain (transparency). */
+  text: string;
+  /** 32-byte hex content commitment `keccak256(utf8(text))`. */
+  text_ref: string;
   /** Escrow balance in hex base units (0x-prefixed). */
   escrow: string;
   /** Derived escrow address (unique per contract id). */
   escrow_address: string;
   /** Declared parties (their authority/escrow scope). */
   parties: string[];
-  /** 32-byte hex commitment to the NL contract text (off-chain — I6). */
-  text_ref: string;
   /** Contract-local variables (SetVar). */
   vars: Array<{ key: string; value: string }>;
   status: ContractStatus;
+  /** Block height the contract was deployed at. */
+  deploy_block: number;
+  /** 32-byte hex hash of the deploy tx. */
+  deploy_tx: string;
+  /** The contract's exec cases with their outcomes. Present on `ubi_getContract`, omitted on lists. */
+  cases?: ExecCaseSummary[];
 }
 
 /** A single interpreter effect submission inside an exec case. */
@@ -195,6 +227,8 @@ export interface ExecCaseView {
   effects: EffectSubmission[];
   status: ExecStatus;
   opened_at: number;
+  /** Block height the case resolved (committed/aborted) in, or null while still Open. */
+  resolved_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +246,10 @@ interface JsonRpcCaller {
 export class ContractReader {
   constructor(private readonly rpc: JsonRpcCaller) {}
 
-  /** `ubi_getContract(id)` → the prompt contract or `null` if unknown. */
+  /**
+   * `ubi_getContract(id)` → the FULL contract detail (text, text_ref, escrow, parties, vars, status,
+   * deploy_block/deploy_tx, and the list of exec `cases` with their outcomes) or `null` if unknown.
+   */
   async getContract(id: number | string): Promise<ContractView | null> {
     return this.rpc.call<ContractView | null>("ubi_getContract", [id]);
   }
@@ -320,10 +357,13 @@ export async function sendContractTx(opts: SendContractOptions): Promise<Contrac
 // ---------------------------------------------------------------------------
 
 /**
- * Derive a deterministic 32-byte `textRef` from a plain-language contract string.
- * Mirrors `deriveLivenessRef` in humanity.ts — encodes the text as UTF-8, pads/truncates
- * to 32 bytes. In production this would be a proper keccak commitment; on devnet it is a
- * stable deterministic stand-in.
+ * @deprecated The full contract text now lives on-chain: pass the plain-language string directly to
+ * `encodeDeployContract(text, parties)` and let the NODE derive `text_ref = keccak256(utf8(text))`.
+ * This client-side stand-in is no longer used on the deploy path and is kept only for back-compat; it
+ * will be removed once the wallet UI migrates to the string-text deploy.
+ *
+ * Derive a deterministic 32-byte `textRef` from a plain-language contract string (legacy devnet
+ * stand-in: UTF-8 encode + pad/truncate to 32 bytes; NOT keccak).
  */
 export function deriveTextRef(text: string): Hex {
   const encoder = new TextEncoder();

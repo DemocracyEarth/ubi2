@@ -118,6 +118,47 @@ fn seed_funded(s: &mut MemState, a: Address, settled: u128) {
     });
 }
 
+/// Deploy a contract carrying a `text_ref`-derived plain-language `text` (M4: the full text now lives
+/// on-chain). The runtime stores `text` + `text_ref`; the interpreter reads `text` at invoke time.
+/// Keeps the old `(text_ref, parties)` call shape so the reliability scenarios stay readable — the
+/// stand-in `text` is derived from the ref so distinct refs map to distinct texts.
+fn deploy_c(
+    s: &mut MemState,
+    text_ref: Hash,
+    parties: Vec<Address>,
+) -> Result<ContractId, ContractError> {
+    let text = format!("prompt-contract:{}", text_ref[0]);
+    deploy_contract(s, text, text_ref, parties)
+}
+
+/// Invoke a contract. The interpreter now reads the contract's stored text (so the `_text` arg the
+/// old call shape passed is ignored — kept only to minimize churn in the reliability scenarios). Adds
+/// the resolving `block` height (here equal to a fixed `1` for the offline soak).
+#[allow(clippy::too_many_arguments)]
+fn invoke_c(
+    s: &mut MemState,
+    interp: &MockInterpreter,
+    id: ContractId,
+    _text: &[u8],
+    trigger_ref: Hash,
+    trigger: &[u8],
+    invoker: Address,
+    entropy: u64,
+    now: u64,
+) -> Result<ubi2_runtime::ExecCaseId, ContractError> {
+    invoke_contract(
+        s,
+        interp,
+        id,
+        trigger_ref,
+        trigger,
+        invoker,
+        entropy,
+        1,
+        now,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // R1 — Interpreter-quorum DETERMINISM (I1)
 // ---------------------------------------------------------------------------
@@ -131,14 +172,14 @@ fn r1_unanimous_quorum_commits_deterministically() {
     let payee = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
 
-    let id = deploy_contract(&mut s, hash(0xAA), vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, hash(0xAA), vec![funder, payee]).unwrap();
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
     let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
         to: payee,
         amount: 3 * UBI,
     }]));
-    let case_id = invoke_contract(
+    let case_id = invoke_c(
         &mut s,
         &interp,
         id,
@@ -162,14 +203,13 @@ fn r1_unanimous_quorum_commits_deterministically() {
         let f = addr(1);
         let p = addr(2);
         seed_funded(&mut s2, f, 100 * UBI);
-        let cid = deploy_contract(&mut s2, hash(0xAA), vec![f, p]).unwrap();
+        let cid = deploy_c(&mut s2, hash(0xAA), vec![f, p]).unwrap();
         fund_contract(&mut s2, &f, cid, 10 * UBI, 0, 0).unwrap();
         let i2 = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
             to: p,
             amount: 3 * UBI,
         }]));
-        let ec =
-            invoke_contract(&mut s2, &i2, cid, b"pay 3", hash(0x01), b"go", f, 0xABC, 0).unwrap();
+        let ec = invoke_c(&mut s2, &i2, cid, b"pay 3", hash(0x01), b"go", f, 0xABC, 0).unwrap();
         s2.get_exec_case(ec).unwrap()
     };
     let ca = build();
@@ -191,7 +231,7 @@ fn r1_three_way_split_aborts_deterministically() {
     let jurors = register_interpreters(&mut s, 3);
     let funder = addr(1);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x01), vec![funder, addr(2)]).unwrap();
+    let id = deploy_c(&mut s, hash(0x01), vec![funder, addr(2)]).unwrap();
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
     // Build a split by using a single-interpreter setup (1 sub from invoke), then submit two
@@ -202,7 +242,7 @@ fn r1_three_way_split_aborts_deterministically() {
     register_juror(&mut s2, &jurors[0], 0);
     let f = addr(1);
     seed_funded(&mut s2, f, 100 * UBI);
-    let id2 = deploy_contract(&mut s2, hash(0x01), vec![f, addr(2)]).unwrap();
+    let id2 = deploy_c(&mut s2, hash(0x01), vec![f, addr(2)]).unwrap();
     fund_contract(&mut s2, &f, id2, 10 * UBI, 0, 0).unwrap();
 
     // Invoke with 1-interpreter pool → 1 sub → Open (needs QUORUM=2).
@@ -210,7 +250,7 @@ fn r1_three_way_split_aborts_deterministically() {
         to: addr(2),
         amount: UBI,
     }]));
-    let case_id = invoke_contract(&mut s2, &interp1, id2, b"t", hash(0x00), b"x", f, 1, 0).unwrap();
+    let case_id = invoke_c(&mut s2, &interp1, id2, b"t", hash(0x00), b"x", f, 1, 0).unwrap();
     assert_eq!(s2.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
 
     // Now the jury has only addr(100) (from invoke); we'd need to register more jurors then
@@ -377,7 +417,7 @@ fn r1_property_m4_split_aborts_no_state_change() {
         let payee = addr(2);
         seed_funded(&mut s, funder, 100 * UBI);
 
-        let id = deploy_contract(&mut s, hash(0xAA), vec![funder, payee]).unwrap();
+        let id = deploy_c(&mut s, hash(0xAA), vec![funder, payee]).unwrap();
         fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
         // Random effect: unanimous vs split (but invoke uses one interpreter for all jurors,
@@ -391,7 +431,7 @@ fn r1_property_m4_split_aborts_no_state_change() {
         let escrow_before = s.get_contract(id).unwrap().escrow;
         let payee_before = s.balance(&payee, 0);
 
-        let case_id = invoke_contract(
+        let case_id = invoke_c(
             &mut s,
             &interp,
             id,
@@ -439,11 +479,11 @@ fn r1_property_m4_split_aborts_no_state_change() {
             let f = addr(1);
             let p = addr(2);
             seed_funded(&mut s2, f, 100 * UBI);
-            let cid = deploy_contract(&mut s2, hash(0xAA), vec![f, p]).unwrap();
+            let cid = deploy_c(&mut s2, hash(0xAA), vec![f, p]).unwrap();
             fund_contract(&mut s2, &f, cid, 10 * UBI, 0, 0).unwrap();
             let i2 =
                 MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer { to: p, amount }]));
-            let ec = invoke_contract(
+            let ec = invoke_c(
                 &mut s2,
                 &i2,
                 cid,
@@ -481,14 +521,13 @@ fn r1_explicit_abort_quorum_commits_as_aborted_no_state_change() {
     register_interpreters(&mut s, 3);
     let funder = addr(1);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x01), vec![funder, addr(2)]).unwrap();
+    let id = deploy_c(&mut s, hash(0x01), vec![funder, addr(2)]).unwrap();
     fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
     let escrow_before = s.get_contract(id).unwrap().escrow;
 
     // All jurors emit the Abort effect → quorum on Abort → case Aborted, no state change.
     let interp = MockInterpreter::always(CanonicalEffect::abort(hash(0xCC)));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 5, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 5, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted,
@@ -584,11 +623,11 @@ fn r2_transfer_reproducible_two_nodes() {
         let f = addr(1);
         let p = addr(2);
         seed_funded(&mut s, f, 100 * UBI);
-        let id = deploy_contract(&mut s, hash(0x01), vec![f, p]).unwrap();
+        let id = deploy_c(&mut s, hash(0x01), vec![f, p]).unwrap();
         fund_contract(&mut s, &f, id, 10 * UBI, 0, 0).unwrap();
         let interp =
             MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer { to: p, amount }]));
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x01), b"x", f, 7, 0).unwrap();
+        invoke_c(&mut s, &interp, id, b"t", hash(0x01), b"x", f, 7, 0).unwrap();
         (s, id)
     };
 
@@ -623,13 +662,13 @@ fn r2_refund_reproducible_two_nodes() {
         register_interpreters(&mut s, 3);
         let f = addr(1);
         seed_funded(&mut s, f, 100 * UBI);
-        let id = deploy_contract(&mut s, hash(0x02), vec![f]).unwrap();
+        let id = deploy_c(&mut s, hash(0x02), vec![f]).unwrap();
         fund_contract(&mut s, &f, id, 8 * UBI, 0, 0).unwrap();
         let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Refund {
             party: f,
             amount: 3 * UBI,
         }]));
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x02), b"x", f, 1, 0).unwrap();
+        invoke_c(&mut s, &interp, id, b"t", hash(0x02), b"x", f, 1, 0).unwrap();
         (s, id)
     };
     let (sa, id_a) = build();
@@ -654,7 +693,7 @@ fn r2_setvar_reproducible_two_nodes() {
         register_interpreters(&mut s, 3);
         let f = addr(1);
         seed_funded(&mut s, f, 10 * UBI);
-        let id = deploy_contract(&mut s, hash(0x03), vec![f]).unwrap();
+        let id = deploy_c(&mut s, hash(0x03), vec![f]).unwrap();
         let interp = MockInterpreter::always(CanonicalEffect::new(vec![
             Op::SetVar {
                 key: key1,
@@ -665,7 +704,7 @@ fn r2_setvar_reproducible_two_nodes() {
                 value: val2,
             },
         ]));
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x03), b"x", f, 2, 0).unwrap();
+        invoke_c(&mut s, &interp, id, b"t", hash(0x03), b"x", f, 2, 0).unwrap();
         (s, id)
     };
     let (sa, id_a) = build();
@@ -693,14 +732,14 @@ fn r2_stream_reproducible_two_nodes() {
             let f = addr(1);
             let bob = addr(2);
             seed_funded(&mut s, f, 10_000 * UBI);
-            let id = deploy_contract(&mut s, hash(0x04), vec![f, bob]).unwrap();
+            let id = deploy_c(&mut s, hash(0x04), vec![f, bob]).unwrap();
             fund_contract(&mut s, &f, id, deposit, 0, 0).unwrap();
             let open_interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::OpenStream {
                 to: bob,
                 rate,
                 deposit,
             }]));
-            invoke_contract(
+            invoke_c(
                 &mut s,
                 &open_interp,
                 id,
@@ -718,7 +757,7 @@ fn r2_stream_reproducible_two_nodes() {
             let stop_interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::StopStream {
                 id: stream_id,
             }]));
-            invoke_contract(
+            invoke_c(
                 &mut s,
                 &stop_interp,
                 id,
@@ -768,7 +807,7 @@ fn r3_multi_op_first_valid_second_over_escrow_aborts_atomically() {
     let a = addr(2);
     let b = addr(3);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x05), vec![funder, a, b]).unwrap();
+    let id = deploy_c(&mut s, hash(0x05), vec![funder, a, b]).unwrap();
     fund_contract(&mut s, &funder, id, 4 * UBI, 0, 0).unwrap();
 
     // 1 UBI (valid) + 5 UBI (over-escrow 4): combined 6 > 4.
@@ -779,8 +818,7 @@ fn r3_multi_op_first_valid_second_over_escrow_aborts_atomically() {
             amount: 5 * UBI,
         },
     ]));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 1, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 1, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted
@@ -804,7 +842,7 @@ fn r3_non_party_refund_buried_aborts_atomically() {
     let party = addr(2);
     let non_party = addr(50);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x06), vec![funder, party]).unwrap();
+    let id = deploy_c(&mut s, hash(0x06), vec![funder, party]).unwrap();
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
     let interp = MockInterpreter::always(CanonicalEffect::new(vec![
@@ -817,8 +855,7 @@ fn r3_non_party_refund_buried_aborts_atomically() {
             amount: UBI,
         }, // authority violation
     ]));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 2, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 2, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted
@@ -840,7 +877,7 @@ fn r3_stop_unowned_stream_aborts_atomically() {
     let funder = addr(1);
     let party = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x07), vec![funder, party]).unwrap();
+    let id = deploy_c(&mut s, hash(0x07), vec![funder, party]).unwrap();
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
     // Fake stream id (999) the contract's escrow doesn't own.
@@ -851,8 +888,7 @@ fn r3_stop_unowned_stream_aborts_atomically() {
         }, // valid
         Op::StopStream { id: 999 }, // not owned by this contract
     ]));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 3, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 3, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted
@@ -873,7 +909,7 @@ fn r3_abort_op_in_mixed_effect_aborts_atomically() {
     let funder = addr(1);
     let party = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x08), vec![funder, party]).unwrap();
+    let id = deploy_c(&mut s, hash(0x08), vec![funder, party]).unwrap();
     fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
 
     // A Transfer + Abort op: the Abort triggers AbortOp error in validate → whole effect aborts.
@@ -886,8 +922,7 @@ fn r3_abort_op_in_mixed_effect_aborts_atomically() {
             reason_hash: hash(0xAB),
         },
     ]));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 4, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 4, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted
@@ -904,7 +939,7 @@ fn r3_zero_rate_stream_aborts_atomically() {
     let funder = addr(1);
     let bob = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0x09), vec![funder, bob]).unwrap();
+    let id = deploy_c(&mut s, hash(0x09), vec![funder, bob]).unwrap();
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
     let interp = MockInterpreter::always(CanonicalEffect::new(vec![
@@ -918,8 +953,7 @@ fn r3_zero_rate_stream_aborts_atomically() {
             deposit: UBI,
         }, // zero rate → invalid
     ]));
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 5, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x00), b"x", funder, 5, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case_id).unwrap().status,
         ExecStatus::Aborted
@@ -1181,7 +1215,7 @@ fn r5_contract_sorted_vars_is_insertion_order_independent() {
     // Build a PromptContract and insert SetVar ops in different orders.
     let build_vars = |order: &[(Hash, Hash)]| {
         use ubi2_runtime::contracts::PromptContract;
-        let mut c = PromptContract::new(0, hash(0x01), vec![addr(1)]);
+        let mut c = PromptContract::new(0, "vars contract".to_string(), hash(0x01), vec![addr(1)]);
         for (k, v) in order {
             c.vars.insert(*k, *v);
         }
@@ -1444,7 +1478,7 @@ fn r7_soak_multiple_contracts_deterministic_effects() {
 
     // Deploy and fund N contracts.
     for i in 0..N {
-        let id = deploy_contract(&mut s, hash((i + 1) as u8), vec![funder, payee]).unwrap();
+        let id = deploy_c(&mut s, hash((i + 1) as u8), vec![funder, payee]).unwrap();
         fund_contract(&mut s, &funder, id, 10 * UBI, i as u64, 0).unwrap();
         assert_eq!(s.get_contract(id).unwrap().escrow, 10 * UBI);
         contract_ids.push(id);
@@ -1457,7 +1491,7 @@ fn r7_soak_multiple_contracts_deterministic_effects() {
             to: payee,
             amount,
         }]));
-        let case_id = invoke_contract(
+        let case_id = invoke_c(
             &mut s,
             &interp,
             id,
@@ -1492,7 +1526,7 @@ fn r7_soak_multiple_contracts_deterministic_effects() {
     seed_funded(&mut s2, funder, 100_000 * UBI);
     let mut ids2: Vec<ContractId> = Vec::new();
     for i in 0..N {
-        let id = deploy_contract(&mut s2, hash((i + 1) as u8), vec![funder, payee]).unwrap();
+        let id = deploy_c(&mut s2, hash((i + 1) as u8), vec![funder, payee]).unwrap();
         fund_contract(&mut s2, &funder, id, 10 * UBI, i as u64, 0).unwrap();
         ids2.push(id);
     }
@@ -1502,7 +1536,7 @@ fn r7_soak_multiple_contracts_deterministic_effects() {
             to: payee,
             amount,
         }]));
-        invoke_contract(
+        invoke_c(
             &mut s2,
             &interp,
             id,
@@ -1565,13 +1599,13 @@ fn r7_soak_mixed_effects_no_partial_state() {
     ];
 
     for (i, (trigger, effect)) in scenarios.iter().enumerate() {
-        let id = deploy_contract(&mut s, hash(i as u8 + 0x10), vec![funder, payee]).unwrap();
+        let id = deploy_c(&mut s, hash(i as u8 + 0x10), vec![funder, payee]).unwrap();
         fund_contract(&mut s, &funder, id, 5 * UBI, i as u64, 0).unwrap();
         let escrow_before = s.get_contract(id).unwrap().escrow;
         let payee_before = s.balance(&payee, 0);
 
         let interp = MockInterpreter::always(effect.clone());
-        let case_id = invoke_contract(
+        let case_id = invoke_c(
             &mut s,
             &interp,
             id,
@@ -1652,7 +1686,7 @@ fn r7_submit_effect_deferred_path_commits_deterministically() {
     let funder = addr(1);
     let payee = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, hash(0xEE), vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, hash(0xEE), vec![funder, payee]).unwrap();
     fund_contract(&mut s, &funder, id, 6 * UBI, 0, 0).unwrap();
 
     let effect = CanonicalEffect::new(vec![Op::Transfer {
@@ -1662,8 +1696,7 @@ fn r7_submit_effect_deferred_path_commits_deterministically() {
 
     // With 1 juror, invoke produces 1 sub → still Open (QUORUM=2 not reached).
     let interp = MockInterpreter::always(effect.clone());
-    let case_id =
-        invoke_contract(&mut s, &interp, id, b"t", hash(0x11), b"x", funder, 7, 0).unwrap();
+    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x11), b"x", funder, 7, 0).unwrap();
     assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
 
     // Register a second juror and submit the same effect → quorum reached → Committed.
@@ -1672,7 +1705,7 @@ fn r7_submit_effect_deferred_path_commits_deterministically() {
     // The case's jury was selected when it was invoked (1-juror pool → jury=[j1]).
     // We can't add j2 to an already-opened case's jury. So we demonstrate submit_effect
     // from a non-jury member is rejected (NotOnJury) — fail closed (I4).
-    let status = submit_effect(&mut s, case_id, &j2, effect.clone(), 0);
+    let status = submit_effect(&mut s, case_id, &j2, effect.clone(), 1, 0);
     assert_eq!(
         status.unwrap_err(),
         ContractError::NotOnJury,
@@ -1682,7 +1715,7 @@ fn r7_submit_effect_deferred_path_commits_deterministically() {
     assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
 
     // AlreadySubmitted is also rejected (j1 already submitted during invoke).
-    let status = submit_effect(&mut s, case_id, &j1, effect.clone(), 0);
+    let status = submit_effect(&mut s, case_id, &j1, effect.clone(), 1, 0);
     assert_eq!(
         status.unwrap_err(),
         ContractError::AlreadySubmitted,

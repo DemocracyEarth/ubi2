@@ -15,7 +15,8 @@
 //! (see [`ubi2_runtime::contract_address`]) and the RPC hub stay one source of truth.
 //!
 //! ## Write ops (calldata to ContractHub, via `eth_sendRawTransaction`)
-//!   * `deployContract(bytes32 textRef, address[] parties)` — register an `Active` contract.
+//!   * `deployContract(string text, address[] parties)` — register an `Active` contract; the **full**
+//!     plain-language `text` is carried in calldata + stored on-chain (the node derives `text_ref`).
 //!   * `fundContract(uint256 id)` — fund the contract's escrow with the tx's `value` (a value-bearing
 //!     tx to the hub; the runtime moves it from the signer into the escrow account).
 //!   * `invokeContract(uint256 id, bytes32 triggerRef)` — open an `ExecCase`; the node runs the
@@ -23,12 +24,13 @@
 //!   * `submitEffect(uint256 caseId, bytes ops)` — an interpreter's signed canonical effect (the
 //!     deferred juror-daemon path). `ops` is the canonical effect encoding (see [`encode_effect`]).
 //!
-//! The natural-language contract text and trigger input are **not** on the wire (I6 — no prose/PII
-//! on-chain): the txs commit only `textRef`/`triggerRef`. For the M4 devnet the node derives the
-//! deterministic stand-in text/trigger bytes from those refs (see [`derive_text`]/[`derive_trigger`])
-//! so the deterministic `MockInterpreter` can interpret the contract end-to-end without an off-chain
-//! channel — the same seam M3 uses for liveness (`humanity::derive_liveness`). The live node swaps a
-//! real interpreter + a real text/trigger fetch behind the same boundary.
+//! The **full** natural-language contract text now travels on the wire in the `deployContract` calldata
+//! and is stored on-chain in the contract record — transparency is the whole point (the explorer shows
+//! the agreement, and interpretation is reproducible from chain state, no off-chain text fetch). The
+//! node derives `text_ref = keccak256(utf8(text))` from it. The **trigger** input is still committed by
+//! `triggerRef` only; for the M4 devnet the node derives stand-in trigger bytes from that ref (see
+//! [`derive_trigger`]) so the deterministic `MockInterpreter` can interpret end-to-end without an
+//! off-chain channel. The live node swaps a real interpreter + a real trigger fetch behind the seam.
 
 use alloy_primitives::{Address as AlloyAddr, B256, U256};
 use alloy_sol_types::{sol, SolCall};
@@ -50,9 +52,9 @@ sol! {
     /// ContractHub prompt-contract write ops (via `eth_sendRawTransaction`). Solidity-style signatures
     /// so MetaMask / viem / ethers encode them byte-identically to the on-chain selectors.
     interface IContractHub {
-        /// Deploy a NL prompt contract committing `textRef`, with the declared `parties` (I6 — only a
-        /// commitment on-chain; the prose lives off-chain / in calldata).
-        function deployContract(bytes32 textRef, address[] parties) external;
+        /// Deploy a NL prompt contract with the **full** plain-language `text` (stored on-chain — the
+        /// node derives `text_ref = keccak256(utf8(text))`) and the declared `parties`.
+        function deployContract(string text, address[] parties) external;
         /// Fund contract `id`'s escrow with the tx's `value` (a value-bearing tx to the hub).
         function fundContract(uint256 id) external payable;
         /// Invoke contract `id` with a content-addressed `triggerRef`, opening an ExecCase.
@@ -73,9 +75,10 @@ pub use IContractHub::{
 /// `FundContract` is the tx's `msg.value`, also threaded by the dispatcher.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractOp {
-    /// `deployContract(textRef, parties)` — register an `Active` contract for the tx signer.
+    /// `deployContract(text, parties)` — register an `Active` contract for the tx signer. Carries the
+    /// **full** plain-language `text`; the node stores it and derives `text_ref = keccak256(utf8)`.
     DeployContract {
-        text_ref: Hash,
+        text: String,
         parties: Vec<AlloyAddr>,
     },
     /// `fundContract(id)` — fund the escrow with the tx's value (carried separately).
@@ -132,7 +135,7 @@ pub fn parse_calldata(data: &[u8]) -> Result<ContractOp, CalldataError> {
             let call = deployContractCall::abi_decode(data, true)
                 .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
             Ok(ContractOp::DeployContract {
-                text_ref: call.textRef.0,
+                text: call.text,
                 parties: call.parties,
             })
         }
@@ -302,22 +305,15 @@ impl<'a> Cursor<'a> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Off-chain text / trigger derivation (the devnet seam — no prose/PII on-chain, I6).
+// Text commitment + off-chain trigger derivation.
 // ---------------------------------------------------------------------------------------------
 
-/// Derive deterministic stand-in NL **contract text** bytes from the on-chain `textRef` commitment
-/// (the seam to a real off-chain text fetch — M4 scope cut, mirrors `humanity::derive_liveness`).
-///
-/// For the devnet the deployer commits a `textRef` on-chain and the node reconstructs the text bytes
-/// the `MockInterpreter` keys off from it: `keccak("ubi2-contract-text" || ref)`. Pure function of the
-/// committed ref, so every node derives identical bytes and the deterministic interpreter converges
-/// reproducibly (I1/I5). A real node swaps this for the actual text fetched by `text_ref`.
-pub fn derive_text(text_ref: &Hash) -> Vec<u8> {
+/// Compute a contract's on-chain text commitment: `text_ref = keccak256(utf8(text))`. The full text is
+/// stored on-chain; this ref is a stable content id for it (and lets a client recompute/verify it). The
+/// runtime stays dependency-free, so the node computes the keccak here and hands the ref to the runtime.
+pub fn text_commitment(text: &str) -> Hash {
     use alloy_primitives::keccak256;
-    let mut t = Vec::with_capacity(18 + 32);
-    t.extend_from_slice(b"ubi2-contract-text");
-    t.extend_from_slice(text_ref);
-    keccak256(&t).as_slice().to_vec()
+    keccak256(text.as_bytes()).0
 }
 
 /// Derive deterministic stand-in **trigger** bytes from the on-chain `triggerRef` commitment (the seam
@@ -357,7 +353,7 @@ mod tests {
     fn selectors_match_solidity() {
         assert_eq!(
             &deployContractCall::SELECTOR,
-            &keccak256(b"deployContract(bytes32,address[])")[..4]
+            &keccak256(b"deployContract(string,address[])")[..4]
         );
         assert_eq!(
             &fundContractCall::SELECTOR,
@@ -384,17 +380,25 @@ mod tests {
 
     #[test]
     fn parse_deploy_round_trips() {
-        let text_ref: Hash = [0xab; 32];
+        let text = "pay alice 5 UBI when bob signs off".to_string();
         let parties = vec![AlloyAddr::from([0x11; 20]), AlloyAddr::from([0x22; 20])];
         let data = deployContractCall {
-            textRef: text_ref.into(),
+            text: text.clone(),
             parties: parties.clone(),
         }
         .abi_encode();
         assert_eq!(
             parse_calldata(&data).unwrap(),
-            ContractOp::DeployContract { text_ref, parties }
+            ContractOp::DeployContract { text, parties }
         );
+    }
+
+    #[test]
+    fn text_commitment_is_keccak256_of_utf8() {
+        let text = "stream 1 UBI/hr to bob for 10 hours from escrow";
+        assert_eq!(text_commitment(text), keccak256(text.as_bytes()).0);
+        // Distinct texts ⇒ distinct refs.
+        assert_ne!(text_commitment(text), text_commitment("something else"));
     }
 
     #[test]
@@ -525,12 +529,10 @@ mod tests {
     }
 
     #[test]
-    fn derive_text_and_trigger_are_deterministic() {
+    fn derive_trigger_is_deterministic() {
         let r: Hash = [0x07; 32];
-        assert_eq!(derive_text(&r), derive_text(&r));
         assert_eq!(derive_trigger(&r), derive_trigger(&r));
-        // Text and trigger derivations differ, and differ per ref.
-        assert_ne!(derive_text(&r), derive_trigger(&r));
-        assert_ne!(derive_text(&r), derive_text(&[0x08; 32]));
+        // Differs per ref.
+        assert_ne!(derive_trigger(&r), derive_trigger(&[0x08; 32]));
     }
 }
