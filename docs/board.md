@@ -64,6 +64,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-13 · protocol** — Cycle-5 reliability Info: canonicalize `MemState::incoming()/outgoing()` stream-index
   ordering before any multi-node consensus compares snapshots; tidy the zero-balance TREASURY entry left by a
   rolled-back zero-gas onboarding op. *Source:* `docs/reports/reliability-c5.md`.
+- **FU-14 · reliability/ops** — Add a `ubi2_failed_txs_mined_total{kind}` metric (and per-kind tx counters) for
+  fleet-level alerting on abnormal failure rates. *Source:* `docs/reports/reliability-c6.md`. *Info, non-blocking.*
+- **FU-15 · protocol/economics (M5)** — **Node-AI rewards:** split contract-invoke / verification fees from the
+  treasury to the interpreter/verifier **quorum** that did the AI work (reward AI usage), seeding the AI-provider
+  network; richer market/staking variants follow. *Requested by Santiago; folded into M5.*
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -88,6 +93,13 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **Cycle 6 — Contracts depth, vouch fix & docs · SHIPPED.** All gates green (380 tests). Fixed the
+  **failed-tx / perpetual-pending / nonce-too-high** bug (failed ops now mine with a `status 0` receipt + reason
+  + consumed nonce); put the **contract NL text on-chain** (`ubi_getContract` returns text + deploy block/tx +
+  cases); a **contract template library** + authoring UX + a **detail/interact page**; a **mock-AI banner**, the
+  **explorer link in add-network**, the **vouch UX** (valid targets + visible reasons); and a rewritten **README**
+  + a node-builder **`SKILL.md`**. Security gate caught + the loop fixed a **High** (unbounded contract-text DoS →
+  8 KiB cap + size-metered deploy gas). Reports in [`docs/reports/`](reports/) (`*-c6.md`). Follow-up: FU-14.
 - **Cycle 5 — Productionize & polish · SHIPPED.** All gates green (342 tests). Native **UBI gas fees** on every
   tx (treasury `0x…5542`, per-kind gas, onboarding fee-exempt — fixes the MetaMask vouch/deploy stall; seeds M5
   fee-recycling); a **configurable LLM backend** (Anthropic/Ollama/OpenAI) with a loopback-only oracle-config
