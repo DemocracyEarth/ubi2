@@ -1,15 +1,21 @@
 "use client";
 
 /**
- * M3 Proof-of-Humanity UI: shows the connected account's human status, vouches,
- * lets the user apply for verification, vouch for an address, challenge an address,
- * and lists all pending cases. Signs through the dual-signer pattern from streams.tsx.
+ * M3 Proof-of-Humanity UI — cycle 6.
+ *
+ * Changes:
+ *  - Vouch UX: surfaces ubi_getPendingCases so the user can pick a valid target
+ *    (only accounts with an OPEN Registration case can be vouched for). Shows
+ *    the failed-tx reason inline (e.g. "vouchee has no open registration").
+ *  - AI mock banner in the Identity section.
+ *  - Challenge UX mirrors the vouch improvement.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Ubi2Client,
   HumanityReader,
+  OracleAdminClient,
   sendHumanityTx,
   encodeRequestVerification,
   encodeVouch,
@@ -27,6 +33,7 @@ import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
+const oracle = new OracleAdminClient(client);
 
 interface Injected {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
@@ -63,7 +70,65 @@ function short(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-/** Status pill with color coding. */
+// ---- AI Mock Banner ---------------------------------------------------------------
+
+function MockAiBanner({ onSettings }: { onSettings?: () => void }) {
+  return (
+    <div
+      style={{
+        background: "rgba(251,191,92,.07)",
+        border: "1px solid rgba(251,191,92,.28)",
+        borderRadius: "12px",
+        padding: "0.85rem 1rem",
+        marginBottom: "1.1rem",
+        display: "flex",
+        alignItems: "flex-start",
+        gap: "0.75rem",
+      }}
+    >
+      <span style={{ fontSize: "1.1rem", lineHeight: 1, marginTop: "0.05rem" }}>◈</span>
+      <div style={{ flex: 1 }}>
+        <div
+          style={{
+            fontWeight: 700,
+            fontSize: "0.82rem",
+            color: "var(--warn)",
+            marginBottom: "0.3rem",
+          }}
+        >
+          Mock AI active — proof-of-humanity verdicts are stubbed
+        </div>
+        <div style={{ fontSize: "0.77rem", color: "var(--muted)", lineHeight: 1.55 }}>
+          Your node is running a deterministic mock AI. Proof-of-humanity verdicts are
+          pre-scripted (the MockJury always commits a deterministic verdict). To use real
+          AI-based verification, configure a local Ollama model or a cloud API key in{" "}
+          {onSettings ? (
+            <button
+              onClick={onSettings}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--accent-2)",
+                cursor: "pointer",
+                fontWeight: 700,
+                fontSize: "inherit",
+                padding: 0,
+                fontFamily: "inherit",
+              }}
+            >
+              Settings
+            </button>
+          ) : (
+            <b style={{ color: "var(--accent-2)" }}>Settings</b>
+          )}.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Status pill -----------------------------------------------------------------
+
 function StatusPill({ status }: { status: string }) {
   const cls =
     status === "Verified"
@@ -78,7 +143,71 @@ function StatusPill({ status }: { status: string }) {
   return <span className={cls}>{humanStatusLabel(status as never)}</span>;
 }
 
-/** A single pending case row. */
+// ---- Pending case row (for picking vouch target) ---------------------------------
+
+function PendingCasePickerRow({
+  c,
+  onPick,
+}: {
+  c: CaseRecord;
+  onPick: (addr: string) => void;
+}) {
+  const isOpen = c.status.type === "Open";
+  const isRegistration = c.kind === "Registration";
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "2.5rem 7rem auto 1fr auto",
+        gap: "0.6rem",
+        alignItems: "center",
+        padding: "0.55rem 0.5rem",
+        borderTop: "1px solid var(--line)",
+        fontSize: "0.82rem",
+        background: isOpen && isRegistration ? "rgba(79,231,168,.03)" : "transparent",
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "var(--mono)",
+          color: "var(--accent)",
+          fontWeight: 600,
+          fontSize: "0.8rem",
+        }}
+      >
+        #{c.id}
+      </span>
+      <span className="addr" style={{ fontSize: "0.78rem" }}>{short(c.subject)}</span>
+      <span
+        className={c.kind === "Registration" ? "pill active" : "pill poh-challenged"}
+        style={{ fontSize: "0.62rem" }}
+      >
+        {c.kind}
+      </span>
+      <span className="muted small">
+        {c.status.type === "Open"
+          ? "open"
+          : c.status.type === "Committed"
+            ? `committed · ${verdictLabel(c.status.verdict.verdict)} (${confidenceLabel(c.status.verdict.confidence)})`
+            : "escalated"}
+      </span>
+      {isOpen && isRegistration && (
+        <button
+          className="ghost"
+          style={{ fontSize: "0.7rem", padding: "0.2rem 0.55rem" }}
+          onClick={() => onPick(c.subject)}
+          title={`Vouch for ${c.subject}`}
+        >
+          Vouch
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---- Main case row ---------------------------------------------------------------
+
 function CaseRow({ c }: { c: CaseRecord }) {
   const statusText =
     c.status.type === "Committed"
@@ -100,11 +229,20 @@ function CaseRow({ c }: { c: CaseRecord }) {
   );
 }
 
-export function Humanity({ account }: { account: string }) {
+// ---- Main component -------------------------------------------------------------
+
+export function Humanity({
+  account,
+  onSettings,
+}: {
+  account: string;
+  onSettings?: () => void;
+}) {
   const [human, setHuman] = useState<HumanRecord | null>(null);
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [jurors, setJurors] = useState<JurorRecord[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [isMockAi, setIsMockAi] = useState<boolean | null>(null);
 
   const [injected, setInjected] = useState<Injected | null>(null);
   const [connected, setConnected] = useState<string | null>(null);
@@ -117,6 +255,9 @@ export function Humanity({ account }: { account: string }) {
   // Async op state
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // Vouch picker visibility
+  const [showVouchPicker, setShowVouchPicker] = useState(false);
 
   const pollRef = useRef<() => void>(() => {});
 
@@ -137,16 +278,40 @@ export function Humanity({ account }: { account: string }) {
       setLoadErr(errMessage(e));
     }
   }, [account]);
+
+  const checkOracle = useCallback(async () => {
+    try {
+      const cfg = await oracle.getConfig();
+      setIsMockAi(cfg.active === "mock");
+    } catch {
+      setIsMockAi(true);
+    }
+  }, []);
+
   pollRef.current = refresh;
 
   useEffect(() => {
     refresh();
+    checkOracle();
     const id = setInterval(() => pollRef.current(), 5000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, checkOracle]);
 
-  // Determine the actual signer address
   const signerAddr = connected ?? account;
+
+  const signerLabel = connected
+    ? `MetaMask · ${short(connected)}`
+    : injected
+      ? "MetaMask (not connected)"
+      : "devnet dev key";
+
+  const canApply = !human || human.status === "Unverified" || human.status === "Revoked";
+  const canVouch = human?.status === "Verified";
+
+  // Pending Registration cases that are still Open — these are valid vouch targets
+  const vouchableCases = cases.filter(
+    (c) => c.kind === "Registration" && c.status.type === "Open",
+  );
 
   // --- Actions ---
 
@@ -177,6 +342,20 @@ export function Humanity({ account }: { account: string }) {
       setNote({ kind: "err", text: "Vouchee must be a valid 0x address." });
       return;
     }
+    // Check if the target has an open Registration case
+    const targetCase = vouchableCases.find(
+      (c) => c.subject.toLowerCase() === vouchTo.toLowerCase(),
+    );
+    if (vouchableCases.length > 0 && !targetCase) {
+      setNote({
+        kind: "err",
+        text:
+          "The address you entered does not have an open registration request. " +
+          "You can only vouch for accounts with a pending (Open) Registration case. " +
+          "Use the picker below to choose from current candidates.",
+      });
+      return;
+    }
     setBusy("vouch");
     setNote(null);
     try {
@@ -192,11 +371,13 @@ export function Humanity({ account }: { account: string }) {
       setVouchTo("");
       setTimeout(refresh, 2500);
     } catch (e) {
-      setNote({ kind: "err", text: errMessage(e) });
+      // Surface the on-chain revert reason if present
+      const msg = errMessage(e);
+      setNote({ kind: "err", text: msg });
     } finally {
       setBusy(null);
     }
-  }, [vouchTo, injected, signerAddr, refresh]);
+  }, [vouchTo, injected, signerAddr, refresh, vouchableCases]);
 
   const submitChallenge = useCallback(async () => {
     if (!/^0x[0-9a-fA-F]{40}$/.test(challengeTarget)) {
@@ -206,7 +387,6 @@ export function Humanity({ account }: { account: string }) {
     setBusy("challenge");
     setNote(null);
     try {
-      // evidenceRef: pad user input to bytes32, or derive a stub ref
       const raw = challengeRef.trim();
       let evidenceRef: `0x${string}`;
       if (/^0x[0-9a-fA-F]{64}$/.test(raw)) {
@@ -227,7 +407,9 @@ export function Humanity({ account }: { account: string }) {
       setChallengeRef("");
       setTimeout(refresh, 2500);
     } catch (e) {
-      setNote({ kind: "err", text: errMessage(e) });
+      // Surface the on-chain revert reason
+      const msg = errMessage(e);
+      setNote({ kind: "err", text: msg });
     } finally {
       setBusy(null);
     }
@@ -246,17 +428,11 @@ export function Humanity({ account }: { account: string }) {
     }
   }, [injected, account]);
 
-  const signerLabel = connected
-    ? `MetaMask · ${short(connected)}`
-    : injected
-      ? "MetaMask (not connected)"
-      : "devnet dev key";
-
-  const canApply = !human || human.status === "Unverified" || human.status === "Revoked";
-  const canVouch = human?.status === "Verified";
-
   return (
     <>
+      {/* Mock AI banner */}
+      {isMockAi && <MockAiBanner onSettings={onSettings} />}
+
       {/* Human status card */}
       <section className="card">
         <h2>Proof of Humanity</h2>
@@ -309,7 +485,6 @@ export function Humanity({ account }: { account: string }) {
           </div>
         )}
 
-        {/* Apply for verification */}
         {canApply && (
           <div className="poh-action-block">
             <button
@@ -327,7 +502,6 @@ export function Humanity({ account }: { account: string }) {
           </div>
         )}
 
-        {/* Signer row */}
         <div className="signer" style={{ marginTop: "0.75rem" }}>
           signing with <b>{signerLabel}</b>
           {injected && !connected && (
@@ -337,61 +511,163 @@ export function Humanity({ account }: { account: string }) {
           )}
         </div>
 
-        {note && (
-          <div className={`notice ${note.kind}`}>{note.text}</div>
-        )}
+        {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
       </section>
 
       {/* Vouch action */}
       <section className="card">
         <h2>Vouch for address</h2>
+
         {!canVouch && (
           <p className="muted small" style={{ marginBottom: "0.75rem" }}>
             Only Verified accounts can vouch. Current status:{" "}
             <b>{human?.status ?? "unknown"}</b>.
           </p>
         )}
-        <div className="field">
-          <label htmlFor="vouch-addr">Address to vouch for</label>
-          <input
-            id="vouch-addr"
-            placeholder="0x…"
-            value={vouchTo}
-            onChange={(e) => setVouchTo(e.target.value.trim())}
-            spellCheck={false}
-            disabled={!canVouch}
-          />
-        </div>
-        <button
-          className="primary"
-          onClick={submitVouch}
-          disabled={!canVouch || busy === "vouch"}
-        >
-          {busy === "vouch" ? "Vouching…" : "Vouch"}
-        </button>
-        {!note && (
-          <div className="signer" style={{ marginTop: "0.5rem" }}>
-            signing with <b>{signerLabel}</b>
-          </div>
+
+        {canVouch && (
+          <>
+            <div
+              style={{
+                background: "rgba(79,231,168,.05)",
+                border: "1px solid rgba(79,231,168,.18)",
+                borderRadius: "9px",
+                padding: "0.65rem 0.85rem",
+                marginBottom: "0.85rem",
+                fontSize: "0.78rem",
+                color: "var(--muted)",
+                lineHeight: 1.55,
+              }}
+            >
+              You can only vouch for accounts that have an <b style={{ color: "var(--ink)" }}>open Registration case</b>{" "}
+              (i.e. they applied for verification but haven&apos;t been verified yet). Vouching for an
+              address without a pending registration will fail with a &quot;vouchee has no open
+              registration&quot; error from the node.
+              {vouchableCases.length > 0 && (
+                <>
+                  {" "}There {vouchableCases.length === 1 ? "is" : "are"} currently{" "}
+                  <b style={{ color: "var(--accent)" }}>{vouchableCases.length}</b> pending
+                  candidate{vouchableCases.length !== 1 ? "s" : ""}.
+                </>
+              )}
+            </div>
+
+            {/* Vouch picker */}
+            {vouchableCases.length > 0 && (
+              <div style={{ marginBottom: "0.85rem" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    marginBottom: "0.5rem",
+                  }}
+                >
+                  <div className="label" style={{ margin: 0 }}>
+                    Pending candidates ({vouchableCases.length})
+                  </div>
+                  <button
+                    className="ghost"
+                    style={{ fontSize: "0.68rem", padding: "0.2rem 0.55rem" }}
+                    onClick={() => setShowVouchPicker((v) => !v)}
+                  >
+                    {showVouchPicker ? "Hide" : "Show"}
+                  </button>
+                </div>
+                {showVouchPicker && (
+                  <div
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: "10px",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {vouchableCases.map((c) => (
+                      <PendingCasePickerRow
+                        key={c.id}
+                        c={c}
+                        onPick={(addr) => {
+                          setVouchTo(addr);
+                          setShowVouchPicker(false);
+                          setNote(null);
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {vouchableCases.length === 0 && (
+              <div
+                className="muted small"
+                style={{ marginBottom: "0.85rem", fontStyle: "italic" }}
+              >
+                No pending Registration cases right now. Vouching will fail unless the target
+                has applied for verification first.
+              </div>
+            )}
+
+            <div className="field">
+              <label>Address to vouch for</label>
+              <input
+                id="vouch-addr"
+                placeholder="0x… (must have an open Registration case)"
+                value={vouchTo}
+                onChange={(e) => { setVouchTo(e.target.value.trim()); setNote(null); }}
+                spellCheck={false}
+                disabled={!canVouch}
+              />
+            </div>
+
+            <button
+              className="primary"
+              onClick={submitVouch}
+              disabled={!canVouch || busy === "vouch"}
+            >
+              {busy === "vouch" ? "Vouching…" : "Vouch"}
+            </button>
+
+            <div className="signer" style={{ marginTop: "0.5rem" }}>
+              signing with <b>{signerLabel}</b>
+            </div>
+          </>
         )}
+
         {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
       </section>
 
       {/* Challenge action */}
       <section className="card">
         <h2>Challenge address</h2>
+        <div
+          style={{
+            background: "rgba(255,107,107,.05)",
+            border: "1px solid rgba(255,107,107,.18)",
+            borderRadius: "9px",
+            padding: "0.65rem 0.85rem",
+            marginBottom: "0.85rem",
+            fontSize: "0.78rem",
+            color: "var(--muted)",
+            lineHeight: 1.55,
+          }}
+        >
+          Challenges can only be submitted against accounts that are <b style={{ color: "var(--ink)" }}>Verified</b>{" "}
+          or have an open Registration case. If the target does not meet these criteria, the
+          transaction will fail and the node will return a reason inline.
+        </div>
         <div className="field">
-          <label htmlFor="challenge-addr">Subject address</label>
+          <label>Subject address</label>
           <input
             id="challenge-addr"
             placeholder="0x…"
             value={challengeTarget}
-            onChange={(e) => setChallengeTarget(e.target.value.trim())}
+            onChange={(e) => { setChallengeTarget(e.target.value.trim()); setNote(null); }}
             spellCheck={false}
           />
         </div>
         <div className="field">
-          <label htmlFor="evidence-ref">Evidence ref (bytes32 hex, or a free-text label)</label>
+          <label>Evidence ref (bytes32 hex, or a free-text label)</label>
           <input
             id="evidence-ref"
             placeholder="e.g. duplicate-cluster-A (or 0x…64 hex)"
@@ -438,7 +714,10 @@ export function Humanity({ account }: { account: string }) {
                 <span key={j.address} className="addr" style={{ fontSize: "0.75rem" }}>
                   {short(j.address)}
                   {j.active && (
-                    <span className="pill active" style={{ marginLeft: "0.35rem", fontSize: "0.6rem" }}>
+                    <span
+                      className="pill active"
+                      style={{ marginLeft: "0.35rem", fontSize: "0.6rem" }}
+                    >
                       active
                     </span>
                   )}

@@ -87,8 +87,36 @@ pub const GAS_HUMANITY: u64 = 80_000;
 pub const GAS_ONBOARD: u64 = 0;
 
 /// Gas a ContractHub op (deploy / fund / invoke / submitEffect) costs — the heaviest tx kind
-/// (interpreter quorum + effect application), so it pays the most gas.
+/// (interpreter quorum + effect application), so it pays the most gas. For `deployContract` this is
+/// the **base** gas; the full fee scales with the stored text length (see [`GAS_PER_TEXT_BYTE`] /
+/// [`gas_for_deploy`]) so permanent on-chain storage has a real per-byte cost.
 pub const GAS_CONTRACT: u64 = 120_000;
+
+/// Per-byte gas surcharge on a `deployContract`'s stored UTF-8 text — EVM-calldata-like (`16` gas per
+/// byte). The on-chain `text` is permanent, un-prunable state, so its fee must scale with its length
+/// (otherwise storing a byte is free, an unbounded-input DoS — C6-SEC-1). The total deploy fee is
+/// `GAS_CONTRACT + GAS_PER_TEXT_BYTE * text.len()`; see [`gas_for_deploy`]. Deterministic (I2): the
+/// text length is consensus input, so every node charges the same sender the same fee for the same tx.
+pub const GAS_PER_TEXT_BYTE: u64 = 16;
+
+/// Hard upper bound on a `deployContract`'s on-chain UTF-8 text, in bytes. Generous for a real
+/// plain-language agreement (8 KiB ≈ a few pages of prose), but tiny relative to the multi-MB blobs an
+/// attacker would need to bloat state cheaply. Enforced at SUBMIT (before the bytes enter the mempool)
+/// and re-checked in [`deploy_contract`] (defense in depth) — C6-SEC-1.
+pub const MAX_CONTRACT_TEXT_BYTES: usize = 8192;
+
+/// Hard upper bound on a `deployContract`'s declared `parties` count. A real agreement has a handful of
+/// signatories; the array is `O(n log n)` sorted+deduped and stored on-chain, so it is a (smaller)
+/// amplifier and must be bounded too — C6-SEC-1.
+pub const MAX_CONTRACT_PARTIES: usize = 16;
+
+/// The size-metered gas for a `deployContract` whose on-chain text is `text_len` bytes:
+/// `GAS_CONTRACT + GAS_PER_TEXT_BYTE * text_len`. Pure integer math (I2); saturating so an (already
+/// cap-rejected) absurd length fails closed rather than wrapping. Storing more text costs more gas, so
+/// the wallet's `eth_estimateGas` preview and the charged UBI fee both scale with the text.
+pub const fn gas_for_deploy(text_len: usize) -> u64 {
+    GAS_CONTRACT.saturating_add((GAS_PER_TEXT_BYTE).saturating_mul(text_len as u64))
+}
 
 /// The reserved **TREASURY / commons** system account that collected fees accrue to (whitepaper fee
 /// recycling; the basis for M5 redistribution). A documented, well-known address in the system-address

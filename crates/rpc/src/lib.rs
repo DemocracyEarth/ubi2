@@ -50,14 +50,14 @@ use tokio::sync::broadcast;
 
 use ubi2_runtime::{
     apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
-    finalize_registration, fund_contract as lc_fund_contract,
+    fee_for_gas, finalize_registration, fund_contract as lc_fund_contract, gas_for_deploy,
     invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
     submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
     vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
     ContractInterpreter, ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle,
     Juror, LivenessEvidence, MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict,
     GAS_CONTRACT, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM,
-    GAS_TRANSFER, TREASURY,
+    GAS_TRANSFER,
 };
 
 pub mod streams;
@@ -74,9 +74,9 @@ use humanity::{
 
 pub mod contracts;
 use contracts::{
-    addr_topic as c_addr_topic, derive_text, derive_trigger,
-    parse_calldata as parse_contract_calldata, u64_topic as c_u64_topic,
-    CalldataError as ContractCalldataError, ContractOp, CONTRACT_HUB,
+    addr_topic as c_addr_topic, derive_trigger, parse_calldata as parse_contract_calldata,
+    text_commitment, u64_topic as c_u64_topic, CalldataError as ContractCalldataError, ContractOp,
+    CONTRACT_HUB,
 };
 
 pub mod oracle_admin;
@@ -98,9 +98,12 @@ const GAS_PRICE_WEI: u64 = RT_GAS_PRICE_WEI as u64;
 const TRANSFER_GAS: u64 = GAS_TRANSFER;
 
 /// Deterministic per-kind gas for a queued tx — the `gas_used` the UBI fee is charged on and the value
-/// `eth_estimateGas` returns. A small constant per tx kind (no metering): transfers pay the EVM
-/// intrinsic; hub ops pay progressively more to reflect their bookkeeping (escrow/index/quorum). This
-/// is consensus state (I2): every node charges the same sender the same fee for the same tx kind.
+/// `eth_estimateGas` returns. A small constant per tx kind (no metering) for most kinds: transfers pay
+/// the EVM intrinsic; hub ops pay progressively more to reflect their bookkeeping (escrow/index/quorum).
+/// A `deployContract` is the exception — its gas SCALES with the stored text length (`gas_for_deploy`),
+/// so permanent on-chain storage has a real per-byte cost (C6-SEC-1) and a larger contract pays a
+/// larger UBI fee. This is consensus state (I2): the text length is a consensus input, so every node
+/// charges the same sender the same fee for the same tx.
 fn gas_for_kind(kind: &PendingKind) -> u64 {
     match kind {
         PendingKind::Transfer { .. } => GAS_TRANSFER,
@@ -110,8 +113,10 @@ fn gas_for_kind(kind: &PendingKind) -> u64 {
         PendingKind::Vouch { .. }
         | PendingKind::Challenge { .. }
         | PendingKind::SubmitVerdict { .. } => GAS_HUMANITY,
-        PendingKind::DeployContract { .. }
-        | PendingKind::FundContract { .. }
+        // Size-metered: base contract gas + per-byte surcharge on the stored UTF-8 text (the text is
+        // already capped at submit, so the length is bounded; storing more costs more).
+        PendingKind::DeployContract { text, .. } => gas_for_deploy(text.len()),
+        PendingKind::FundContract { .. }
         | PendingKind::InvokeContract { .. }
         | PendingKind::SubmitEffect { .. } => GAS_CONTRACT,
     }
@@ -144,7 +149,17 @@ fn gas_for_call_obj(call: &Value) -> u64 {
                 _ => GAS_HUMANITY,
             }
         }
-        Some(a) if a == CONTRACT_HUB.as_slice() => GAS_CONTRACT,
+        Some(a) if a == CONTRACT_HUB.as_slice() => {
+            // A `deployContract` is size-metered (per-byte surcharge on the stored text), so MetaMask's
+            // preflight estimate scales with the text and matches the larger UBI fee the apply path
+            // charges. Other ContractHub ops pay the flat contract tier. Parsing also enforces the size
+            // cap, so an oversized estimate request surfaces the same invalid-params error the wallet
+            // would get at submit. We fall back to the flat tier on a non-deploy/unparsable call.
+            match parse_contract_calldata(&data) {
+                Ok(ContractOp::DeployContract { text, .. }) => gas_for_deploy(text.len()),
+                _ => GAS_CONTRACT,
+            }
+        }
         _ => GAS_TRANSFER,
     }
 }
@@ -239,11 +254,20 @@ pub struct StoredTx {
     pub tx_index: u64,
     /// Raw calldata (`0x` for plain transfers; the StreamHub selector+args otherwise).
     pub input: Vec<u8>,
-    /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints).
+    /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints). Empty for a FAILED tx.
     pub logs: Vec<TxLog>,
     /// Gas this tx consumed — the per-kind constant the UBI fee was charged on (`fee = gas * price`).
     /// Surfaced verbatim in `eth_getTransactionReceipt` (`gasUsed`) and the tx's `gas`/block `gasUsed`.
+    /// Charged on BOTH a succeeded and a FAILED tx (EVM charges gas on revert — the node did work).
     pub gas_used: u64,
+    /// EVM receipt status: `true` = succeeded (`0x1`), `false` = the op FAILED at block time (`0x0`).
+    /// A FAILED tx is still MINED (included, fee-charged, nonce-consumed) — never silently dropped —
+    /// so the wallet always gets a receipt (no perpetual pending) and the sender nonce advances (no
+    /// nonce gap). Cycle-6 fix.
+    pub success: bool,
+    /// The decoded failure reason for a FAILED tx (the op's `Err` rendered as a string), carried so the
+    /// explorer can show "vouchee has no open registration" etc. `None` for a succeeded tx.
+    pub revert_reason: Option<String>,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -319,9 +343,10 @@ enum PendingKind {
     },
 
     // ---- M4: prompt-contract ops to ContractHub ----
-    /// `deployContract(textRef, parties)`: register an `Active` contract for the signer.
+    /// `deployContract(text, parties)`: register an `Active` contract for the signer. Carries the
+    /// **full** plain-language text (stored on-chain); the node derives `text_ref = keccak256(utf8)`.
     DeployContract {
-        text_ref: [u8; 32],
+        text: String,
         parties: Vec<AlloyAddr>,
     },
     /// `fundContract(id)`: fund contract `id`'s escrow with the tx's value (carried in `PendingTx`).
@@ -352,18 +377,23 @@ struct PendingTx {
 }
 
 /// The amount a queued tx debits from its sender's *spendable* balance when mined: its `value` (a
-/// transfer amount, or a `fundContract` escrow funding — both carried in `PendingTx.value`) plus,
+/// transfer amount, or a `fundContract` escrow funding — both carried in `PendingTx.value`), plus,
 /// for an `openStream`, the locked `deposit` (a calldata arg, so it lives outside `value` and is 0
-/// in `value`). Every other op moves no sender value, so it debits 0. Used by `ingest_raw_tx` to
-/// sum a sender's still-pending mempool commitments for the cumulative affordability check (M2-F2 /
-/// cycle-1 FU-1): the runtime debits all of these from the one balance at block time, so admission
-/// must weigh them together, not each against the full live balance in isolation. Saturating add so
-/// an absurd sum fails closed (over-rejects) rather than wrapping.
+/// in `value`), plus the **gas fee** every fee-bearing op pays to the TREASURY (cycle-6 — the fee is
+/// always charged, even on a FAILED op, so a sender who cannot afford it must be rejected at SUBMIT,
+/// not left perpetually pending). Onboarding (`requestVerification`) is fee-exempt, so its fee is 0.
+///
+/// Used by `ingest_raw_tx` to sum a sender's still-pending mempool commitments for the cumulative
+/// affordability check (M2-F2 / cycle-1 FU-1): the runtime debits all of these from the one balance at
+/// block time, so admission must weigh them together, not each against the full live balance in
+/// isolation. Saturating add so an absurd sum fails closed (over-rejects) rather than wrapping.
 fn spendable_debit(value: u128, kind: &PendingKind) -> u128 {
-    value.saturating_add(match kind {
-        PendingKind::OpenStream { deposit, .. } => *deposit,
-        _ => 0,
-    })
+    value
+        .saturating_add(match kind {
+            PendingKind::OpenStream { deposit, .. } => *deposit,
+            _ => 0,
+        })
+        .saturating_add(fee_for_gas(gas_for_kind(kind)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1006,23 +1036,23 @@ impl Chain {
             // Charge `fee = gas_for_kind(kind) * gas_price` in UBI base units to the sender *before*
             // the op runs, crediting the reserved TREASURY. This is the only fee on the chain and it
             // is always in UBI (the native currency). The op then operates on the post-fee balance, so
-            // the sender needs `value + fee` — an under-funded tx is rejected with a clear error.
+            // the sender needs `value + fee` — an under-funded tx is rejected at SUBMIT (cycle-6), so a
+            // wallet sees a synchronous error rather than a perpetual pending.
             //
-            // Fail-closed atomicity (I4): if the op subsequently fails (e.g. a nonce race against state
-            // that advanced since submit), we restore the pre-fee sender + treasury snapshot so the tx
-            // leaves *no* state change — a dropped tx is never charged. `charge_fee` itself settles the
-            // sender first, so its insufficient-balance check runs on the materialized balance (I2).
+            // The fee is charged on BOTH a succeeded and a FAILED tx (see the apply-result match below):
+            // EVM charges gas on revert because the node still did the work. The ONLY tx we drop here is
+            // one whose sender cannot afford even the fee — and that is caught at submit, so reaching
+            // this `continue` means state raced after submit (rare). `charge_fee` settles the sender
+            // first, so its insufficient-balance check runs on the materialized balance (I2).
             let gas_used = gas_for_kind(&p.kind);
             let from_addr = p.from.into_array();
-            let sender_pre = g.state.get(&from_addr);
-            let treasury_pre = g.state.get(&TREASURY);
             if let Err(e) = charge_fee(&mut g.state, &from_addr, gas_used, timestamp) {
                 tracing::warn!(tx = %p.hash, error = %e, "dropping tx: cannot pay gas fee");
                 continue;
             }
 
-            // Apply against current state. Validation already happened at submit time, but state may
-            // have advanced; if it now fails (e.g. nonce raced), drop the tx rather than panic.
+            // Apply against current state. Validation already happened at submit time. On an op error
+            // we do NOT drop the tx — we mine it as a FAILED (`status: 0x0`) transaction (see below).
             let applied: Result<Vec<TxLog>, String> = match &p.kind {
                 PendingKind::Transfer { to, value } => apply_transfer(
                     &mut g.state,
@@ -1176,15 +1206,27 @@ impl Chain {
                 }
 
                 // ---- M4: prompt-contract ops ----
-                PendingKind::DeployContract { text_ref, parties } => {
+                PendingKind::DeployContract { text, parties } => {
+                    // The full NL text now lives on-chain; the node derives the content commitment
+                    // `text_ref = keccak256(utf8(text))` and stamps the deploy block/tx onto the record
+                    // (so the contract detail view can show where it was deployed).
+                    let text_ref = text_commitment(text);
                     consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
                         .and_then(|()| {
                             let parties: Vec<Address> =
                                 parties.iter().map(|a| a.into_array()).collect();
-                            lc_deploy_contract(&mut g.state, *text_ref, parties)
+                            lc_deploy_contract(&mut g.state, text.clone(), text_ref, parties)
                                 .map_err(|e| e.to_string())
                         })
-                        .map(|id| vec![contract_deployed_log(id, &p.from, text_ref)])
+                        .map(|id| {
+                            // Stamp the deploy block height + tx hash onto the stored contract.
+                            if let Some(mut c) = g.state.get_contract(id) {
+                                c.deploy_block = number;
+                                c.deploy_tx = p.hash.0;
+                                g.state.put_contract(c);
+                            }
+                            vec![contract_deployed_log(id, &p.from, &text_ref)]
+                        })
                 }
 
                 PendingKind::FundContract { id } => {
@@ -1208,27 +1250,23 @@ impl Chain {
                 PendingKind::InvokeContract { id, trigger_ref } => {
                     consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
                         .and_then(|()| {
-                            // Derive the off-chain contract text + trigger bytes from the committed refs
-                            // (the devnet seam — no prose/PII on-chain, I6); the deterministic
-                            // interpreter computes the same canonical effect for every juror so the
-                            // quorum forms reproducibly (I1/I5). `entropy` folds chain entropy into
-                            // interpreter selection.
-                            let contract = g
-                                .state
-                                .get_contract(*id)
-                                .ok_or_else(|| "no such contract".to_string())?;
-                            let text = derive_text(&contract.text_ref);
+                            // The interpreter reads the contract's stored on-chain text (so
+                            // interpretation is reproducible from chain state); we only derive the
+                            // off-chain trigger bytes from the committed `triggerRef` (the devnet seam).
+                            // The deterministic interpreter computes the same canonical effect for every
+                            // juror so the quorum forms reproducibly (I1/I5). `entropy` folds chain
+                            // entropy into interpreter selection; `number` is the resolving block.
                             let trigger = derive_trigger(trigger_ref);
                             let entropy = block_entropy(hash, number);
                             lc_invoke_contract(
                                 &mut g.state,
                                 &*interpreter,
                                 *id,
-                                &text,
                                 *trigger_ref,
                                 &trigger,
                                 p.from.into_array(),
                                 entropy,
+                                number,
                                 timestamp,
                             )
                             .map_err(|e| e.to_string())
@@ -1255,6 +1293,7 @@ impl Chain {
                                 *case_id,
                                 &p.from.into_array(),
                                 effect.clone(),
+                                number,
                                 timestamp,
                             )
                             .map_err(|e| e.to_string())
@@ -1271,58 +1310,73 @@ impl Chain {
                 }
             };
 
-            match applied {
-                Ok(logs) => {
-                    let tx = StoredTx {
-                        hash: p.hash,
-                        from: p.from,
-                        to: Some(p.tx_to),
-                        value: U256::from(p.value),
-                        nonce: p.nonce,
-                        block_number: number,
-                        block_hash: hash,
-                        tx_index: i as u64,
-                        input: p.input.clone(),
-                        logs,
-                        gas_used,
-                    };
-                    index_tx(&mut g.addr_index, &tx);
-                    // EXPL-1: a committed contract effect moves value from the escrow to payees /
-                    // stream recipients that are NOT the tx's `from`/`to`/log-topics, so the per-address
-                    // index would miss them. Index the escrow + every effect-target address explicitly
-                    // so an explorer's per-account history surfaces "received 5 UBI from contract #N".
-                    let extra = contract_effect_addresses(&g.state, &p.kind);
-                    for a in extra {
-                        let entry = g.addr_index.entry(a).or_default();
-                        if entry.last() != Some(&tx.hash) {
-                            entry.push(tx.hash);
-                        }
-                    }
-                    g.txs.insert(p.hash, tx.clone());
-                    stored.push(tx);
-                }
+            let (success, logs, revert_reason) = match applied {
+                Ok(logs) => (true, logs, None),
                 Err(e) => {
-                    // The op failed after we charged the fee; roll back the fee so a dropped tx leaves
-                    // no state change (fail-closed, no value moved). Restore the exact pre-fee snapshot
-                    // of the sender and treasury (re-inserting handles the "account did not exist
-                    // before" case — `charge_fee` may have materialized them).
-                    match sender_pre {
-                        Some(acct) => g.state.put(acct),
-                        None => g.state.put(Account {
-                            address: from_addr,
-                            ..Default::default()
-                        }),
+                    // Cycle-6 fix: the op FAILED at block time (e.g. "vouchee has no open registration",
+                    // "no such contract", a transfer validation error). The OLD code rolled back the fee
+                    // AND the nonce and dropped the tx — leaving it perpetually "pending" (no receipt)
+                    // and opening a nonce gap (the next tx then failed "nonce too high"). Instead we MINE
+                    // the tx as a FAILED (`status: 0x0`) transaction, EVM-style:
+                    //   * KEEP the fee charged (the node did work — EVM charges gas on revert);
+                    //   * CONSUME the sender nonce exactly once (see below);
+                    //   * apply NO op state change (the op already aborted/fail-closed);
+                    //   * carry the decoded `reason` so the explorer can show why it failed.
+                    //
+                    // Nonce handling is subtle and must be IDEMPOTENT: the hub ops run as
+                    // `consume_nonce(..).and_then(|| op(..))`, so a failing hub op (vouch/challenge/…)
+                    // has ALREADY bumped the nonce 0→1 before the op erred; whereas `apply_transfer` /
+                    // `fund_contract` validate-before-mutate and leave it unbumped on `Err`. Rather than
+                    // `+= 1` (which would double-count the hub case → a NEW gap), we SET the nonce to its
+                    // correct post-tx value, `p.nonce + 1`. The FIFO mempool + submit gate guarantee
+                    // `p.nonce` is this sender's current nonce, so this is the one true post-state and is
+                    // deterministic across nodes (I2). `charge_fee` already settled at `timestamp`, so
+                    // re-settling here is a no-op.
+                    let mut acct = g.state.get(&from_addr).unwrap_or(Account {
+                        address: from_addr,
+                        ..Default::default()
+                    });
+                    acct.settle(timestamp);
+                    acct.nonce = p.nonce + 1;
+                    g.state.put(acct);
+                    tracing::warn!(tx = %p.hash, error = %e, "mining failed tx (status 0x0)");
+                    (false, Vec::new(), Some(e))
+                }
+            };
+
+            let tx = StoredTx {
+                hash: p.hash,
+                from: p.from,
+                to: Some(p.tx_to),
+                value: U256::from(p.value),
+                nonce: p.nonce,
+                block_number: number,
+                block_hash: hash,
+                tx_index: i as u64,
+                input: p.input.clone(),
+                logs,
+                gas_used,
+                success,
+                revert_reason,
+            };
+            index_tx(&mut g.addr_index, &tx);
+            // EXPL-1: a committed contract effect moves value from the escrow to payees / stream
+            // recipients that are NOT the tx's `from`/`to`/log-topics, so the per-address index would
+            // miss them. Index the escrow + every effect-target address explicitly so an explorer's
+            // per-account history surfaces "received 5 UBI from contract #N". A FAILED tx applied no
+            // effect, so it has no extra targets — but calling this is harmless (it reads the post-op
+            // state, which for a failed op moved no value) and keeps the success/fail paths uniform.
+            if success {
+                let extra = contract_effect_addresses(&g.state, &p.kind);
+                for a in extra {
+                    let entry = g.addr_index.entry(a).or_default();
+                    if entry.last() != Some(&tx.hash) {
+                        entry.push(tx.hash);
                     }
-                    match treasury_pre {
-                        Some(acct) => g.state.put(acct),
-                        None => g.state.put(Account {
-                            address: TREASURY,
-                            ..Default::default()
-                        }),
-                    }
-                    tracing::warn!(tx = %p.hash, error = %e, "dropping tx at block time");
                 }
             }
+            g.txs.insert(p.hash, tx.clone());
+            stored.push(tx);
         }
 
         // M3 AI sybil-cluster auto-challenge sweep (AC6 / security finding D): before finalizing, run
@@ -1357,6 +1411,9 @@ impl Chain {
                 logs: sweep_logs,
                 // A synthetic system tx (no signer, no fee) — it consumes no gas.
                 gas_used: 0,
+                // The sweep only ever commits clean cases (it never errors) — always a success.
+                success: true,
+                revert_reason: None,
             };
             index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
@@ -1448,6 +1505,21 @@ impl Chain {
             .into_iter()
             .filter(|c| c.is_party(addr))
             .collect()
+    }
+
+    /// A prompt contract by id together with all its exec cases (sorted by id), for the full
+    /// `ubi_getContract` detail view. None if the contract is unknown. Pure read (I1: sorted output).
+    pub fn get_contract_detail(&self, id: u64) -> Option<(PromptContract, Vec<ExecCase>)> {
+        let g = self.inner.lock().unwrap();
+        let contract = g.state.get_contract(id)?;
+        let mut cases: Vec<ExecCase> = g
+            .state
+            .exec_cases()
+            .into_iter()
+            .filter(|c| c.contract == id)
+            .collect();
+        cases.sort_by_key(|c| c.id);
+        Some((contract, cases))
     }
 
     // ---- EXPL-1: address index reads ----
@@ -1800,7 +1872,7 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         .enumerate()
         .map(|(i, l)| log_to_json(tx, l, i))
         .collect();
-    json!({
+    let mut receipt = json!({
         "transactionHash": hex_b256(&tx.hash),
         "transactionIndex": hex_u64(tx.tx_index),
         "blockHash": hex_b256(&tx.block_hash),
@@ -1812,10 +1884,19 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         "contractAddress": Value::Null,
         "logs": logs,
         "logsBloom": format!("0x{}", "0".repeat(512)),
-        "status": "0x1",
+        // EVM receipt status: `0x1` = succeeded, `0x0` = the op FAILED at block time. A FAILED tx is
+        // still MINED (fee charged, nonce consumed) — never silently dropped — so the wallet always
+        // gets a receipt (no perpetual pending) and the nonce advances (no nonce gap). Cycle-6.
+        "status": if tx.success { "0x1" } else { "0x0" },
         "effectiveGasPrice": hex_u64(GAS_PRICE_WEI),
         "type": "0x0",
-    })
+    });
+    // For a FAILED tx, carry the decoded failure reason (a Geth-compatible `revertReason` field) so the
+    // explorer / wallet can show "vouchee has no open registration" etc. Omitted on a succeeded tx.
+    if let Some(reason) = &tx.revert_reason {
+        receipt["revertReason"] = json!(reason);
+    }
+    receipt
 }
 
 /// Resolve a block tag/number param ("latest"/"earliest"/"pending"/"0x..") to a concrete block.
@@ -1914,8 +1995,8 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     } else if to == CONTRACT_HUB {
         // Parse the ContractHub selector + ABI args into a prompt-contract op (M4).
         match parse_contract_calldata(&input) {
-            Ok(ContractOp::DeployContract { text_ref, parties }) => {
-                PendingKind::DeployContract { text_ref, parties }
+            Ok(ContractOp::DeployContract { text, parties }) => {
+                PendingKind::DeployContract { text, parties }
             }
             Ok(ContractOp::FundContract { id }) => PendingKind::FundContract { id },
             Ok(ContractOp::InvokeContract { id, trigger_ref }) => {
@@ -1986,7 +2067,9 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
             .mempool
             .iter()
             .filter(|p| p.from == from)
-            .fold(0u128, |acc, p| acc.saturating_add(spendable_debit(p.value, &p.kind)));
+            .fold(0u128, |acc, p| {
+                acc.saturating_add(spendable_debit(p.value, &p.kind))
+            });
         let need = pending_committed.saturating_add(spendable_debit(value, &kind));
         if settled < need {
             // Note the already-pending portion only when there is one, so the single-tx message is
@@ -2291,9 +2374,11 @@ fn effect_json(e: &CanonicalEffect) -> Value {
     })
 }
 
-/// Render a [`PromptContract`] into the `ubi_getContract` JSON shape: escrow (0x-hex base units), the
-/// declared parties, the `text_ref` commitment, the contract-local vars, the derived escrow address,
-/// and status. No prose/PII ever (I6 — only the `text_ref` commitment).
+/// Render a [`PromptContract`] into the contract JSON shape: the **full** plain-language `text` (stored
+/// on-chain — transparency), its `text_ref` content commitment, escrow (0x-hex base units) + derived
+/// escrow address, the declared parties, the contract-local vars, the status, and where it was deployed
+/// (`deploy_block` number + `deploy_tx` hash). Used for both `ubi_getContract` (enriched with `cases`
+/// by [`contract_detail_json`]) and the `ubi_getContractsOf` list view.
 fn contract_view_json(c: &PromptContract) -> Value {
     let mut vars: Vec<([u8; 32], [u8; 32])> = c.vars.iter().map(|(k, v)| (*k, *v)).collect();
     vars.sort_unstable();
@@ -2303,12 +2388,43 @@ fn contract_view_json(c: &PromptContract) -> Value {
         .collect();
     json!({
         "id": c.id,
+        "text": c.text,
+        "text_ref": hash_hex(&c.text_ref),
         "escrow": hex_u128(c.escrow),
         "escrow_address": addr_hex(&ubi2_runtime::contract_address(c.id)),
         "parties": c.parties.iter().map(addr_hex).collect::<Vec<_>>(),
-        "text_ref": hash_hex(&c.text_ref),
         "vars": vars_json,
         "status": contract_status_str(c.status),
+        "deploy_block": c.deploy_block,
+        "deploy_tx": hash_hex(&c.deploy_tx),
+    })
+}
+
+/// Render the **full** `ubi_getContract` detail: every [`contract_view_json`] field plus the contract's
+/// list of exec cases (each a [`exec_case_summary_json`]: id, invoker, trigger, status, the resulting
+/// canonical effect / abort, and the block it resolved in). Everything about the contract from chain
+/// state in one read — for the explorer / wallet contract page.
+fn contract_detail_json(c: &PromptContract, cases: &[ExecCase]) -> Value {
+    let mut v = contract_view_json(c);
+    let cases_json: Vec<Value> = cases.iter().map(exec_case_summary_json).collect();
+    v.as_object_mut()
+        .expect("contract_view_json is an object")
+        .insert("cases".to_string(), json!(cases_json));
+    v
+}
+
+/// A compact exec-case summary for the contract detail view: the case id, who invoked it, the trigger
+/// commitment, the case status (Open / Committed / Aborted), and — when resolved — the resulting
+/// canonical effect ops (for Committed) and the block it resolved in. Lets a contract page list every
+/// invocation and its outcome without a second `ubi_getExecCase` round-trip.
+fn exec_case_summary_json(c: &ExecCase) -> Value {
+    json!({
+        "id": c.id,
+        "invoker": addr_hex(&c.invoker),
+        "trigger_ref": hash_hex(&c.trigger_ref),
+        "status": exec_status_json(&c.status),
+        "opened_at": c.opened_at,
+        "resolved_at": c.resolved_at,
     })
 }
 
@@ -2339,6 +2455,7 @@ fn exec_case_view_json(c: &ExecCase) -> Value {
         "effects": effects,
         "status": exec_status_json(&c.status),
         "opened_at": c.opened_at,
+        "resolved_at": c.resolved_at,
     })
 }
 
@@ -2489,10 +2606,11 @@ fn decode_call_json(tx: &StoredTx) -> Value {
         }
     } else if to == CONTRACT_HUB {
         match parse_contract_calldata(&tx.input) {
-            Ok(ContractOp::DeployContract { text_ref, parties }) => json!({
+            Ok(ContractOp::DeployContract { text, parties }) => json!({
                 "kind": "HubCall", "hub": "ContractHub", "method": "deployContract",
                 "args": {
-                    "text_ref": hash_hex(&text_ref),
+                    "text": text,
+                    "text_ref": hash_hex(&text_commitment(&text)),
                     "parties": parties.iter().map(hex_addr).collect::<Vec<_>>(),
                 },
             }),
@@ -2749,6 +2867,12 @@ fn humanity_case_result(state: &dyn State, tx: &StoredTx, subject: &Address) -> 
 /// effect / case outcome / subject status). Pure + deterministic (I2).
 fn decoded_tx_json(state: &dyn State, tx: &StoredTx) -> Value {
     let logs: Vec<Value> = tx.logs.iter().map(decode_log_json).collect();
+    // A FAILED tx applied no op effect, so its `result` is the decoded failure reason rather than a
+    // committed effect / case outcome (cycle-6). A succeeded tx resolves the usual state effect.
+    let result = match &tx.revert_reason {
+        Some(reason) => json!({ "kind": "Failed", "reason": reason }),
+        None => tx_result_json(state, tx),
+    };
     json!({
         "hash": hex_b256(&tx.hash),
         "blockHash": hex_b256(&tx.block_hash),
@@ -2762,13 +2886,17 @@ fn decoded_tx_json(state: &dyn State, tx: &StoredTx) -> Value {
         "gasPrice": hex_u64(GAS_PRICE_WEI),
         "fee": hex_u128(tx_fee(tx)),
         "kind": tx_kind_str(tx),
+        // EVM receipt status mirrored onto the explorer surface (`0x1` ok / `0x0` failed). A FAILED tx
+        // is mined (it advanced the nonce + paid the fee) but applied no op state change.
+        "status": if tx.success { "0x1" } else { "0x0" },
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
         // The decoded system-hub call (which hub + method + args) — null for an opaque non-hub call.
         "call": decode_call_json(tx),
-        // Every emitted log, decoded into {name, hub, args}.
+        // Every emitted log, decoded into {name, hub, args} (empty for a FAILED tx).
         "logs": logs,
-        // The resulting committed effect / case verdict / subject status, where applicable.
-        "result": tx_result_json(state, tx),
+        // For a succeeded tx: the committed effect / case verdict / subject status. For a FAILED tx:
+        // `{kind: "Failed", reason}` carrying why the op aborted.
+        "result": result,
     })
 }
 
@@ -2999,15 +3127,16 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
 
     // ---- M4 prompt-contract reads (ubi_*) ----
 
-    // ubi_getContract(id) → the contract (escrow, parties, text_ref, vars, status), or null. `id`
+    // ubi_getContract(id) → the FULL contract detail (text, text_ref, escrow, parties, vars, status,
+    // deploy_block/deploy_tx, and the list of its exec cases with their outcomes), or null. `id`
     // accepts hex or number.
     m.register_method("ubi_getContract", |params, ctx, _| {
         let seq: Vec<Value> = params
             .parse()
             .map_err(|_| invalid_params("expected [id]"))?;
         let id = parse_stream_id_param(seq.first())?;
-        match ctx.get_contract(id) {
-            Some(c) => Ok::<_, ErrorObjectOwned>(contract_view_json(&c)),
+        match ctx.get_contract_detail(id) {
+            Some((c, cases)) => Ok::<_, ErrorObjectOwned>(contract_detail_json(&c, &cases)),
             None => Ok(Value::Null),
         }
     })
@@ -3361,7 +3490,15 @@ pub async fn serve(addr: std::net::SocketAddr, chain: Chain) -> anyhow::Result<S
 
     // jsonrpsee's service speaks both HTTP and WS on one socket, so eth_subscribe (WS) and the plain
     // HTTP request/response methods share the same `:8545` (spec §M1-T1.3).
+    //
+    // Defense in depth (C6-SEC-1): cap the request body well below jsonrpsee's 10 MB default. The
+    // primary fix is the hard text/parties cap enforced at parse (`MAX_CONTRACT_TEXT_BYTES`), but a
+    // tight body limit also stops an attacker forcing the node to buffer multi-MB payloads before the
+    // calldata is even decoded. 1 MiB is generous headroom for any legit tx (an 8 KiB-text deploy's
+    // hex-encoded raw tx is ~17 KiB) while shrinking the abuse surface by 10x.
+    const MAX_REQUEST_BODY_BYTES: u32 = 1024 * 1024;
     let svc_builder = Server::builder()
+        .max_request_body_size(MAX_REQUEST_BODY_BYTES)
         .set_http_middleware(http_middleware)
         .to_service_builder();
     let methods: jsonrpsee::Methods = build_module(chain).into();

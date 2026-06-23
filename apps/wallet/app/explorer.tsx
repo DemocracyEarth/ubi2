@@ -502,7 +502,16 @@ type View =
   | { kind: "tx"; tx: DecodedTransaction }
   | { kind: "account"; address: string };
 
-export function Explorer() {
+interface ExplorerProps {
+  /** Deep-link: open this block number on mount (consumed once). */
+  initialBlockTarget?: number | null;
+  /** Deep-link: open this tx hash on mount (consumed once). */
+  initialTxTarget?: string | null;
+  /** Called after the initial target has been consumed so the parent can clear it. */
+  onConsumeTarget?: () => void;
+}
+
+export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget }: ExplorerProps = {}) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [latest, setLatest] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -576,6 +585,18 @@ export function Explorer() {
       setSearching(false);
     }
   }, []);
+
+  // Consume deep-link targets from parent (e.g. contract detail "open block/tx" links)
+  useEffect(() => {
+    if (initialBlockTarget != null) {
+      openBlock(initialBlockTarget);
+      onConsumeTarget?.();
+    } else if (initialTxTarget != null) {
+      openTx(initialTxTarget);
+      onConsumeTarget?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialBlockTarget, initialTxTarget]);
 
   const search = useCallback(async () => {
     const q = query.trim();

@@ -5,11 +5,46 @@
 use ubi2_runtime::lifecycle::register_juror;
 use ubi2_runtime::{
     apply_transfer, contract_address, deploy_contract, fund_contract, invoke_contract,
-    CanonicalEffect, ExecStatus, MemState, MockInterpreter, Op, State, UBI,
+    CanonicalEffect, ContractError, ContractId, ExecCaseId, ExecStatus, MemState, MockInterpreter,
+    Op, State, UBI,
 };
 
 fn addr(b: u8) -> [u8; 20] {
     [b; 20]
+}
+
+/// Deploy a contract from a 32-byte ref (M4: the full text now lives on-chain). The text is a
+/// deterministic stand-in derived from the ref; the runtime stores both `text` + `text_ref`.
+fn deploy_c(s: &mut MemState, text_ref: [u8; 32], parties: Vec<[u8; 20]>) -> ContractId {
+    let text = format!("poc-contract:{}", text_ref[0]);
+    deploy_contract(s, text, text_ref, parties).unwrap()
+}
+
+/// Invoke a contract. The interpreter now reads the contract's stored text, so the old `_text` arg is
+/// ignored; a fixed resolving `block` of `1` is threaded in for the offline PoCs.
+#[allow(clippy::too_many_arguments)]
+fn invoke_c(
+    s: &mut MemState,
+    interp: &MockInterpreter,
+    id: ContractId,
+    _text: &[u8],
+    trigger_ref: [u8; 32],
+    trigger: &[u8],
+    invoker: [u8; 20],
+    entropy: u64,
+    now: u64,
+) -> Result<ExecCaseId, ContractError> {
+    invoke_contract(
+        s,
+        interp,
+        id,
+        trigger_ref,
+        trigger,
+        invoker,
+        entropy,
+        1,
+        now,
+    )
 }
 
 fn interpreters(s: &mut MemState, n: u8) {
@@ -40,7 +75,7 @@ fn transfer_cannot_exceed_escrow_or_touch_third_account() {
     let victim = addr(9);
     seed(&mut s, funder, 100 * UBI);
     seed(&mut s, victim, 50 * UBI); // an unrelated account
-    let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, [9u8; 32], vec![funder, payee]);
     fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
 
     // Try to move 6 UBI (> 5 escrow) ⇒ abort, no state change.
@@ -48,7 +83,7 @@ fn transfer_cannot_exceed_escrow_or_touch_third_account() {
         to: payee,
         amount: 6 * UBI,
     }]));
-    let case = invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+    let case = invoke_c(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
     assert_eq!(s.get_exec_case(case).unwrap().status, ExecStatus::Aborted);
     // Victim account is untouched and escrow intact.
     assert_eq!(s.balance(&victim, 0), 50 * UBI);
@@ -65,7 +100,7 @@ fn direct_transfer_to_escrow_desyncs_accounting() {
     let funder = addr(1);
     let payee = addr(2);
     seed(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, [9u8; 32], vec![funder, payee]);
     let escrow = contract_address(id);
 
     // Proper funding of 3 UBI via fundContract.
@@ -87,7 +122,7 @@ fn direct_transfer_to_escrow_desyncs_accounting() {
         to: payee,
         amount: 5 * UBI,
     }]));
-    let case = invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 2, 0).unwrap();
+    let case = invoke_c(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 2, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case).unwrap().status,
         ExecStatus::Aborted,
@@ -100,7 +135,7 @@ fn direct_transfer_to_escrow_desyncs_accounting() {
         to: payee,
         amount: 3 * UBI,
     }]));
-    invoke_contract(&mut s, &drain, id, b"t", [0u8; 32], b"y", funder, 3, 0).unwrap();
+    invoke_c(&mut s, &drain, id, b"t", [0u8; 32], b"y", funder, 3, 0).unwrap();
     assert_eq!(s.get_contract(id).unwrap().escrow, 0);
     assert_eq!(
         s.balance(&escrow, 0),
@@ -121,7 +156,7 @@ fn escrow_account_cannot_be_drained_below_tracked_escrow() {
     let funder = addr(1);
     let payee = addr(2);
     seed(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, [9u8; 32], vec![funder, payee]);
     let escrow = contract_address(id);
     fund_contract(&mut s, &funder, id, 10 * UBI, 0, 0).unwrap();
 
@@ -139,7 +174,7 @@ fn escrow_account_cannot_be_drained_below_tracked_escrow() {
         to: payee,
         amount: 10 * UBI,
     }]));
-    let case = invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+    let case = invoke_c(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case).unwrap().status,
         ExecStatus::Committed(CanonicalEffect::new(vec![Op::Transfer {
@@ -160,7 +195,7 @@ fn reinvocation_cannot_replay_a_committed_effect() {
     let funder = addr(1);
     let payee = addr(2);
     seed(&mut s, funder, 100 * UBI);
-    let id = deploy_contract(&mut s, [9u8; 32], vec![funder, payee]).unwrap();
+    let id = deploy_c(&mut s, [9u8; 32], vec![funder, payee]);
     fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
 
     let interp = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
@@ -168,12 +203,12 @@ fn reinvocation_cannot_replay_a_committed_effect() {
         amount: 5 * UBI,
     }]));
     // First invoke pays 5 UBI.
-    invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
+    invoke_c(&mut s, &interp, id, b"t", [0u8; 32], b"x", funder, 1, 0).unwrap();
     assert_eq!(s.balance(&payee, 0), 5 * UBI);
     assert_eq!(s.get_contract(id).unwrap().escrow, 0);
 
     // Second invoke of the SAME effect: escrow is now 0 ⇒ over-draw ⇒ abort, NOT a second payment.
-    let case2 = invoke_contract(&mut s, &interp, id, b"t", [0u8; 32], b"x2", funder, 2, 0).unwrap();
+    let case2 = invoke_c(&mut s, &interp, id, b"t", [0u8; 32], b"x2", funder, 2, 0).unwrap();
     assert_eq!(s.get_exec_case(case2).unwrap().status, ExecStatus::Aborted);
     assert_eq!(s.balance(&payee, 0), 5 * UBI, "no double payment");
 }
@@ -189,7 +224,7 @@ fn cannot_stop_a_stream_owned_by_another_contract() {
     seed(&mut s, funder, 1_000 * UBI);
 
     // Contract A opens a stream from its own escrow.
-    let a = deploy_contract(&mut s, [1u8; 32], vec![funder, bob]).unwrap();
+    let a = deploy_c(&mut s, [1u8; 32], vec![funder, bob]);
     let hour = 3600u128;
     fund_contract(&mut s, &funder, a, 10 * hour, 0, 0).unwrap();
     let open = MockInterpreter::always(CanonicalEffect::new(vec![Op::OpenStream {
@@ -197,17 +232,17 @@ fn cannot_stop_a_stream_owned_by_another_contract() {
         rate: 1,
         deposit: 10 * hour,
     }]));
-    invoke_contract(&mut s, &open, a, b"s", [0u8; 32], b"open", funder, 1, 0).unwrap();
+    invoke_c(&mut s, &open, a, b"s", [0u8; 32], b"open", funder, 1, 0).unwrap();
     let a_escrow = contract_address(a);
     let victim_stream = s.outgoing(&a_escrow)[0];
 
     // Contract B tries to StopStream A's stream (to steal the refund into B's escrow).
-    let b = deploy_contract(&mut s, [2u8; 32], vec![funder]).unwrap();
+    let b = deploy_c(&mut s, [2u8; 32], vec![funder]);
     fund_contract(&mut s, &funder, b, UBI, 1, 0).unwrap();
     let steal = MockInterpreter::always(CanonicalEffect::new(vec![Op::StopStream {
         id: victim_stream,
     }]));
-    let case = invoke_contract(&mut s, &steal, b, b"s", [0u8; 32], b"steal", funder, 2, 0).unwrap();
+    let case = invoke_c(&mut s, &steal, b, b"s", [0u8; 32], b"steal", funder, 2, 0).unwrap();
     assert_eq!(
         s.get_exec_case(case).unwrap().status,
         ExecStatus::Aborted,

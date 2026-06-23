@@ -356,7 +356,7 @@ async fn decoded_block_and_transaction_shapes() {
             CONTRACT_HUB,
             0,
             deployContractCall {
-                textRef: B256::from([0x42u8; 32]),
+                text: "decoded-reads contract: pay the payee".to_string(),
                 parties: vec![DEV_ADDR, PAYEE],
             }
             .abi_encode(),
@@ -372,9 +372,19 @@ async fn decoded_block_and_transaction_shapes() {
     assert_eq!(d["call"]["hub"], "ContractHub");
     assert_eq!(d["call"]["method"], "deployContract");
     assert_eq!(
+        d["call"]["args"]["text"].as_str().unwrap(),
+        "decoded-reads contract: pay the payee",
+        "decoded full contract text"
+    );
+    assert_eq!(
         d["call"]["args"]["text_ref"].as_str().unwrap(),
-        format!("0x{}", "42".repeat(32)),
-        "decoded text_ref"
+        format!(
+            "0x{}",
+            hex::encode(
+                alloy_primitives::keccak256(b"decoded-reads contract: pay the payee").as_slice()
+            )
+        ),
+        "decoded text_ref = keccak256(utf8(text))"
     );
     assert_eq!(
         d["call"]["args"]["parties"].as_array().unwrap().len(),

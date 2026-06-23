@@ -14,6 +14,18 @@ export const DEV_ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 export const DEV_PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
 
+/**
+ * The block explorer URL base for this wallet app.
+ * Used in wallet_addEthereumChain so MetaMask shows "View on explorer" links.
+ * Defaults to the app's own origin at runtime.
+ */
+export function getExplorerUrl(): string {
+  if (typeof window !== "undefined") {
+    return window.location.origin;
+  }
+  return "http://127.0.0.1:3000";
+}
+
 export const NETWORK = {
   chainName: "ubi2 devnet",
   chainIdHex: `0x${DEVNET_CHAIN_ID.toString(16)}`,
