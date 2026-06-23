@@ -78,7 +78,9 @@ function StreamRow({
   injected: Injected | null;
   onStopped: () => void;
 }) {
-  const [accrued, setAccrued] = useState<string>(() => formatUbi(projectStreamAccrued(stream)));
+  const [accrued, setAccrued] = useState<string>(() =>
+    formatUbi(projectStreamAccrued(stream), 8),
+  );
   const [card, setCard] = useState<StreamCard | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -86,7 +88,7 @@ function StreamRow({
   useEffect(() => {
     let raf = 0;
     const frame = () => {
-      setAccrued(formatUbi(projectStreamAccrued(stream)));
+      setAccrued(formatUbi(projectStreamAccrued(stream), 8));
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);

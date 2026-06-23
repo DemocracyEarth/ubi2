@@ -53,7 +53,7 @@ already-tracked cycle-1 **FU-1** mempool item and inherits its deferral rational
 | # | Severity | Finding | Status |
 |---|---|---|---|
 | M2-F1 | Medium | Unbounded stream registry + per-account index — no cap on open streams; free (gas-less) admission | Open (defer — same class as FU-1) |
-| M2-F2 | Medium | Stream-open mempool over-admission: N opens against the same balance all admitted (runtime drops the excess at block time) | Open (defer — M2 face of cycle-1 security-m1 F1 / FU-1) |
+| M2-F2 | Medium | Stream-open mempool over-admission: N opens against the same balance all admitted (runtime drops the excess at block time) | **Fixed** — cumulative per-sender pending-commitment check added at submit (`spendable_debit`); regression test `second_full_balance_open_rejected_at_admission` |
 | M2-F3 | Low | Non-zero tx `value` on a StreamHub op is silently coerced to 0, not rejected (spec D2/Q1 says value must be 0) | Open (defer) |
 | M2-F4 | Info | `openStream` to the zero address is allowed (deposit drips to an unspendable address — a self-inflicted burn) | Open (defer / optional reject) |
 
@@ -108,9 +108,15 @@ and fails closed.
 block-production cycles, and a misleading "accepted" tx hash returned to the wallet. **Fund integrity
 is not affected.**
 
-**Remediation:** Track a running per-sender `pending_deposit + pending_value` in the mempool and reject
-at submit when `balance < pending_committed + this_op`. Same fix shape as FU-1's per-sender pending
-balance accounting; extend it to cover the stream-open `deposit`.
+**Remediation (landed):** `ingest_raw_tx` now sums this sender's still-pending mempool commitments —
+each tx's transfer `value` + `openStream` `deposit` + `fundContract` funding, via the `spendable_debit`
+helper — and rejects at submit when `live_balance < pending_committed + this_op` (saturating math, so
+it fails closed). This mirrors the existing pending-*nonce* accounting and is the FU-1 fix shape
+extended to cover the stream-open `deposit`. The PoC-A scenario now rejects the second full-balance
+open synchronously with `insufficient balance for deposit … already pending from this sender`.
+Regression test: `crates/rpc/tests/m2_acceptance.rs::second_full_balance_open_rejected_at_admission`
+(submits two full-balance opens, asserts the second is rejected at admission — not silently dropped at
+block time — and that exactly one stream mines). Confirmed failing against the pre-fix code.
 
 ---
 
