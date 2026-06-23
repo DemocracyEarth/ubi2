@@ -800,10 +800,17 @@ async fn second_full_balance_open_rejected_at_admission() {
     // Each open locks ~the entire live spendable balance as its deposit, so two cannot both be
     // funded. Emission may add a few base units before mining, but it never doubles the balance, so
     // the first open stays affordable while a second full-balance open never can be.
+    //
+    // Cycle-6: the submit affordability gate now also accounts for the per-tx UBI gas fee, so the
+    // FIRST open's `deposit + fee` must fit the balance — leave exactly the stream fee as headroom so
+    // the first open is admissible while a second same-size deposit still over-commits the balance.
     let bal =
         hex_u128(&rpc(addr, "eth_getBalance", serde_json::json!([dev, "latest"])).await["result"]);
-    assert!(bal > 0, "dev account must hold spendable balance to lock");
-    let deposit = bal;
+    assert!(
+        bal > fee_for_gas(GAS_STREAM),
+        "dev account must hold more than the stream fee to lock a deposit"
+    );
+    let deposit = bal - fee_for_gas(GAS_STREAM);
 
     // First open (nonce 0): the sole pending commitment, fits the balance → accepted.
     let open_a = openStreamCall {
@@ -814,7 +821,12 @@ async fn second_full_balance_open_rejected_at_admission() {
     .abi_encode();
     let raw_a = sign_tx(STREAM_HUB, 0, open_a, 0, DEVNET_CHAIN_ID);
     let raw_a_hex = format!("0x{}", hex::encode(&raw_a));
-    let send_a = rpc(addr, "eth_sendRawTransaction", serde_json::json!([raw_a_hex])).await;
+    let send_a = rpc(
+        addr,
+        "eth_sendRawTransaction",
+        serde_json::json!([raw_a_hex]),
+    )
+    .await;
     let hash_a = send_a["result"]
         .as_str()
         .unwrap_or_else(|| panic!("first full-balance openStream must be accepted: {send_a}"))
@@ -832,7 +844,12 @@ async fn second_full_balance_open_rejected_at_admission() {
     .abi_encode();
     let raw_b = sign_tx(STREAM_HUB, 0, open_b, 1, DEVNET_CHAIN_ID);
     let raw_b_hex = format!("0x{}", hex::encode(&raw_b));
-    let send_b = rpc(addr, "eth_sendRawTransaction", serde_json::json!([raw_b_hex])).await;
+    let send_b = rpc(
+        addr,
+        "eth_sendRawTransaction",
+        serde_json::json!([raw_b_hex]),
+    )
+    .await;
     assert!(
         send_b.get("result").is_none() && send_b.get("error").is_some(),
         "second full-balance openStream must be REJECTED at admission, not accepted: {send_b}"
@@ -854,8 +871,12 @@ async fn second_full_balance_open_rejected_at_admission() {
     );
 
     // The dev account is left with exactly one outgoing stream — no orphaned second deposit lock.
-    let receipt_a =
-        rpc(addr, "eth_getTransactionReceipt", serde_json::json!([hash_a])).await;
+    let receipt_a = rpc(
+        addr,
+        "eth_getTransactionReceipt",
+        serde_json::json!([hash_a]),
+    )
+    .await;
     assert!(
         receipt_a["result"]["logs"]
             .as_array()

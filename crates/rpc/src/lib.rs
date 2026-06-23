@@ -50,14 +50,14 @@ use tokio::sync::broadcast;
 
 use ubi2_runtime::{
     apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
-    finalize_registration, fund_contract as lc_fund_contract,
+    fee_for_gas, finalize_registration, fund_contract as lc_fund_contract,
     invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
     submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
     vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
     ContractInterpreter, ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle,
     Juror, LivenessEvidence, MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict,
     GAS_CONTRACT, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM,
-    GAS_TRANSFER, TREASURY,
+    GAS_TRANSFER,
 };
 
 pub mod streams;
@@ -239,11 +239,20 @@ pub struct StoredTx {
     pub tx_index: u64,
     /// Raw calldata (`0x` for plain transfers; the StreamHub selector+args otherwise).
     pub input: Vec<u8>,
-    /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints).
+    /// Logs emitted while applying this tx (stream + ERC-721 Transfer mints). Empty for a FAILED tx.
     pub logs: Vec<TxLog>,
     /// Gas this tx consumed — the per-kind constant the UBI fee was charged on (`fee = gas * price`).
     /// Surfaced verbatim in `eth_getTransactionReceipt` (`gasUsed`) and the tx's `gas`/block `gasUsed`.
+    /// Charged on BOTH a succeeded and a FAILED tx (EVM charges gas on revert — the node did work).
     pub gas_used: u64,
+    /// EVM receipt status: `true` = succeeded (`0x1`), `false` = the op FAILED at block time (`0x0`).
+    /// A FAILED tx is still MINED (included, fee-charged, nonce-consumed) — never silently dropped —
+    /// so the wallet always gets a receipt (no perpetual pending) and the sender nonce advances (no
+    /// nonce gap). Cycle-6 fix.
+    pub success: bool,
+    /// The decoded failure reason for a FAILED tx (the op's `Err` rendered as a string), carried so the
+    /// explorer can show "vouchee has no open registration" etc. `None` for a succeeded tx.
+    pub revert_reason: Option<String>,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -352,18 +361,23 @@ struct PendingTx {
 }
 
 /// The amount a queued tx debits from its sender's *spendable* balance when mined: its `value` (a
-/// transfer amount, or a `fundContract` escrow funding — both carried in `PendingTx.value`) plus,
+/// transfer amount, or a `fundContract` escrow funding — both carried in `PendingTx.value`), plus,
 /// for an `openStream`, the locked `deposit` (a calldata arg, so it lives outside `value` and is 0
-/// in `value`). Every other op moves no sender value, so it debits 0. Used by `ingest_raw_tx` to
-/// sum a sender's still-pending mempool commitments for the cumulative affordability check (M2-F2 /
-/// cycle-1 FU-1): the runtime debits all of these from the one balance at block time, so admission
-/// must weigh them together, not each against the full live balance in isolation. Saturating add so
-/// an absurd sum fails closed (over-rejects) rather than wrapping.
+/// in `value`), plus the **gas fee** every fee-bearing op pays to the TREASURY (cycle-6 — the fee is
+/// always charged, even on a FAILED op, so a sender who cannot afford it must be rejected at SUBMIT,
+/// not left perpetually pending). Onboarding (`requestVerification`) is fee-exempt, so its fee is 0.
+///
+/// Used by `ingest_raw_tx` to sum a sender's still-pending mempool commitments for the cumulative
+/// affordability check (M2-F2 / cycle-1 FU-1): the runtime debits all of these from the one balance at
+/// block time, so admission must weigh them together, not each against the full live balance in
+/// isolation. Saturating add so an absurd sum fails closed (over-rejects) rather than wrapping.
 fn spendable_debit(value: u128, kind: &PendingKind) -> u128 {
-    value.saturating_add(match kind {
-        PendingKind::OpenStream { deposit, .. } => *deposit,
-        _ => 0,
-    })
+    value
+        .saturating_add(match kind {
+            PendingKind::OpenStream { deposit, .. } => *deposit,
+            _ => 0,
+        })
+        .saturating_add(fee_for_gas(gas_for_kind(kind)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1006,23 +1020,23 @@ impl Chain {
             // Charge `fee = gas_for_kind(kind) * gas_price` in UBI base units to the sender *before*
             // the op runs, crediting the reserved TREASURY. This is the only fee on the chain and it
             // is always in UBI (the native currency). The op then operates on the post-fee balance, so
-            // the sender needs `value + fee` — an under-funded tx is rejected with a clear error.
+            // the sender needs `value + fee` — an under-funded tx is rejected at SUBMIT (cycle-6), so a
+            // wallet sees a synchronous error rather than a perpetual pending.
             //
-            // Fail-closed atomicity (I4): if the op subsequently fails (e.g. a nonce race against state
-            // that advanced since submit), we restore the pre-fee sender + treasury snapshot so the tx
-            // leaves *no* state change — a dropped tx is never charged. `charge_fee` itself settles the
-            // sender first, so its insufficient-balance check runs on the materialized balance (I2).
+            // The fee is charged on BOTH a succeeded and a FAILED tx (see the apply-result match below):
+            // EVM charges gas on revert because the node still did the work. The ONLY tx we drop here is
+            // one whose sender cannot afford even the fee — and that is caught at submit, so reaching
+            // this `continue` means state raced after submit (rare). `charge_fee` settles the sender
+            // first, so its insufficient-balance check runs on the materialized balance (I2).
             let gas_used = gas_for_kind(&p.kind);
             let from_addr = p.from.into_array();
-            let sender_pre = g.state.get(&from_addr);
-            let treasury_pre = g.state.get(&TREASURY);
             if let Err(e) = charge_fee(&mut g.state, &from_addr, gas_used, timestamp) {
                 tracing::warn!(tx = %p.hash, error = %e, "dropping tx: cannot pay gas fee");
                 continue;
             }
 
-            // Apply against current state. Validation already happened at submit time, but state may
-            // have advanced; if it now fails (e.g. nonce raced), drop the tx rather than panic.
+            // Apply against current state. Validation already happened at submit time. On an op error
+            // we do NOT drop the tx — we mine it as a FAILED (`status: 0x0`) transaction (see below).
             let applied: Result<Vec<TxLog>, String> = match &p.kind {
                 PendingKind::Transfer { to, value } => apply_transfer(
                     &mut g.state,
@@ -1271,58 +1285,73 @@ impl Chain {
                 }
             };
 
-            match applied {
-                Ok(logs) => {
-                    let tx = StoredTx {
-                        hash: p.hash,
-                        from: p.from,
-                        to: Some(p.tx_to),
-                        value: U256::from(p.value),
-                        nonce: p.nonce,
-                        block_number: number,
-                        block_hash: hash,
-                        tx_index: i as u64,
-                        input: p.input.clone(),
-                        logs,
-                        gas_used,
-                    };
-                    index_tx(&mut g.addr_index, &tx);
-                    // EXPL-1: a committed contract effect moves value from the escrow to payees /
-                    // stream recipients that are NOT the tx's `from`/`to`/log-topics, so the per-address
-                    // index would miss them. Index the escrow + every effect-target address explicitly
-                    // so an explorer's per-account history surfaces "received 5 UBI from contract #N".
-                    let extra = contract_effect_addresses(&g.state, &p.kind);
-                    for a in extra {
-                        let entry = g.addr_index.entry(a).or_default();
-                        if entry.last() != Some(&tx.hash) {
-                            entry.push(tx.hash);
-                        }
-                    }
-                    g.txs.insert(p.hash, tx.clone());
-                    stored.push(tx);
-                }
+            let (success, logs, revert_reason) = match applied {
+                Ok(logs) => (true, logs, None),
                 Err(e) => {
-                    // The op failed after we charged the fee; roll back the fee so a dropped tx leaves
-                    // no state change (fail-closed, no value moved). Restore the exact pre-fee snapshot
-                    // of the sender and treasury (re-inserting handles the "account did not exist
-                    // before" case — `charge_fee` may have materialized them).
-                    match sender_pre {
-                        Some(acct) => g.state.put(acct),
-                        None => g.state.put(Account {
-                            address: from_addr,
-                            ..Default::default()
-                        }),
+                    // Cycle-6 fix: the op FAILED at block time (e.g. "vouchee has no open registration",
+                    // "no such contract", a transfer validation error). The OLD code rolled back the fee
+                    // AND the nonce and dropped the tx — leaving it perpetually "pending" (no receipt)
+                    // and opening a nonce gap (the next tx then failed "nonce too high"). Instead we MINE
+                    // the tx as a FAILED (`status: 0x0`) transaction, EVM-style:
+                    //   * KEEP the fee charged (the node did work — EVM charges gas on revert);
+                    //   * CONSUME the sender nonce exactly once (see below);
+                    //   * apply NO op state change (the op already aborted/fail-closed);
+                    //   * carry the decoded `reason` so the explorer can show why it failed.
+                    //
+                    // Nonce handling is subtle and must be IDEMPOTENT: the hub ops run as
+                    // `consume_nonce(..).and_then(|| op(..))`, so a failing hub op (vouch/challenge/…)
+                    // has ALREADY bumped the nonce 0→1 before the op erred; whereas `apply_transfer` /
+                    // `fund_contract` validate-before-mutate and leave it unbumped on `Err`. Rather than
+                    // `+= 1` (which would double-count the hub case → a NEW gap), we SET the nonce to its
+                    // correct post-tx value, `p.nonce + 1`. The FIFO mempool + submit gate guarantee
+                    // `p.nonce` is this sender's current nonce, so this is the one true post-state and is
+                    // deterministic across nodes (I2). `charge_fee` already settled at `timestamp`, so
+                    // re-settling here is a no-op.
+                    let mut acct = g.state.get(&from_addr).unwrap_or(Account {
+                        address: from_addr,
+                        ..Default::default()
+                    });
+                    acct.settle(timestamp);
+                    acct.nonce = p.nonce + 1;
+                    g.state.put(acct);
+                    tracing::warn!(tx = %p.hash, error = %e, "mining failed tx (status 0x0)");
+                    (false, Vec::new(), Some(e))
+                }
+            };
+
+            let tx = StoredTx {
+                hash: p.hash,
+                from: p.from,
+                to: Some(p.tx_to),
+                value: U256::from(p.value),
+                nonce: p.nonce,
+                block_number: number,
+                block_hash: hash,
+                tx_index: i as u64,
+                input: p.input.clone(),
+                logs,
+                gas_used,
+                success,
+                revert_reason,
+            };
+            index_tx(&mut g.addr_index, &tx);
+            // EXPL-1: a committed contract effect moves value from the escrow to payees / stream
+            // recipients that are NOT the tx's `from`/`to`/log-topics, so the per-address index would
+            // miss them. Index the escrow + every effect-target address explicitly so an explorer's
+            // per-account history surfaces "received 5 UBI from contract #N". A FAILED tx applied no
+            // effect, so it has no extra targets — but calling this is harmless (it reads the post-op
+            // state, which for a failed op moved no value) and keeps the success/fail paths uniform.
+            if success {
+                let extra = contract_effect_addresses(&g.state, &p.kind);
+                for a in extra {
+                    let entry = g.addr_index.entry(a).or_default();
+                    if entry.last() != Some(&tx.hash) {
+                        entry.push(tx.hash);
                     }
-                    match treasury_pre {
-                        Some(acct) => g.state.put(acct),
-                        None => g.state.put(Account {
-                            address: TREASURY,
-                            ..Default::default()
-                        }),
-                    }
-                    tracing::warn!(tx = %p.hash, error = %e, "dropping tx at block time");
                 }
             }
+            g.txs.insert(p.hash, tx.clone());
+            stored.push(tx);
         }
 
         // M3 AI sybil-cluster auto-challenge sweep (AC6 / security finding D): before finalizing, run
@@ -1357,6 +1386,9 @@ impl Chain {
                 logs: sweep_logs,
                 // A synthetic system tx (no signer, no fee) — it consumes no gas.
                 gas_used: 0,
+                // The sweep only ever commits clean cases (it never errors) — always a success.
+                success: true,
+                revert_reason: None,
             };
             index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
@@ -1800,7 +1832,7 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         .enumerate()
         .map(|(i, l)| log_to_json(tx, l, i))
         .collect();
-    json!({
+    let mut receipt = json!({
         "transactionHash": hex_b256(&tx.hash),
         "transactionIndex": hex_u64(tx.tx_index),
         "blockHash": hex_b256(&tx.block_hash),
@@ -1812,10 +1844,19 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         "contractAddress": Value::Null,
         "logs": logs,
         "logsBloom": format!("0x{}", "0".repeat(512)),
-        "status": "0x1",
+        // EVM receipt status: `0x1` = succeeded, `0x0` = the op FAILED at block time. A FAILED tx is
+        // still MINED (fee charged, nonce consumed) — never silently dropped — so the wallet always
+        // gets a receipt (no perpetual pending) and the nonce advances (no nonce gap). Cycle-6.
+        "status": if tx.success { "0x1" } else { "0x0" },
         "effectiveGasPrice": hex_u64(GAS_PRICE_WEI),
         "type": "0x0",
-    })
+    });
+    // For a FAILED tx, carry the decoded failure reason (a Geth-compatible `revertReason` field) so the
+    // explorer / wallet can show "vouchee has no open registration" etc. Omitted on a succeeded tx.
+    if let Some(reason) = &tx.revert_reason {
+        receipt["revertReason"] = json!(reason);
+    }
+    receipt
 }
 
 /// Resolve a block tag/number param ("latest"/"earliest"/"pending"/"0x..") to a concrete block.
@@ -1986,7 +2027,9 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
             .mempool
             .iter()
             .filter(|p| p.from == from)
-            .fold(0u128, |acc, p| acc.saturating_add(spendable_debit(p.value, &p.kind)));
+            .fold(0u128, |acc, p| {
+                acc.saturating_add(spendable_debit(p.value, &p.kind))
+            });
         let need = pending_committed.saturating_add(spendable_debit(value, &kind));
         if settled < need {
             // Note the already-pending portion only when there is one, so the single-tx message is
@@ -2749,6 +2792,12 @@ fn humanity_case_result(state: &dyn State, tx: &StoredTx, subject: &Address) -> 
 /// effect / case outcome / subject status). Pure + deterministic (I2).
 fn decoded_tx_json(state: &dyn State, tx: &StoredTx) -> Value {
     let logs: Vec<Value> = tx.logs.iter().map(decode_log_json).collect();
+    // A FAILED tx applied no op effect, so its `result` is the decoded failure reason rather than a
+    // committed effect / case outcome (cycle-6). A succeeded tx resolves the usual state effect.
+    let result = match &tx.revert_reason {
+        Some(reason) => json!({ "kind": "Failed", "reason": reason }),
+        None => tx_result_json(state, tx),
+    };
     json!({
         "hash": hex_b256(&tx.hash),
         "blockHash": hex_b256(&tx.block_hash),
@@ -2762,13 +2811,17 @@ fn decoded_tx_json(state: &dyn State, tx: &StoredTx) -> Value {
         "gasPrice": hex_u64(GAS_PRICE_WEI),
         "fee": hex_u128(tx_fee(tx)),
         "kind": tx_kind_str(tx),
+        // EVM receipt status mirrored onto the explorer surface (`0x1` ok / `0x0` failed). A FAILED tx
+        // is mined (it advanced the nonce + paid the fee) but applied no op state change.
+        "status": if tx.success { "0x1" } else { "0x0" },
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
         // The decoded system-hub call (which hub + method + args) — null for an opaque non-hub call.
         "call": decode_call_json(tx),
-        // Every emitted log, decoded into {name, hub, args}.
+        // Every emitted log, decoded into {name, hub, args} (empty for a FAILED tx).
         "logs": logs,
-        // The resulting committed effect / case verdict / subject status, where applicable.
-        "result": tx_result_json(state, tx),
+        // For a succeeded tx: the committed effect / case verdict / subject status. For a FAILED tx:
+        // `{kind: "Failed", reason}` carrying why the op aborted.
+        "result": result,
     })
 }
 

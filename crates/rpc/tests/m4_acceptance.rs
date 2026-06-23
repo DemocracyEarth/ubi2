@@ -206,8 +206,21 @@ async fn boot(
         nonce: 0,
     });
     chain.seed_verified_human(&DEV_ADDR.into_array(), genesis);
-    // Three deterministic devnet jurors — double as the interpreter quorum (JURY_SIZE=3).
+    // Three deterministic devnet jurors — double as the interpreter quorum (JURY_SIZE=3). Cycle-6: also
+    // seed them as funded Verified humans (genesis in the past → accrued UBI) so a juror can pay the
+    // ContractHub op fee on a `submitEffect` tx. The submit affordability gate now charges the per-op
+    // gas fee, so an unfunded juror's well-formed `submitEffect` would be rejected at SUBMIT instead of
+    // being accepted-then-dropped (the old, buggy behavior these tests previously relied on).
     for j in [JUROR1, JUROR2, JUROR3] {
+        chain.seed_account(Account {
+            address: j.into_array(),
+            verified: true,
+            verified_at: genesis,
+            last_settled_at: genesis,
+            settled_balance: 0,
+            nonce: 0,
+        });
+        chain.seed_verified_human(&j.into_array(), genesis);
         chain.register_juror(&j.into_array(), 0);
     }
     let handle = serve(addr, chain.clone()).await.expect("serve");
@@ -512,9 +525,11 @@ async fn submit_effect_via_tx_commits() {
     )
     .unwrap();
 
-    // The case is Committed; a *late* submitEffect tx from a juror on a closed case is rejected at apply
-    // time (CaseClosed) and dropped — but the wire codec round-trips: build a submitEffect calldata,
-    // confirm the server accepts the well-formed tx (the runtime fail-closes on the closed case).
+    // The case is Committed; a *late* submitEffect tx from a juror on a closed case fails at apply time
+    // (CaseClosed). Cycle-6: it is no longer SILENTLY DROPPED — it is MINED as a FAILED tx (status 0x0,
+    // fee charged, nonce consumed) and applies NO state change to the already-committed case. The wire
+    // codec still round-trips: build a submitEffect calldata, confirm the server accepts the well-formed
+    // tx, and confirm the closed case is unchanged.
     let ops_blob = encode_effect(&pay3);
     let raw = sign_tx(
         &JUROR1_KEY,
@@ -527,10 +542,38 @@ async fn submit_effect_via_tx_commits() {
         .abi_encode(),
         0,
     );
-    // Accepted at ingest (well-formed selector + decodable ops blob); the closed-case guard drops it at
-    // block time (fail-closed) without changing the already-committed state.
+    // Accepted at ingest (well-formed selector + decodable ops blob, juror can pay the fee); the
+    // closed-case guard makes it a MINED-FAILED tx at block time (fail-closed) without changing the
+    // already-committed state.
     let submit_hash = send_ok(addr, raw).await;
-    chain.produce_block(now_secs());
+    let fail_block = chain.produce_block(now_secs());
+
+    // Cycle-6: the late submitEffect was MINED as a FAILED tx (status 0x0 + a CaseClosed reason), not
+    // dropped — so it has a receipt (no perpetual pending) and consumed JUROR1's nonce.
+    let fail_receipt = rpc(
+        addr,
+        "eth_getTransactionReceipt",
+        serde_json::json!([submit_hash]),
+    )
+    .await;
+    assert_eq!(
+        fail_receipt["result"]["status"].as_str(),
+        Some("0x0"),
+        "a submitEffect on a closed case must be MINED-FAILED (status 0x0), not dropped: {fail_receipt}"
+    );
+    assert_eq!(
+        u64::from_str_radix(
+            fail_receipt["result"]["blockNumber"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("0x")
+                .unwrap(),
+            16
+        )
+        .unwrap(),
+        fail_block.number,
+        "the FAILED submitEffect is in the produced block"
+    );
 
     // The exec case is (still) Committed with the 3 UBI Transfer — the submitEffect did not alter it.
     let ec = rpc(addr, "ubi_getExecCase", serde_json::json!([case_id])).await;

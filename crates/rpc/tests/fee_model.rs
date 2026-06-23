@@ -466,37 +466,56 @@ async fn onboarding_is_fee_exempt_and_estimates_zero() {
     let _ = handle.stopped().await;
 }
 
-/// An account that cannot afford `value + fee` has its tx dropped: no value reaches the recipient, the
-/// treasury collects nothing, and the sender's nonce does not advance (fail-closed, no state change).
+/// An account that cannot afford `value + fee` is REJECTED AT SUBMIT (cycle-6): `eth_sendRawTransaction`
+/// returns an error, the tx never enters the mempool, no value reaches the recipient, the treasury
+/// collects nothing, and the sender's nonce does not advance.
+///
+/// NOTE — cycle-6 behavior change: the OLD contract ACCEPTED this tx at submit (the submit gate only
+/// summed `value`, not the fee) and then SILENTLY DROPPED it at block time when `value + fee` couldn't
+/// be paid. That drop was exactly the perpetual-pending bug — the wallet saw an accepted hash that
+/// never mined. The submit affordability gate now includes the gas fee, so an un-payable tx is rejected
+/// synchronously and the wallet shows an error instead. (The only remaining block-time drop is a state
+/// race after submit, which is rare and still leaves no state change.)
 #[tokio::test]
 async fn insufficient_for_fee_is_rejected_no_state_change() {
     let addr: SocketAddr = "127.0.0.1:18603".parse().unwrap();
     let genesis = now_secs();
     let chain = Chain::new(DEVNET_CHAIN_ID, genesis);
-    // A verified account with EXACTLY 1 UBI settled and (at the mine instant) no extra emission, so it
-    // can fund a 1 UBI value OR the fee, but not both.
+    // An UNVERIFIED account with EXACTLY 1 UBI settled — and unverified so it accrues NO emission, which
+    // keeps the submit-time balance fixed at 1 UBI regardless of when the test runs (a verified account
+    // would stream sub-second emission that could cover the fee, making this submit check flaky). It can
+    // thus fund a 1 UBI value OR the fee, but never both, so the submit gate must reject `value + fee`.
     chain.seed_account(Account {
         address: DEV_ADDR.into_array(),
-        verified: true,
+        verified: false,
         verified_at: genesis,
         last_settled_at: genesis,
         settled_balance: UBI,
         nonce: 0,
     });
-    chain.seed_verified_human(&DEV_ADDR.into_array(), genesis);
     let handle = serve(addr, chain.clone()).await.expect("serve");
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Send the WHOLE 1 UBI to NEWBIE; there is then nothing left for the fee → the tx is dropped.
+    // Send the WHOLE 1 UBI to NEWBIE; there is then nothing left for the fee → REJECTED AT SUBMIT.
     let raw = sign_tx(&DEV_PRIVKEY, NEWBIE, UBI, Vec::new(), 0);
-    send_ok(addr, raw).await; // accepted into the mempool (submit-time check passes on value alone)
-    let mine = genesis; // mine at genesis: emission since verified_at is 0, balance is exactly 1 UBI
-    let block = chain.produce_block(mine);
+    let raw_hex = format!("0x{}", hex::encode(&raw));
+    let resp = rpc(addr, "eth_sendRawTransaction", serde_json::json!([raw_hex])).await;
+    assert!(
+        resp["result"].is_null(),
+        "an un-payable (value + fee) tx must be rejected at submit, not accepted: {resp}"
+    );
+    let err = resp["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("insufficient"),
+        "rejection should explain the shortfall, got: {resp}"
+    );
 
-    // The tx was dropped at apply time (it cannot pay value + fee): no recipient, no fee, nonce stays 0.
+    // Nothing entered the mempool, so the next block is empty: no recipient, no fee, nonce stays 0.
+    let mine = genesis;
+    let block = chain.produce_block(mine);
     assert!(
         block.txs.is_empty(),
-        "the under-funded tx is dropped, not mined"
+        "the rejected tx never entered the mempool — block is empty"
     );
     assert_eq!(
         balance_of(addr, NEWBIE).await,
@@ -506,7 +525,7 @@ async fn insufficient_for_fee_is_rejected_no_state_change() {
     assert_eq!(
         chain.balance(&TREASURY, mine),
         0,
-        "no fee collected for a dropped tx"
+        "no fee collected for a rejected tx"
     );
     let nonce = hex_u128(
         &rpc(
