@@ -11,7 +11,7 @@ import {
   type BalanceSample,
   type ActivityRow,
 } from "@ubi2/sdk";
-import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY, NETWORK } from "./config";
+import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY, NETWORK, getExplorerUrl } from "./config";
 import { Nav, type Section } from "./nav";
 import { Streams } from "./streams";
 import { Humanity } from "./humanity";
@@ -216,6 +216,60 @@ function TransferForm() {
   );
 }
 
+// ---- Add to MetaMask button -------------------------------------------------------
+
+function AddToMetaMaskButton() {
+  const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const addNetwork = useCallback(async () => {
+    const eth = (window as unknown as { ethereum?: { request: (a: unknown) => Promise<unknown> } }).ethereum;
+    if (!eth) {
+      setNote({ kind: "err", text: "MetaMask not detected — install it first." });
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const explorerUrl = getExplorerUrl();
+      await eth.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: NETWORK.chainIdHex,
+            chainName: NETWORK.chainName,
+            nativeCurrency: {
+              name: "UBI",
+              symbol: NETWORK.symbol,
+              decimals: NETWORK.decimals,
+            },
+            rpcUrls: [NETWORK.rpcUrl],
+            blockExplorerUrls: [explorerUrl],
+          },
+        ],
+      });
+      setNote({ kind: "ok", text: "Network added — MetaMask will show ubi2 devnet as a custom network with block explorer links." });
+    } catch (e) {
+      setNote({ kind: "err", text: errMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <button className="primary" onClick={addNetwork} disabled={busy} style={{ marginBottom: "0.5rem" }}>
+        {busy ? "Adding…" : "Add ubi2 devnet to MetaMask"}
+      </button>
+      <div className="muted small" style={{ marginTop: "0.25rem", lineHeight: 1.5 }}>
+        Adds the network with block-explorer URLs pointing to this wallet app — MetaMask will
+        show &quot;View on explorer&quot; links for transactions and accounts.
+      </div>
+      {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
+    </div>
+  );
+}
+
 // ---- Activity Feed ---------------------------------------------------------------
 
 function ActivityFeed({ account }: { account: string }) {
@@ -295,6 +349,10 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
 
+  // Explorer deep-link state: when a contract detail links into the explorer
+  const [explorerBlockTarget, setExplorerBlockTarget] = useState<number | null>(null);
+  const [explorerTxTarget, setExplorerTxTarget] = useState<string | null>(null);
+
   const sampleRef = useRef<BalanceSample | null>(null);
   const rafRef = useRef<number | null>(null);
 
@@ -324,7 +382,6 @@ export default function Home() {
     try {
       const sample = await client.sampleBalance(DEV_ACCOUNT);
       sampleRef.current = sample;
-      // Also check humanity status
       try {
         const acct = await explorerReader.getAccount(DEV_ACCOUNT);
         setIsVerified(acct.human_status === "Verified");
@@ -356,6 +413,25 @@ export default function Home() {
   }, []);
 
   const balanceNum = display.replace(" UBI", "").replace("—", "");
+
+  // Navigate to explorer with a specific block or tx pre-selected
+  const openExplorerBlock = useCallback((n: number) => {
+    setExplorerBlockTarget(n);
+    setExplorerTxTarget(null);
+    setSection("explorer");
+  }, []);
+
+  const openExplorerTx = useCallback((hash: string) => {
+    setExplorerTxTarget(hash);
+    setExplorerBlockTarget(null);
+    setSection("explorer");
+  }, []);
+
+  // Clear targets once consumed (the Explorer component reads these once on mount)
+  const consumeExplorerTarget = useCallback(() => {
+    setExplorerBlockTarget(null);
+    setExplorerTxTarget(null);
+  }, []);
 
   return (
     <>
@@ -430,7 +506,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Add to MetaMask */}
+            {/* Add to MetaMask — now includes blockExplorerUrls */}
             <div className="card">
               <div className="card-header">
                 <h3>Add to MetaMask</h3>
@@ -447,7 +523,12 @@ export default function Home() {
                 <dd>{NETWORK.symbol}</dd>
                 <dt>Decimals</dt>
                 <dd>{NETWORK.decimals}</dd>
+                <dt>Block explorer</dt>
+                <dd style={{ color: "var(--accent)", fontSize: "0.75rem" }}>
+                  This wallet (set on add — MetaMask shows &quot;View on explorer&quot; links)
+                </dd>
               </dl>
+              <AddToMetaMaskButton />
             </div>
 
             {/* Transfer form — shows UBI fee */}
@@ -464,17 +545,35 @@ export default function Home() {
         {/* ------------------------------------------------------------------ */}
         {/* EXPLORER                                                             */}
         {/* ------------------------------------------------------------------ */}
-        {section === "explorer" && <Explorer />}
+        {section === "explorer" && (
+          <Explorer
+            initialBlockTarget={explorerBlockTarget}
+            initialTxTarget={explorerTxTarget}
+            onConsumeTarget={consumeExplorerTarget}
+          />
+        )}
 
         {/* ------------------------------------------------------------------ */}
         {/* IDENTITY                                                             */}
         {/* ------------------------------------------------------------------ */}
-        {section === "identity" && <Humanity account={DEV_ACCOUNT} />}
+        {section === "identity" && (
+          <Humanity
+            account={DEV_ACCOUNT}
+            onSettings={() => setSettingsOpen(true)}
+          />
+        )}
 
         {/* ------------------------------------------------------------------ */}
         {/* CONTRACTS                                                            */}
         {/* ------------------------------------------------------------------ */}
-        {section === "contracts" && <Contracts account={DEV_ACCOUNT} />}
+        {section === "contracts" && (
+          <Contracts
+            account={DEV_ACCOUNT}
+            onOpenExplorerBlock={openExplorerBlock}
+            onOpenExplorerTx={openExplorerTx}
+            onSettings={() => setSettingsOpen(true)}
+          />
+        )}
       </main>
     </>
   );
