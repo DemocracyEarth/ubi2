@@ -69,6 +69,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-15 · protocol/economics (M5)** — **Node-AI rewards:** split contract-invoke / verification fees from the
   treasury to the interpreter/verifier **quorum** that did the AI work (reward AI usage), seeding the AI-provider
   network; richer market/staking variants follow. *Requested by Santiago; folded into M5.*
+- **FU-16 · protocol** — PoH-NFT security Low: add the 4-arg `safeTransferFrom` selector (`0xb88d4fde`) to the
+  soulbound-revert match in `poh_nft_call` + the StreamHub `erc721_call`, so `eth_call` simulation fails closed
+  like the real-tx revert (cosmetic — the real tx already reverts). *Source:* `docs/reports/security-poh.md`.
+- **FU-17 · interface/security** — Harden NFT-card SVG rendering: the PoH + stream cards use
+  `dangerouslySetInnerHTML` on the RPC-returned SVG (on-chain card is clean, but a hostile RPC could inject
+  `<script>` = XSS). Render via `<img src=data:image/svg+xml;base64,…>` or DOMPurify. *Source:* `docs/reports/security-poh.md`.
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -93,6 +99,13 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **Proof-of-Humanity NFT + branding · SHIPPED.** All gates green (415 tests). A **soulbound ERC-721 "Proof of
+  Humanity"** on HumanityHub — every Verified human owns one (`tokenId = uint160(address)`; mint/burn on
+  Verified↔not-Verified; transfers revert) with a **fully on-chain card** (the fingerprint mark in the yellow→pink
+  gradient + address/date/vouches/reputation), viewable + importable in MetaMask. All PoH/Identity UI re-skinned in
+  the official **Proof-of-Humanity palette + logo** (scoped; the rest of the app keeps UBI-green/violet). Gates:
+  soulbound unbypassable, view surface panic-free, determinism + ownership/log consistency proven. Reports:
+  [`docs/reports/`](reports/) (`*-poh.md`). Follow-ups: FU-16/FU-17 (Low).
 - **Cycle 6 — Contracts depth, vouch fix & docs · SHIPPED.** All gates green (380 tests). Fixed the
   **failed-tx / perpetual-pending / nonce-too-high** bug (failed ops now mine with a `status 0` receipt + reason
   + consumed nonce); put the **contract NL text on-chain** (`ubi_getContract` returns text + deploy block/tx +
