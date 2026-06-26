@@ -801,6 +801,33 @@ button.copy:hover { color: var(--ink); }
 }
 
 /* =========================================================
+   PoH BRAND TOKENS  (scoped to proof-of-humanity surfaces)
+   ========================================================= */
+
+:root {
+  /* Yellow-to-pink PoH gradient */
+  --poh-grad-start: #FFFF00;
+  --poh-grad-end:   #FF6699;
+  /* PoH secondary/verified accent */
+  --poh-green:      #009966;
+  /* Convenience gradients */
+  --poh-gradient: linear-gradient(135deg, var(--poh-grad-start), var(--poh-grad-end));
+  --poh-gradient-v: linear-gradient(180deg, var(--poh-grad-start), var(--poh-grad-end));
+  /* Dimmed versions for glass surfaces */
+  --poh-grad-start-dim: rgba(255, 255, 0, .18);
+  --poh-grad-end-dim:   rgba(255, 102, 153, .18);
+  --poh-green-dim:      rgba(0, 153, 102, .18);
+}
+
+/* Gradient text utility — apply to text that should read in the PoH palette */
+.poh-text-gradient {
+  background: var(--poh-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* =========================================================
    PoH SECTION
    ========================================================= */
 
@@ -851,6 +878,208 @@ button.copy:hover { color: var(--ink); }
 
 .poh-case-row:first-child { border-top: none; }
 .poh-case-id { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+
+/* PoH-branded card variant */
+.card.poh {
+  background: rgba(255, 255, 0, .025);
+  border-color: rgba(255, 102, 153, .22);
+}
+.card.poh::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 0, .28), rgba(255, 102, 153, .18), transparent);
+}
+
+/* PoH section heading */
+.poh-section-head {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  margin-bottom: .9rem;
+}
+
+.poh-mark {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.poh-section-title {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  font-weight: 700;
+  background: var(--poh-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* PoH verified state pill — replaces the green .pill.active for Verified status */
+.pill.poh-verified {
+  color: transparent;
+  background: var(--poh-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  border: 1px solid rgba(255, 102, 153, .4);
+  background-clip: unset;
+  -webkit-background-clip: unset;
+  /* Keep it simple: gradient border, PoH green text */
+  color: var(--poh-green);
+  border-color: rgba(0, 153, 102, .5);
+  background: rgba(0, 153, 102, .1);
+}
+
+/* "Verified human" badge in the wallet hero — PoH brand */
+.verified-badge.poh {
+  background: var(--poh-gradient-v);
+  color: #07080c;
+  font-weight: 700;
+}
+
+/* Vouch hint box — PoH green instead of UBI green */
+.poh-vouch-hint {
+  background: rgba(0, 153, 102, .06);
+  border: 1px solid rgba(0, 153, 102, .22);
+  border-radius: 9px;
+  padding: .65rem .85rem;
+  margin-bottom: .85rem;
+  font-size: .78rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+/* PoH NFT card wrapper */
+.poh-nft-card {
+  margin-top: 1.1rem;
+  border-top: 1px solid rgba(255, 102, 153, .2);
+  padding-top: 1rem;
+}
+
+.poh-nft-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .75rem;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.poh-nft-label {
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  font-weight: 700;
+  color: rgba(255, 102, 153, .8);
+}
+
+.poh-nft-body {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.poh-nft-svg {
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 102, 153, .25);
+  background: #0d0d0d;
+  display: block;
+}
+
+.poh-nft-attrs {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+}
+
+.poh-nft-attr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .5rem;
+  font-size: .78rem;
+  padding: .3rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.poh-nft-attr:last-child { border-bottom: none; }
+
+.poh-nft-attr-key {
+  color: var(--faint);
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.poh-nft-attr-val {
+  font-family: var(--mono);
+  color: var(--ink);
+  font-size: .78rem;
+  text-align: right;
+  word-break: break-all;
+}
+
+.poh-nft-attr-val.green { color: var(--poh-green); }
+
+/* Add to MetaMask button for NFT — ghost variant with PoH accent */
+button.ghost.poh {
+  border-color: rgba(255, 102, 153, .35);
+  color: rgba(255, 102, 153, .85);
+}
+button.ghost.poh:hover {
+  border-color: rgba(255, 102, 153, .65);
+  color: #FF6699;
+  background: rgba(255, 102, 153, .06);
+}
+
+/* PoH primary button */
+button.primary.poh {
+  background: var(--poh-gradient-v);
+  color: #07080c;
+}
+
+/* Achievement banner for verified state */
+.poh-achievement {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .75rem 1rem;
+  margin-bottom: .85rem;
+  border-radius: 12px;
+  background: rgba(0, 153, 102, .07);
+  border: 1px solid rgba(0, 153, 102, .25);
+}
+
+.poh-achievement-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.poh-achievement-text {
+  flex: 1;
+}
+
+.poh-achievement-title {
+  font-weight: 700;
+  font-size: .88rem;
+  color: var(--poh-green);
+  margin-bottom: .15rem;
+}
+
+.poh-achievement-sub {
+  font-size: .74rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .poh-nft-body { grid-template-columns: 1fr; }
+  .poh-nft-svg { max-width: 260px; }
+}
 
 /* =========================================================
    CONTRACTS (violet accent)

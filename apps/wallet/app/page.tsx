@@ -469,7 +469,7 @@ export default function Home() {
                 </div>
                 <div className="acct-row">
                   {isVerified && (
-                    <span className="verified-badge">&#10003; Verified human</span>
+                    <span className="verified-badge poh">&#9679; Verified human</span>
                   )}
                   <span className="addr-chip">{short(DEV_ACCOUNT)}</span>
                   <Copy value={DEV_ACCOUNT} />

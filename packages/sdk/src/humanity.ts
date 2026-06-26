@@ -17,6 +17,7 @@ import {
   http,
   defineChain,
   encodeFunctionData,
+  decodeFunctionResult,
   type Chain,
   type EIP1193Provider,
   type Hex,
@@ -368,4 +369,164 @@ export function deriveLivenessRef(seed: string): Hex {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   return `0x${hex}` as Hex;
+}
+
+// ---------------------------------------------------------------------------
+// PoH NFT helpers (ERC-721 soulbound, minted by HumanityHub on Verified)
+// ---------------------------------------------------------------------------
+
+/**
+ * The ERC-721 ABI fragments for HumanityHub's PoH NFT — mirrors the stream-NFT ABI
+ * in streaming.ts but targets HUMANITY_HUB.
+ */
+const POH_ERC721_ABI = [
+  { type: "function", name: "name",   stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  {
+    type: "function",
+    name: "ownerOf",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "tokenURI",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ type: "string" }],
+  },
+] as const;
+
+/**
+ * Compute the PoH NFT tokenId for a given address.
+ * Stateless scheme: `tokenId = uint256(uint160(address))` — the address zero-extended to 256 bits.
+ * The token *exists* (ownerOf does not revert) iff `ubi_getHuman(addr).status == "Verified"`.
+ */
+export function pohTokenId(address: string): bigint {
+  return BigInt(address);
+}
+
+/** A decoded on-chain PoH NFT card. */
+export interface PohCard {
+  /** Token name, e.g. `"Proof of Humanity — 0xf39F…2266"`. */
+  name: string;
+  /** Description text from the metadata. */
+  description: string;
+  /** Inline SVG markup (decoded from the metadata `image` data-URI). */
+  svg: string;
+  /** Structured attributes from the metadata document. */
+  attributes: Array<{ trait_type?: string; display_type?: string; value: string | number }>;
+}
+
+// base64 decode (browser + Node ≥ 16)
+function pohDecodeBase64(b64: string): string {
+  const atobFn = (globalThis as { atob?: (s: string) => string }).atob;
+  if (typeof atobFn !== "function") throw new Error("base64 decoder (atob) unavailable");
+  const bin = atobFn(b64);
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function pohDecodeDataUri(uri: string): string {
+  const comma = uri.indexOf(",");
+  if (comma < 0) throw new Error("malformed data URI");
+  return pohDecodeBase64(uri.slice(comma + 1));
+}
+
+/**
+ * PoH NFT reads layered over any JSON-RPC caller (the existing `Ubi2Client` qualifies).
+ * Mirrors `StreamReader` from `streaming.ts` but targets `HUMANITY_HUB`.
+ */
+export class PohNftReader {
+  constructor(private readonly rpc: JsonRpcCaller) {}
+
+  /** Low-level `eth_call` against HumanityHub, returning the raw hex result. */
+  private async hubCall(data: Hex): Promise<Hex> {
+    return this.rpc.call<Hex>("eth_call", [{ to: HUMANITY_HUB, data }, "latest"]);
+  }
+
+  /** ERC-721 `name()` of the PoH collection (`"Proof of Humanity"`). */
+  async collectionName(): Promise<string> {
+    const data = encodeFunctionData({ abi: POH_ERC721_ABI, functionName: "name", args: [] });
+    return decodeFunctionResult({
+      abi: POH_ERC721_ABI,
+      functionName: "name",
+      data: await this.hubCall(data),
+    }) as string;
+  }
+
+  /** ERC-721 `symbol()` — `"POH"`. */
+  async collectionSymbol(): Promise<string> {
+    const data = encodeFunctionData({ abi: POH_ERC721_ABI, functionName: "symbol", args: [] });
+    return decodeFunctionResult({
+      abi: POH_ERC721_ABI,
+      functionName: "symbol",
+      data: await this.hubCall(data),
+    }) as string;
+  }
+
+  /**
+   * ERC-721 `balanceOf(owner)` — returns `1n` if the account is Verified, `0n` otherwise.
+   * Never reverts.
+   */
+  async balanceOf(owner: string): Promise<bigint> {
+    const data = encodeFunctionData({ abi: POH_ERC721_ABI, functionName: "balanceOf", args: [owner as Hex] });
+    return decodeFunctionResult({
+      abi: POH_ERC721_ABI,
+      functionName: "balanceOf",
+      data: await this.hubCall(data),
+    }) as bigint;
+  }
+
+  /**
+   * ERC-721 `ownerOf(tokenId)` — returns the address if Verified.
+   * Reverts (`ERC721: owner query for nonexistent token`) if the account is not Verified.
+   * Use `pohTokenId(address)` to compute the tokenId.
+   */
+  async ownerOf(tokenId: bigint): Promise<string> {
+    const data = encodeFunctionData({ abi: POH_ERC721_ABI, functionName: "ownerOf", args: [tokenId] });
+    return decodeFunctionResult({
+      abi: POH_ERC721_ABI,
+      functionName: "ownerOf",
+      data: await this.hubCall(data),
+    }) as string;
+  }
+
+  /**
+   * Fetch and decode the on-chain PoH NFT card for a given tokenId.
+   * Calls `tokenURI(tokenId)`, decodes the base64 JSON, then decodes the base64 SVG `image`.
+   * Reverts if the token does not exist (account not Verified).
+   *
+   * Use `pohTokenId(address)` to compute the tokenId from an Ethereum address.
+   */
+  async fetchPohCard(tokenId: bigint): Promise<PohCard> {
+    const data = encodeFunctionData({ abi: POH_ERC721_ABI, functionName: "tokenURI", args: [tokenId] });
+    const uri = decodeFunctionResult({
+      abi: POH_ERC721_ABI,
+      functionName: "tokenURI",
+      data: await this.hubCall(data),
+    }) as string;
+
+    const json = JSON.parse(pohDecodeDataUri(uri)) as {
+      name: string;
+      description?: string;
+      image: string;
+      attributes?: PohCard["attributes"];
+    };
+    const svg = pohDecodeDataUri(json.image);
+    return {
+      name: json.name,
+      description: json.description ?? "",
+      svg,
+      attributes: json.attributes ?? [],
+    };
+  }
 }

@@ -466,11 +466,12 @@ async fn challenge_sybil_quorum_revokes_and_stops_emission() {
     )
     .await;
     let logs = receipt["result"]["logs"].as_array().expect("logs");
-    // CaseOpened + StatusChanged(Challenged).
+    // CaseOpened + StatusChanged(Challenged) + the PoH ERC-721 burn (the Verified subject's soulbound
+    // token leaves existence when it flips Challenged: a Transfer(subject → 0x0, tokenId)).
     assert_eq!(
         logs.len(),
-        2,
-        "CaseOpened + StatusChanged(Challenged), got {logs:?}"
+        3,
+        "CaseOpened + StatusChanged(Challenged) + PoH burn, got {logs:?}"
     );
     let case_id = u64::from_str_radix(
         logs[0]["topics"][1]
