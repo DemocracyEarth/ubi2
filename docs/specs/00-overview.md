@@ -35,6 +35,9 @@ Any LLM whose output influences committed state runs at **temperature 0** with a
 and emits a **canonical, structured output**. The network commits the **effect** (a state delta), not the
 prose, and only when an **independent quorum of N interpreters/verifiers produces the *same* canonical
 effect**. On disagreement, the operation **aborts deterministically** — no partial state, ever.
+The quorum must be evaluated across **independent processes** (independent nodes with independent AI
+backends), not merely independent addresses in one process; honest nodes converge on the same committed
+effect and any divergence aborts. *(M5 makes this cross-process — see [`05-p2p-network.md`](05-p2p-network.md) and [ADR-0004](adr/0004-consensus-and-networking.md).)*
 
 ### I2 — Reproducible time-based balances
 Streaming emission (1 UBI/hour), demurrage, and stream flows are **pure functions of (state, timestamp)**.
