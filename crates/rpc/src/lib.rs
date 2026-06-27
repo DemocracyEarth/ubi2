@@ -2968,6 +2968,9 @@ fn decode_pending_tx(chain_id: u64, raw: &[u8]) -> Result<PendingTx, ErrorObject
         nonce,
         input,
         kind,
+        tx_type,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
     })
 }
 
@@ -3058,18 +3061,10 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         }
     }
 
-    chain.inner.lock().unwrap().mempool.push(PendingTx {
-        hash,
-        from,
-        tx_to: to,
-        value,
-        nonce,
-        input,
-        kind,
-        tx_type,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-    });
+    // `decode_pending_tx` already produced a fully-formed `PendingTx` (incl. tx_type + the EIP-1559
+    // fee caps); push it directly rather than rebuilding it from locals (the merge of #12 + #13 left a
+    // stray rebuild here that referenced fields out of scope).
+    chain.inner.lock().unwrap().mempool.push(pending);
     Ok(hash)
 }
 
