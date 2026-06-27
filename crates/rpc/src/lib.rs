@@ -228,6 +228,12 @@ pub const M4_METHODS: &[&str] = &[
 /// explorer's richer surface. Kept for docs / tests.
 pub const EXPL2_METHODS: &[&str] = &["ubi_getBlock", "ubi_getTransaction"];
 
+/// UI explorer directory reads (custom `ubi_*` surface): a recent-blocks list (with an optional
+/// non-empty filter, since most devnet blocks are empty ticks) and a global deployed-contracts
+/// directory. Both are compact, read-only summaries backed by the EXPL indexer / state — newest-first,
+/// bounded limit, no PII, no new clocks/floats. Kept for docs / tests.
+pub const UI_METHODS: &[&str] = &["ubi_getRecentBlocks", "ubi_getContracts"];
+
 /// LOCALHOST-ONLY AI-backend admin (`ubi_*`): the wallet's Settings panel reads/updates which LLM the
 /// node calls. Both methods are rejected for non-loopback callers (see [`oracle_admin`]). Kept for
 /// docs / tests.
@@ -274,6 +280,20 @@ pub struct StoredTx {
     /// The decoded failure reason for a FAILED tx (the op's `Err` rendered as a string), carried so the
     /// explorer can show "vouchee has no open registration" etc. `None` for a succeeded tx.
     pub revert_reason: Option<String>,
+    /// EIP-2718 transaction type byte as the SENDER signed it: `0` legacy, `1` EIP-2930, `2` EIP-1559.
+    /// Surfaced verbatim as the `type` field in `eth_getTransactionByHash`/`Receipt`. Critical for
+    /// MetaMask: it signs a type-2 (EIP-1559) tx on this chain (we advertise `baseFeePerGas` +
+    /// `eth_feeHistory`) and polls the receipt expecting `type: 0x2`. A hardcoded `0x0` made MetaMask
+    /// treat the (correctly hashed, correctly mined) tx as a non-match and show it "Dropped". The
+    /// sender's tx HASH is the canonical EIP-2718 hash and is type-independent, so it matches; only the
+    /// returned object's `type`/1559-fee shape was wrong (cycle-7 fix).
+    pub tx_type: u8,
+    /// EIP-1559 fee fields, present iff `tx_type == 2` (or `1`). `max_fee_per_gas` /
+    /// `max_priority_fee_per_gas` are echoed back exactly as the sender signed them so the wallet's
+    /// signed object reconciles with the returned object. On this chain the priority tip is 0 and the
+    /// effective price is the flat `GAS_PRICE_WEI`, but we still surface the sender's caps for fidelity.
+    pub max_fee_per_gas: Option<u128>,
+    pub max_priority_fee_per_gas: Option<u128>,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -380,6 +400,12 @@ struct PendingTx {
     /// Raw calldata, preserved for the explorer's `input` field.
     input: Vec<u8>,
     kind: PendingKind,
+    /// EIP-2718 type byte the sender signed (`0` legacy / `1` 2930 / `2` 1559). Threaded into the
+    /// `StoredTx` so the mined tx's `type` matches what the wallet signed (MetaMask sends type-2).
+    tx_type: u8,
+    /// EIP-1559 sender fee caps (present iff type 1/2), echoed verbatim in the tx/receipt JSON.
+    max_fee_per_gas: Option<u128>,
+    max_priority_fee_per_gas: Option<u128>,
 }
 
 /// The amount a queued tx debits from its sender's *spendable* balance when mined: its `value` (a
@@ -1438,6 +1464,11 @@ impl Chain {
                 gas_used,
                 success,
                 revert_reason,
+                // Echo the sender's signed type + 1559 caps so the mined tx/receipt match the wallet's
+                // expectation when it polls by hash (MetaMask sends type-2 — see StoredTx::tx_type).
+                tx_type: p.tx_type,
+                max_fee_per_gas: p.max_fee_per_gas,
+                max_priority_fee_per_gas: p.max_priority_fee_per_gas,
             };
             index_tx(&mut g.addr_index, &tx);
             // EXPL-1: a committed contract effect moves value from the escrow to payees / stream
@@ -1494,6 +1525,10 @@ impl Chain {
                 // The sweep only ever commits clean cases (it never errors) — always a success.
                 success: true,
                 revert_reason: None,
+                // A synthetic system tx has no signer / no fee envelope: report it as legacy (type 0).
+                tx_type: 0,
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
             };
             index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
@@ -1709,6 +1744,119 @@ impl Chain {
         }
         resolve_block_tag(self, raw)
     }
+
+    // ---- UI explorer directory reads (recent blocks / global contracts) ----
+
+    /// The most-recent `limit` blocks as compact summaries (newest-first). When `non_empty_only` is
+    /// set, blocks with zero txs are skipped *before* the limit is applied, so the explorer can list a
+    /// page of blocks that actually contain transactions (most devnet blocks are empty 2s ticks). Backs
+    /// `ubi_getRecentBlocks`. Pure read of the block history (no clock, no state mutation — I2): every
+    /// field (number/hash/timestamp/txCount/gasUsed) is a deterministic function of stored blocks.
+    pub fn recent_blocks(&self, limit: usize, non_empty_only: bool) -> Vec<BlockSummary> {
+        let g = self.inner.lock().unwrap();
+        g.blocks
+            .iter()
+            .rev()
+            .filter(|b| !non_empty_only || !b.txs.is_empty())
+            .take(limit)
+            .map(|b| BlockSummary {
+                number: b.number,
+                hash: b.hash,
+                parent_hash: b.parent_hash,
+                timestamp: b.timestamp,
+                tx_count: b.txs.len() as u64,
+                gas_used: block_gas_used(b),
+            })
+            .collect()
+    }
+
+    /// The most-recent `limit` deployed prompt contracts (newest-first by id), each a compact directory
+    /// summary (address/parties/status/escrow/deploy block + its timestamp/a title derived from the
+    /// text). Backs `ubi_getContracts` — the explorer's global contracts directory (`getContractsOf` is
+    /// per-address only). Pure read of `(contracts, block history, now)`: the balance shown is the live
+    /// escrow base units (an exact integer — no float, I2); `createdAt` resolves the deploy block's
+    /// timestamp from the block history (0 if the block is not yet retained). `now` is unused by escrow
+    /// (escrow is settled state, not a streaming balance) and accepted only for signature symmetry.
+    pub fn recent_contracts(&self, limit: usize) -> Vec<ContractSummary> {
+        let g = self.inner.lock().unwrap();
+        // `state.contracts()` is sorted by id ascending (deterministic — I1); reverse for newest-first.
+        let mut contracts = g.state.contracts();
+        contracts.reverse();
+        contracts
+            .into_iter()
+            .take(limit)
+            .map(|c| {
+                let created_at = g
+                    .blocks
+                    .get(c.deploy_block as usize)
+                    .filter(|b| b.number == c.deploy_block)
+                    .map(|b| b.timestamp)
+                    .unwrap_or(0);
+                ContractSummary {
+                    id: c.id,
+                    address: ubi2_runtime::contract_address(c.id),
+                    parties: c.parties.clone(),
+                    status: c.status,
+                    escrow: c.escrow,
+                    title: contract_title(&c.text),
+                    deploy_block: c.deploy_block,
+                    deploy_tx: c.deploy_tx,
+                    created_at,
+                }
+            })
+            .collect()
+    }
+}
+
+/// A compact block summary returned by `ubi_getRecentBlocks` (the explorer's recent-blocks directory).
+/// Every field is a deterministic read of a stored block (no clock, no float — I2).
+#[derive(Clone, Debug)]
+pub struct BlockSummary {
+    pub number: u64,
+    pub hash: B256,
+    pub parent_hash: B256,
+    pub timestamp: u64,
+    pub tx_count: u64,
+    /// Total gas (sum of the block's txs' per-kind `gas_used`) — the block `gasUsed` header value.
+    pub gas_used: u64,
+}
+
+/// A compact deployed-contract summary returned by `ubi_getContracts` (the explorer's global contracts
+/// directory). Mirrors the value-bearing fields of [`contract_view_json`] without the full text/vars —
+/// just enough for a directory row. All numeric fields are exact integer reads (no float — I2).
+#[derive(Clone, Debug)]
+pub struct ContractSummary {
+    pub id: u64,
+    /// The contract's derived escrow address (`contract_address(id)`).
+    pub address: Address,
+    pub parties: Vec<Address>,
+    pub status: ContractStatus,
+    /// Live escrow base units the contract controls.
+    pub escrow: u128,
+    /// A short title derived from the on-chain text (first line, truncated) — no PII beyond the text
+    /// the deployer already published on-chain.
+    pub title: String,
+    pub deploy_block: u64,
+    pub deploy_tx: [u8; 32],
+    /// Unix timestamp of the deploy block (0 if that block is no longer retained).
+    pub created_at: u64,
+}
+
+/// Derive a short, single-line title from a contract's full on-chain text: the first non-empty line,
+/// trimmed and truncated to 80 chars (a `…` suffix when truncated). Pure function of the text (which is
+/// already public on-chain) — no PII surfaced beyond what the deployer published. Empty text → `""`.
+fn contract_title(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.chars().count() > 80 {
+        let truncated: String = line.chars().take(80).collect();
+        format!("{truncated}…")
+    } else {
+        line.to_string()
+    }
 }
 
 /// A per-account summary returned by `ubi_getAccount` (EXPL-1): the explorer/social-hub at-a-glance
@@ -1912,7 +2060,7 @@ fn block_gas_used(block: &Block) -> u64 {
 }
 
 fn tx_to_json(tx: &StoredTx) -> Value {
-    json!({
+    let mut out = json!({
         "hash": hex_b256(&tx.hash),
         "nonce": hex_u64(tx.nonce),
         "blockHash": hex_b256(&tx.block_hash),
@@ -1922,11 +2070,26 @@ fn tx_to_json(tx: &StoredTx) -> Value {
         "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
         "value": hex_u256(tx.value),
         "gas": hex_u64(tx.gas_used),
+        // `gasPrice` is present on every type for legacy-client compatibility (it equals the effective
+        // price on this flat-fee chain). For a typed-fee tx we ALSO surface the 1559 caps below so the
+        // returned object reconciles with what the wallet signed.
         "gasPrice": hex_u64(GAS_PRICE_WEI),
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
-        "type": "0x0",
+        // Echo the SENDER's signed EIP-2718 type. MetaMask sends type-2 (EIP-1559) on this chain and
+        // rejects a receipt whose `type` mismatches as a different tx ("Dropped") — so this must be the
+        // real signed type, not a hardcoded `0x0` (cycle-7 fix).
+        "type": hex_u64(tx.tx_type as u64),
         "chainId": hex_u64(DEVNET_CHAIN_ID),
-    })
+    });
+    // EIP-1559 (type-2) / EIP-2930 typed-fee fields, echoed verbatim from the sender's signature so the
+    // wallet's signed tx object matches the node's returned object field-for-field. `accessList` is
+    // always empty on this devnet but must be present for a typed tx to look well-formed to wallets.
+    if let (Some(max_fee), pri) = (tx.max_fee_per_gas, tx.max_priority_fee_per_gas) {
+        out["maxFeePerGas"] = json!(hex_u128(max_fee));
+        out["maxPriorityFeePerGas"] = json!(hex_u128(pri.unwrap_or(0)));
+        out["accessList"] = json!([]);
+    }
+    out
 }
 
 /// Render a single log into the Ethereum receipt log shape. `logIndex`/`blockHash` etc. are filled in
@@ -1969,7 +2132,9 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         // gets a receipt (no perpetual pending) and the nonce advances (no nonce gap). Cycle-6.
         "status": if tx.success { "0x1" } else { "0x0" },
         "effectiveGasPrice": hex_u64(GAS_PRICE_WEI),
-        "type": "0x0",
+        // The receipt `type` must equal the tx's signed EIP-2718 type or MetaMask treats the receipt as
+        // belonging to a different tx and shows the (mined) tx as "Dropped" (cycle-7 fix).
+        "type": hex_u64(tx.tx_type as u64),
     });
     // For a FAILED tx, carry the decoded failure reason (a Geth-compatible `revertReason` field) so the
     // explorer / wallet can show "vouchee has no open registration" etc. Omitted on a succeeded tx.
@@ -2035,6 +2200,21 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     let hash = *env.tx_hash();
     let input = env.input().to_vec();
     let value_u256 = env.value();
+
+    // Capture the EIP-2718 type byte + EIP-1559 fee caps EXACTLY as the sender signed them, so the
+    // mined tx/receipt echo the same `type` (and `maxFeePerGas`/`maxPriorityFeePerGas`) the wallet
+    // expects when it polls by hash. MetaMask signs a TYPE-2 (EIP-1559) tx on this chain — we advertise
+    // `baseFeePerGas` on blocks + `eth_feeHistory` — and treats a receipt whose `type` doesn't match as
+    // a non-match, showing the (correctly mined) tx as "Dropped". The tx HASH is the canonical 2718
+    // hash and is type-independent (it already matched the sender), so the only fault was the JSON shape
+    // hardcoding `type: 0x0` and omitting the 1559 fields (cycle-7). `ty()` returns the type byte; the
+    // 1559 caps are only meaningful for typed-fee txs (1/2), so we record them only there.
+    let tx_type: u8 = env.tx_type().into();
+    let (max_fee_per_gas, max_priority_fee_per_gas) = if tx_type >= 1 {
+        (Some(env.max_fee_per_gas()), env.max_priority_fee_per_gas())
+    } else {
+        (None, None)
+    };
 
     // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed for StreamHub and (M3) the
     // HumanityHub**. A tx to any other address still must be a plain value transfer (empty calldata).
@@ -2178,6 +2358,9 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         nonce,
         input,
         kind,
+        tx_type,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
     });
     Ok(hash)
 }
@@ -2568,6 +2751,40 @@ fn contract_view_json(c: &PromptContract) -> Value {
         "status": contract_status_str(c.status),
         "deploy_block": c.deploy_block,
         "deploy_tx": hash_hex(&c.deploy_tx),
+    })
+}
+
+/// Render a [`BlockSummary`] into the `ubi_getRecentBlocks` JSON shape: a compact directory row
+/// (number/hash/parentHash/timestamp/txCount/gasUsed + a zero `miner` placeholder so the field set
+/// matches the explorer's other block views). Hex quantities; `txCount` a plain number for the UI.
+fn block_summary_json(s: &BlockSummary) -> Value {
+    json!({
+        "number": hex_u64(s.number),
+        "hash": hex_b256(&s.hash),
+        "parentHash": hex_b256(&s.parent_hash),
+        "timestamp": hex_u64(s.timestamp),
+        "txCount": s.tx_count,
+        "gasUsed": hex_u64(s.gas_used),
+        // Devnet blocks have no proposer; surfaced as the zero address (matches `decoded_block_json`).
+        "miner": "0x0000000000000000000000000000000000000000",
+    })
+}
+
+/// Render a [`ContractSummary`] into the `ubi_getContracts` JSON shape: a compact directory row
+/// (id/address/parties/status/escrow base units/title + deploy block/tx/createdAt). The full
+/// `text`/`vars`/`cases` live behind `ubi_getContract(id)`.
+fn contract_summary_json(s: &ContractSummary) -> Value {
+    json!({
+        "id": s.id,
+        "address": addr_hex(&s.address),
+        "parties": s.parties.iter().map(addr_hex).collect::<Vec<_>>(),
+        "status": contract_status_str(s.status),
+        "escrow": hex_u128(s.escrow),
+        "balance": hex_u128(s.escrow),
+        "title": s.title,
+        "deploy_block": s.deploy_block,
+        "deploy_tx": hash_hex(&s.deploy_tx),
+        "createdAt": s.created_at,
     })
 }
 
@@ -3348,6 +3565,28 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
+    // ubi_getContracts(limit?) → the most-recent deployed prompt contracts (newest-first by id), each a
+    // compact directory row { id, address, parties, status, escrow, balance, title, deploy_block,
+    // deploy_tx, createdAt }. The explorer's GLOBAL contracts directory (`getContractsOf` is per-address
+    // only). `limit` (param 1, hex or number) defaults to 50, capped at 100.
+    m.register_method("ubi_getContracts", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [limit?]"))?;
+        let limit = match seq.first() {
+            Some(v) if !v.is_null() => parse_stream_id_param(Some(v))?,
+            _ => 50,
+        }
+        .clamp(1, 100) as usize;
+        let rows: Vec<Value> = ctx
+            .recent_contracts(limit)
+            .iter()
+            .map(contract_summary_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(rows))
+    })
+    .unwrap();
+
     // ---- EXPL-1 address indexer reads (ubi_*) ----
 
     // ubi_getAddressActivity(address, limit?) → the most-recent txs touching the address (newest
@@ -3450,6 +3689,30 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     // VerdictSubmitted/StatusChanged/ContractDeployed/EffectCommitted/EffectAborted/Transfer…), and
     // the resulting `result` (an invoke → the committed effect or Aborted; a submitVerdict → the case
     // outcome + subject status). Null if the hash is unknown.
+    // ubi_getRecentBlocks(limit?, nonEmptyOnly?) → the most-recent blocks as compact summaries
+    // (newest-first), each { number, hash, parentHash, timestamp, txCount, gasUsed, miner }. `limit`
+    // (param 1, hex or number) defaults to 20, capped at 100. `nonEmptyOnly` (param 2, bool) skips
+    // empty blocks BEFORE the limit, so the explorer can page only blocks that contain txs (most devnet
+    // ticks are empty). Backs the explorer's recent-blocks directory.
+    m.register_method("ubi_getRecentBlocks", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [limit?, nonEmptyOnly?]"))?;
+        let limit = match seq.first() {
+            Some(v) if !v.is_null() => parse_stream_id_param(Some(v))?,
+            _ => 20,
+        }
+        .clamp(1, 100) as usize;
+        let non_empty_only = seq.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+        let rows: Vec<Value> = ctx
+            .recent_blocks(limit, non_empty_only)
+            .iter()
+            .map(block_summary_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(rows))
+    })
+    .unwrap();
+
     m.register_method("ubi_getTransaction", |params, ctx, _| {
         let seq: Vec<Value> = params
             .parse()

@@ -17,7 +17,7 @@ import { Streams } from "./streams";
 import { Humanity } from "./humanity";
 import { Explorer } from "./explorer";
 import { Contracts } from "./contracts";
-import { Settings } from "./settings";
+import { AiSection } from "./ai-section";
 
 type Conn = "connecting" | "ok" | "bad";
 
@@ -346,7 +346,6 @@ export default function Home() {
   const [chainId, setChainId] = useState<number | null>(null);
   const [display, setDisplay] = useState<string>("—");
   const [error, setError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
 
   // Explorer deep-link state: when a contract detail links into the explorer
@@ -440,11 +439,9 @@ export default function Home() {
         onSelect={setSection}
         conn={conn}
         chainId={chainId}
-        onSettings={() => setSettingsOpen((v) => !v)}
-        settingsOpen={settingsOpen}
+        onSettings={() => setSection("ai")}
+        settingsOpen={section === "ai"}
       />
-
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
 
       <main className="app-main">
         {/* ------------------------------------------------------------------ */}
@@ -559,7 +556,7 @@ export default function Home() {
         {section === "identity" && (
           <Humanity
             account={DEV_ACCOUNT}
-            onSettings={() => setSettingsOpen(true)}
+            onSettings={() => setSection("ai")}
           />
         )}
 
@@ -571,8 +568,15 @@ export default function Home() {
             account={DEV_ACCOUNT}
             onOpenExplorerBlock={openExplorerBlock}
             onOpenExplorerTx={openExplorerTx}
-            onSettings={() => setSettingsOpen(true)}
+            onSettings={() => setSection("ai")}
           />
+        )}
+
+        {/* ------------------------------------------------------------------ */}
+        {/* AI / SETTINGS                                                        */}
+        {/* ------------------------------------------------------------------ */}
+        {section === "ai" && (
+          <AiSection />
         )}
       </main>
     </>
