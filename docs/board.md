@@ -4,7 +4,7 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M5 — Economics & Governance · **M1–M4 shipped (cycles 1–4) ✅**
+**Current milestone:** M5 — Network & Consensus (real P2P) · **Stage A shipped ✅ · Stage B next** · **M1–M4 + cycles 5–7 + PoH-NFT shipped ✅** · (Economics & Governance → M6)
 
 | Field | Meaning |
 |---|---|
@@ -75,6 +75,15 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-17 · interface/security** — Harden NFT-card SVG rendering: the PoH + stream cards use
   `dangerouslySetInnerHTML` on the RPC-returned SVG (on-chain card is clean, but a hostile RPC could inject
   `<script>` = XSS). Render via `<img src=data:image/svg+xml;base64,…>` or DOMPurify. *Source:* `docs/reports/security-poh.md`.
+- **FU-20 · protocol/security (M5 Stage D)** — Persistence integrity: `persist::from_snapshot` adopts
+  `chain.json` verbatim; on load, recompute `state_root` from the loaded state + verify block-hash/parent
+  linkage + the genesis anchor (defensible trusted-disk stance for Stage A). *Source:* `docs/reports/security-m5a.md`.
+- **FU-21 · protocol/security (M5 Stage D)** — Eclipse hardening: inbound-connection cap + peer eviction/
+  diversity once discovery (Kademlia) lands; Stage A static-bootstrap is not exposed. *Source:* `docs/reports/security-m5a.md`.
+- **FU-22 · reliability/test-infra** — (a) migrate the remaining hard-coded-port RPC integration tests
+  (m2_acceptance.rs etc.) to `TcpListener::bind(127.0.0.1:0)` to kill the parallel "Address already in use"
+  flake (m5a tests already do this); (b) genesis block `state_root` header is `B256::ZERO` by design, so
+  `ubi_stateRoot` at height 0 is uninformative — add a doc note / optional `ubi_inMemoryStateRoot`. *Source:* `docs/reports/{qa,reliability}-m5a.md`.
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -99,6 +108,14 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **M5 Stage A · Real P2P networking + block sync · SHIPPED.** All gates green (504 tests). The single-node
+  devnet is now a multi-node network: independent processes gossip txs + blocks over **libp2p** (new
+  `crates/network`), followers **re-execute and match a deterministic state root**, and a fresh node **syncs
+  from genesis** — one designated proposer, N followers (rotating proposer = Stage B). EC-1/2/3/4/7 + EC-10
+  pass via a stable multi-process test. **I1 proven across independent processes**; `crates/runtime` stays
+  deterministic + dependency-free (build-enforced). Landed FU-3 (persistence), FU-13 (state canonicalization).
+  Security found + fixed a HIGH sync-loop DoS + 2 Mediums (inbound-sync rate-limit, mempool caps — closes the
+  FU-1 hardening) before merge. Reports `docs/reports/*-m5a*.md`. Follow-ups: FU-20/21 (Stage D), FU-22.
 - **Proof-of-Humanity NFT + branding · SHIPPED.** All gates green (415 tests). A **soulbound ERC-721 "Proof of
   Humanity"** on HumanityHub — every Verified human owns one (`tokenId = uint160(address)`; mint/burn on
   Verified↔not-Verified; transfers revert) with a **fully on-chain card** (the fingerprint mark in the yellow→pink
