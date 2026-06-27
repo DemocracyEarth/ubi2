@@ -274,6 +274,20 @@ pub struct StoredTx {
     /// The decoded failure reason for a FAILED tx (the op's `Err` rendered as a string), carried so the
     /// explorer can show "vouchee has no open registration" etc. `None` for a succeeded tx.
     pub revert_reason: Option<String>,
+    /// EIP-2718 transaction type byte as the SENDER signed it: `0` legacy, `1` EIP-2930, `2` EIP-1559.
+    /// Surfaced verbatim as the `type` field in `eth_getTransactionByHash`/`Receipt`. Critical for
+    /// MetaMask: it signs a type-2 (EIP-1559) tx on this chain (we advertise `baseFeePerGas` +
+    /// `eth_feeHistory`) and polls the receipt expecting `type: 0x2`. A hardcoded `0x0` made MetaMask
+    /// treat the (correctly hashed, correctly mined) tx as a non-match and show it "Dropped". The
+    /// sender's tx HASH is the canonical EIP-2718 hash and is type-independent, so it matches; only the
+    /// returned object's `type`/1559-fee shape was wrong (cycle-7 fix).
+    pub tx_type: u8,
+    /// EIP-1559 fee fields, present iff `tx_type == 2` (or `1`). `max_fee_per_gas` /
+    /// `max_priority_fee_per_gas` are echoed back exactly as the sender signed them so the wallet's
+    /// signed object reconciles with the returned object. On this chain the priority tip is 0 and the
+    /// effective price is the flat `GAS_PRICE_WEI`, but we still surface the sender's caps for fidelity.
+    pub max_fee_per_gas: Option<u128>,
+    pub max_priority_fee_per_gas: Option<u128>,
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
@@ -380,6 +394,12 @@ struct PendingTx {
     /// Raw calldata, preserved for the explorer's `input` field.
     input: Vec<u8>,
     kind: PendingKind,
+    /// EIP-2718 type byte the sender signed (`0` legacy / `1` 2930 / `2` 1559). Threaded into the
+    /// `StoredTx` so the mined tx's `type` matches what the wallet signed (MetaMask sends type-2).
+    tx_type: u8,
+    /// EIP-1559 sender fee caps (present iff type 1/2), echoed verbatim in the tx/receipt JSON.
+    max_fee_per_gas: Option<u128>,
+    max_priority_fee_per_gas: Option<u128>,
 }
 
 /// The amount a queued tx debits from its sender's *spendable* balance when mined: its `value` (a
@@ -1438,6 +1458,11 @@ impl Chain {
                 gas_used,
                 success,
                 revert_reason,
+                // Echo the sender's signed type + 1559 caps so the mined tx/receipt match the wallet's
+                // expectation when it polls by hash (MetaMask sends type-2 — see StoredTx::tx_type).
+                tx_type: p.tx_type,
+                max_fee_per_gas: p.max_fee_per_gas,
+                max_priority_fee_per_gas: p.max_priority_fee_per_gas,
             };
             index_tx(&mut g.addr_index, &tx);
             // EXPL-1: a committed contract effect moves value from the escrow to payees / stream
@@ -1494,6 +1519,10 @@ impl Chain {
                 // The sweep only ever commits clean cases (it never errors) — always a success.
                 success: true,
                 revert_reason: None,
+                // A synthetic system tx has no signer / no fee envelope: report it as legacy (type 0).
+                tx_type: 0,
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
             };
             index_tx(&mut g.addr_index, &tx);
             g.txs.insert(sys_hash, tx.clone());
@@ -1912,7 +1941,7 @@ fn block_gas_used(block: &Block) -> u64 {
 }
 
 fn tx_to_json(tx: &StoredTx) -> Value {
-    json!({
+    let mut out = json!({
         "hash": hex_b256(&tx.hash),
         "nonce": hex_u64(tx.nonce),
         "blockHash": hex_b256(&tx.block_hash),
@@ -1922,11 +1951,26 @@ fn tx_to_json(tx: &StoredTx) -> Value {
         "to": tx.to.map(|a| hex_addr(&a)).map(Value::String).unwrap_or(Value::Null),
         "value": hex_u256(tx.value),
         "gas": hex_u64(tx.gas_used),
+        // `gasPrice` is present on every type for legacy-client compatibility (it equals the effective
+        // price on this flat-fee chain). For a typed-fee tx we ALSO surface the 1559 caps below so the
+        // returned object reconciles with what the wallet signed.
         "gasPrice": hex_u64(GAS_PRICE_WEI),
         "input": if tx.input.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(&tx.input)) },
-        "type": "0x0",
+        // Echo the SENDER's signed EIP-2718 type. MetaMask sends type-2 (EIP-1559) on this chain and
+        // rejects a receipt whose `type` mismatches as a different tx ("Dropped") — so this must be the
+        // real signed type, not a hardcoded `0x0` (cycle-7 fix).
+        "type": hex_u64(tx.tx_type as u64),
         "chainId": hex_u64(DEVNET_CHAIN_ID),
-    })
+    });
+    // EIP-1559 (type-2) / EIP-2930 typed-fee fields, echoed verbatim from the sender's signature so the
+    // wallet's signed tx object matches the node's returned object field-for-field. `accessList` is
+    // always empty on this devnet but must be present for a typed tx to look well-formed to wallets.
+    if let (Some(max_fee), pri) = (tx.max_fee_per_gas, tx.max_priority_fee_per_gas) {
+        out["maxFeePerGas"] = json!(hex_u128(max_fee));
+        out["maxPriorityFeePerGas"] = json!(hex_u128(pri.unwrap_or(0)));
+        out["accessList"] = json!([]);
+    }
+    out
 }
 
 /// Render a single log into the Ethereum receipt log shape. `logIndex`/`blockHash` etc. are filled in
@@ -1969,7 +2013,9 @@ fn receipt_to_json(tx: &StoredTx) -> Value {
         // gets a receipt (no perpetual pending) and the nonce advances (no nonce gap). Cycle-6.
         "status": if tx.success { "0x1" } else { "0x0" },
         "effectiveGasPrice": hex_u64(GAS_PRICE_WEI),
-        "type": "0x0",
+        // The receipt `type` must equal the tx's signed EIP-2718 type or MetaMask treats the receipt as
+        // belonging to a different tx and shows the (mined) tx as "Dropped" (cycle-7 fix).
+        "type": hex_u64(tx.tx_type as u64),
     });
     // For a FAILED tx, carry the decoded failure reason (a Geth-compatible `revertReason` field) so the
     // explorer / wallet can show "vouchee has no open registration" etc. Omitted on a succeeded tx.
@@ -2035,6 +2081,21 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     let hash = *env.tx_hash();
     let input = env.input().to_vec();
     let value_u256 = env.value();
+
+    // Capture the EIP-2718 type byte + EIP-1559 fee caps EXACTLY as the sender signed them, so the
+    // mined tx/receipt echo the same `type` (and `maxFeePerGas`/`maxPriorityFeePerGas`) the wallet
+    // expects when it polls by hash. MetaMask signs a TYPE-2 (EIP-1559) tx on this chain — we advertise
+    // `baseFeePerGas` on blocks + `eth_feeHistory` — and treats a receipt whose `type` doesn't match as
+    // a non-match, showing the (correctly mined) tx as "Dropped". The tx HASH is the canonical 2718
+    // hash and is type-independent (it already matched the sender), so the only fault was the JSON shape
+    // hardcoding `type: 0x0` and omitting the 1559 fields (cycle-7). `ty()` returns the type byte; the
+    // 1559 caps are only meaningful for typed-fee txs (1/2), so we record them only there.
+    let tx_type: u8 = env.tx_type().into();
+    let (max_fee_per_gas, max_priority_fee_per_gas) = if tx_type >= 1 {
+        (Some(env.max_fee_per_gas()), env.max_priority_fee_per_gas())
+    } else {
+        (None, None)
+    };
 
     // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed for StreamHub and (M3) the
     // HumanityHub**. A tx to any other address still must be a plain value transfer (empty calldata).
@@ -2178,6 +2239,9 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         nonce,
         input,
         kind,
+        tx_type,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
     });
     Ok(hash)
 }
