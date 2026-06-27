@@ -43,7 +43,11 @@ interface ContractTemplate {
   id: string;
   icon: string;
   title: string;
+  /** One-line synthesis shown on the chip. */
+  synthesis: string;
   explainer: string;
+  /** Category tags shown on the chip. */
+  tags: string[];
   /** The plain-language text that goes on-chain. */
   text: string;
   /** How many parties (min). */
@@ -59,6 +63,8 @@ const TEMPLATES: ContractTemplate[] = [
     id: "escrow-release",
     icon: "▣",
     title: "Escrow Release",
+    synthesis: "Release funds when both parties confirm delivery; refund on dispute.",
+    tags: ["escrow", "2-party"],
     explainer:
       "Holds funds in escrow until both the buyer and seller confirm delivery. The AI interprets the confirmation trigger and releases a Transfer effect to the payee — or issues a Refund if the parties disagree.",
     text:
@@ -71,7 +77,9 @@ const TEMPLATES: ContractTemplate[] = [
   {
     id: "recurring-payroll",
     icon: "⧗",
-    title: "Recurring Stream / Payroll",
+    title: "Recurring Payroll",
+    synthesis: "Stream UBI to a worker at 1 UBI/hour; start/stop on trigger.",
+    tags: ["time", "stream", "payroll"],
     explainer:
       "Opens a continuous UBI stream from the escrow to a worker at a set rate for a set duration. The AI interprets an OpenStream effect when invoked with a 'start payroll' trigger, and a StopStream when invoked with a 'stop payroll' trigger.",
     text:
@@ -86,6 +94,8 @@ const TEMPLATES: ContractTemplate[] = [
     id: "milestone-payout",
     icon: "◈",
     title: "Milestone Payout",
+    synthesis: "Release escrow in thirds as each milestone is confirmed.",
+    tags: ["escrow", "multi-step"],
     explainer:
       "Releases escrow in proportional tranches as project milestones are individually confirmed. Each invocation with a milestone trigger commits a Transfer effect for that milestone's share. Unspent escrow is refunded at the end.",
     text:
@@ -100,6 +110,8 @@ const TEMPLATES: ContractTemplate[] = [
     id: "mutual-aid-pool",
     icon: "⬡",
     title: "Mutual-Aid Pool",
+    synthesis: "Shared escrow pool; majority vote releases funds to member in need.",
+    tags: ["multi-party", "escrow", "quorum"],
     explainer:
       "Members fund a shared escrow pool. Any member can invoke the contract with a 'request aid' trigger; the group votes by quorum and the AI commits a Transfer to the member in need or an Abort if consensus is not reached.",
     text:
@@ -115,6 +127,8 @@ const TEMPLATES: ContractTemplate[] = [
     id: "bounty",
     icon: "◉",
     title: "Bounty",
+    synthesis: "Pay claimant from escrow once AI verifies completed work.",
+    tags: ["escrow", "open", "vesting"],
     explainer:
       "Pays a claimant from escrow when the work is verified. The poster funds the escrow; any claimant can invoke with a 'claim bounty' trigger describing their work. The AI verifies the claim against the contract text and commits a Transfer or Abort.",
     text:
@@ -130,6 +144,8 @@ const TEMPLATES: ContractTemplate[] = [
     id: "split-payment",
     icon: "⊞",
     title: "Split Payment",
+    synthesis: "Divide escrow equally among all parties on 'release splits' trigger.",
+    tags: ["multi-party", "escrow"],
     explainer:
       "Divides the escrow among several parties by pre-set shares when a 'release splits' trigger is received. The AI reads the share proportions from the contract text and commits multiple Transfer ops in one effect.",
     text:
@@ -1438,7 +1454,6 @@ function AuthoringFormWithTemplates({
   onDeployed: (id: number) => void;
 }) {
   const [selectedTemplate, setSelectedTemplate] = useState<ContractTemplate | null>(null);
-  const [showLib, setShowLib] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [connected, setConnected] = useState<string | null>(null);
 
@@ -1455,7 +1470,6 @@ function AuthoringFormWithTemplates({
     setContractText(t.text);
     setPartiesInput(t.partyRoles.join(", "));
     setEscrowAmount(t.suggestedEscrow);
-    setShowLib(false);
     setStep(1);
   }, []);
 
@@ -1533,27 +1547,6 @@ function AuthoringFormWithTemplates({
 
   return (
     <>
-      {/* Template library */}
-      {showLib && (
-        <section className="card" style={{ border: "1px solid rgba(139,123,255,.3)" }}>
-          <div className="row" style={{ marginBottom: "0.85rem" }}>
-            <h2 style={{ margin: 0 }}>Template library</h2>
-            <button className="ghost" onClick={() => setShowLib(false)}>Close</button>
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-              gap: "0.65rem",
-            }}
-          >
-            {TEMPLATES.map((t) => (
-              <TemplateCard key={t.id} template={t} onSelect={loadTemplate} />
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* Authoring form */}
       <section className="card">
         {/* Step indicator */}
@@ -1584,13 +1577,6 @@ function AuthoringFormWithTemplates({
           <>
             <div className="row" style={{ marginBottom: "0.85rem" }}>
               <h2 style={{ margin: 0 }}>Write your contract</h2>
-              <button
-                className="ghost"
-                style={{ fontSize: "0.75rem" }}
-                onClick={() => setShowLib(!showLib)}
-              >
-                {showLib ? "Hide templates" : "Browse templates"}
-              </button>
             </div>
 
             {selectedTemplate && (
@@ -1647,9 +1633,105 @@ function AuthoringFormWithTemplates({
               />
             </div>
 
+            {/* Template chips — suggestion row below the textarea */}
+            <div style={{ marginBottom: "0.85rem" }}>
+              <div
+                className="muted small"
+                style={{ marginBottom: "0.5rem", fontSize: "0.72rem" }}
+              >
+                Suggestions — click a chip to fill the contract text:
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "0.45rem",
+                }}
+              >
+                {TEMPLATES.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => loadTemplate(t)}
+                    style={{
+                      background:
+                        selectedTemplate?.id === t.id
+                          ? "rgba(139,123,255,.18)"
+                          : "rgba(139,123,255,.07)",
+                      border: `1px solid ${selectedTemplate?.id === t.id ? "rgba(139,123,255,.5)" : "rgba(139,123,255,.22)"}`,
+                      borderRadius: "20px",
+                      padding: "0.35rem 0.75rem",
+                      cursor: "pointer",
+                      transition: "background .15s, border-color .15s",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      gap: "0.25rem",
+                      textAlign: "left",
+                      maxWidth: "100%",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (selectedTemplate?.id !== t.id) {
+                        e.currentTarget.style.background = "rgba(139,123,255,.13)";
+                        e.currentTarget.style.borderColor = "rgba(139,123,255,.38)";
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (selectedTemplate?.id !== t.id) {
+                        e.currentTarget.style.background = "rgba(139,123,255,.07)";
+                        e.currentTarget.style.borderColor = "rgba(139,123,255,.22)";
+                      }
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "0.78rem",
+                        color: "var(--ink)",
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.35rem",
+                      }}
+                    >
+                      <span style={{ color: "var(--accent-2)" }}>{t.icon}</span>
+                      {t.title}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: "var(--muted)",
+                        lineHeight: 1.4,
+                        maxWidth: "220px",
+                      }}
+                    >
+                      {t.synthesis}
+                    </span>
+                    <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+                      {t.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          style={{
+                            fontSize: "0.6rem",
+                            fontWeight: 600,
+                            letterSpacing: "0.04em",
+                            textTransform: "uppercase",
+                            color: "var(--accent-2)",
+                            background: "rgba(139,123,255,.12)",
+                            border: "1px solid rgba(139,123,255,.22)",
+                            borderRadius: "4px",
+                            padding: "1px 5px",
+                          }}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="muted small" style={{ marginBottom: "0.85rem", lineHeight: 1.55 }}>
-              The full text is stored on-chain for transparency and reproducibility. Choose a
-              template above to get started quickly, or write your own.
+              The full text is stored on-chain for transparency and reproducibility.
             </div>
 
             <button
@@ -1674,30 +1756,92 @@ function AuthoringFormWithTemplates({
           <>
             <h2>Configure parties and escrow</h2>
 
-            <div className="field">
-              <label>
-                Parties (comma-separated 0x addresses)
-                <span style={{ color: "var(--faint)", textTransform: "none", letterSpacing: 0, marginLeft: "0.4em" }}>
-                  optional
-                </span>
-              </label>
-              <input
-                placeholder={
-                  selectedTemplate
-                    ? selectedTemplate.partyRoles.join(", ")
-                    : `defaults to ${short(account)}`
-                }
-                value={partiesInput}
-                onChange={(e) => setPartiesInput(e.target.value)}
-                spellCheck={false}
-              />
+            {/* Parties rule callout */}
+            <div
+              style={{
+                background: "rgba(139,123,255,.07)",
+                border: "1px solid rgba(139,123,255,.22)",
+                borderRadius: "10px",
+                padding: "0.7rem 0.9rem",
+                marginBottom: "0.9rem",
+                fontSize: "0.8rem",
+                color: "var(--muted)",
+                lineHeight: 1.55,
+              }}
+            >
+              <span style={{ fontWeight: 700, color: "var(--ink)" }}>
+                At least one party is required.
+              </span>{" "}
+              Add the 0x addresses of all parties bound by this contract, one per field. If you
+              leave all fields empty, your own address is used as the sole party. Extra empty
+              rows are ignored. A non-empty row with an invalid address is an error.
             </div>
 
-            {selectedTemplate && (
-              <div className="muted small" style={{ marginBottom: "0.85rem" }}>
-                Expected roles: {selectedTemplate.partyRoles.join(" · ")}
-              </div>
-            )}
+            {/* Party address rows — one per expected role */}
+            {(selectedTemplate ? selectedTemplate.partyRoles : ["Party 1"]).map((role, idx) => {
+              const parts = partiesInput.split(",").map((s) => s.trim());
+              const val = parts[idx] ?? "";
+              const isInvalid = val.length > 0 && !/^0x[0-9a-fA-F]{40}$/.test(val);
+              return (
+                <div className="field" key={idx}>
+                  <label style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.8rem", fontWeight: 600 }}>
+                    {selectedTemplate ? role.replace(" (0x…)", "") : `Party ${idx + 1}`}
+                    {idx === 0 && (
+                      <span style={{ color: "var(--danger)", marginLeft: "0.3rem", fontWeight: 700 }}>*</span>
+                    )}
+                    {idx > 0 && (
+                      <span style={{ color: "var(--faint)", fontWeight: 400, marginLeft: "0.3rem" }}>optional extra</span>
+                    )}
+                  </label>
+                  <input
+                    placeholder={
+                      idx === 0
+                        ? "0x0000… (address of the first party — required)"
+                        : "0x0000… (address of an additional party — leave empty to skip)"
+                    }
+                    value={val}
+                    onChange={(e) => {
+                      const newParts = [...parts];
+                      newParts[idx] = e.target.value.trim();
+                      // Trim trailing empty entries except keep at least one slot
+                      while (newParts.length > 1 && newParts[newParts.length - 1] === "") {
+                        newParts.pop();
+                      }
+                      setPartiesInput(newParts.join(", "));
+                    }}
+                    spellCheck={false}
+                    style={isInvalid ? { borderColor: "var(--danger)" } : {}}
+                  />
+                  {isInvalid && (
+                    <div style={{ fontSize: "0.72rem", color: "var(--danger)", marginTop: "0.25rem" }}>
+                      Must be a valid 0x address (42 chars, e.g. 0x followed by 40 hex digits).
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Add extra party row (up to 8) */}
+            {(() => {
+              const numRoles = selectedTemplate ? selectedTemplate.partyRoles.length : 1;
+              const parts = partiesInput.split(",").map((s) => s.trim());
+              if (parts.length < numRoles) return null; // already rendered by loop above
+              if (parts.length >= 8) return null; // cap at 8
+              return (
+                <div style={{ marginBottom: "0.75rem" }}>
+                  <button
+                    className="ghost"
+                    style={{ fontSize: "0.75rem" }}
+                    onClick={() => {
+                      const newParts = [...parts, ""];
+                      setPartiesInput(newParts.join(", "));
+                    }}
+                  >
+                    + Add another party
+                  </button>
+                </div>
+              );
+            })()}
 
             <div className="field">
               <label>
@@ -1707,7 +1851,7 @@ function AuthoringFormWithTemplates({
                 </span>
               </label>
               <input
-                placeholder="0"
+                placeholder="0 — fund the escrow after deployment if preferred"
                 value={escrowAmount}
                 onChange={(e) => setEscrowAmount(e.target.value)}
               />
@@ -1725,9 +1869,13 @@ function AuthoringFormWithTemplates({
                 className="primary violet"
                 onClick={() => {
                   const raw = partiesInput.split(",").map((s) => s.trim()).filter(Boolean);
-                  const valid = parseParties();
-                  if (raw.length > 0 && valid.length === 0) {
-                    setDeployNote({ kind: "err", text: "Parties must be valid 0x addresses or leave field empty." });
+                  // Check each non-empty entry is a valid address
+                  const invalid = raw.filter((s) => !/^0x[0-9a-fA-F]{40}$/.test(s));
+                  if (invalid.length > 0) {
+                    setDeployNote({
+                      kind: "err",
+                      text: `${invalid.length > 1 ? `${invalid.length} party addresses are` : "One party address is"} invalid — each non-empty field must be a 0x address (42 chars). Clear the field or fix the address.`,
+                    });
                     return;
                   }
                   setDeployNote(null);

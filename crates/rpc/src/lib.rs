@@ -228,6 +228,12 @@ pub const M4_METHODS: &[&str] = &[
 /// explorer's richer surface. Kept for docs / tests.
 pub const EXPL2_METHODS: &[&str] = &["ubi_getBlock", "ubi_getTransaction"];
 
+/// UI explorer directory reads (custom `ubi_*` surface): a recent-blocks list (with an optional
+/// non-empty filter, since most devnet blocks are empty ticks) and a global deployed-contracts
+/// directory. Both are compact, read-only summaries backed by the EXPL indexer / state — newest-first,
+/// bounded limit, no PII, no new clocks/floats. Kept for docs / tests.
+pub const UI_METHODS: &[&str] = &["ubi_getRecentBlocks", "ubi_getContracts"];
+
 /// LOCALHOST-ONLY AI-backend admin (`ubi_*`): the wallet's Settings panel reads/updates which LLM the
 /// node calls. Both methods are rejected for non-loopback callers (see [`oracle_admin`]). Kept for
 /// docs / tests.
@@ -1738,6 +1744,119 @@ impl Chain {
         }
         resolve_block_tag(self, raw)
     }
+
+    // ---- UI explorer directory reads (recent blocks / global contracts) ----
+
+    /// The most-recent `limit` blocks as compact summaries (newest-first). When `non_empty_only` is
+    /// set, blocks with zero txs are skipped *before* the limit is applied, so the explorer can list a
+    /// page of blocks that actually contain transactions (most devnet blocks are empty 2s ticks). Backs
+    /// `ubi_getRecentBlocks`. Pure read of the block history (no clock, no state mutation — I2): every
+    /// field (number/hash/timestamp/txCount/gasUsed) is a deterministic function of stored blocks.
+    pub fn recent_blocks(&self, limit: usize, non_empty_only: bool) -> Vec<BlockSummary> {
+        let g = self.inner.lock().unwrap();
+        g.blocks
+            .iter()
+            .rev()
+            .filter(|b| !non_empty_only || !b.txs.is_empty())
+            .take(limit)
+            .map(|b| BlockSummary {
+                number: b.number,
+                hash: b.hash,
+                parent_hash: b.parent_hash,
+                timestamp: b.timestamp,
+                tx_count: b.txs.len() as u64,
+                gas_used: block_gas_used(b),
+            })
+            .collect()
+    }
+
+    /// The most-recent `limit` deployed prompt contracts (newest-first by id), each a compact directory
+    /// summary (address/parties/status/escrow/deploy block + its timestamp/a title derived from the
+    /// text). Backs `ubi_getContracts` — the explorer's global contracts directory (`getContractsOf` is
+    /// per-address only). Pure read of `(contracts, block history, now)`: the balance shown is the live
+    /// escrow base units (an exact integer — no float, I2); `createdAt` resolves the deploy block's
+    /// timestamp from the block history (0 if the block is not yet retained). `now` is unused by escrow
+    /// (escrow is settled state, not a streaming balance) and accepted only for signature symmetry.
+    pub fn recent_contracts(&self, limit: usize) -> Vec<ContractSummary> {
+        let g = self.inner.lock().unwrap();
+        // `state.contracts()` is sorted by id ascending (deterministic — I1); reverse for newest-first.
+        let mut contracts = g.state.contracts();
+        contracts.reverse();
+        contracts
+            .into_iter()
+            .take(limit)
+            .map(|c| {
+                let created_at = g
+                    .blocks
+                    .get(c.deploy_block as usize)
+                    .filter(|b| b.number == c.deploy_block)
+                    .map(|b| b.timestamp)
+                    .unwrap_or(0);
+                ContractSummary {
+                    id: c.id,
+                    address: ubi2_runtime::contract_address(c.id),
+                    parties: c.parties.clone(),
+                    status: c.status,
+                    escrow: c.escrow,
+                    title: contract_title(&c.text),
+                    deploy_block: c.deploy_block,
+                    deploy_tx: c.deploy_tx,
+                    created_at,
+                }
+            })
+            .collect()
+    }
+}
+
+/// A compact block summary returned by `ubi_getRecentBlocks` (the explorer's recent-blocks directory).
+/// Every field is a deterministic read of a stored block (no clock, no float — I2).
+#[derive(Clone, Debug)]
+pub struct BlockSummary {
+    pub number: u64,
+    pub hash: B256,
+    pub parent_hash: B256,
+    pub timestamp: u64,
+    pub tx_count: u64,
+    /// Total gas (sum of the block's txs' per-kind `gas_used`) — the block `gasUsed` header value.
+    pub gas_used: u64,
+}
+
+/// A compact deployed-contract summary returned by `ubi_getContracts` (the explorer's global contracts
+/// directory). Mirrors the value-bearing fields of [`contract_view_json`] without the full text/vars —
+/// just enough for a directory row. All numeric fields are exact integer reads (no float — I2).
+#[derive(Clone, Debug)]
+pub struct ContractSummary {
+    pub id: u64,
+    /// The contract's derived escrow address (`contract_address(id)`).
+    pub address: Address,
+    pub parties: Vec<Address>,
+    pub status: ContractStatus,
+    /// Live escrow base units the contract controls.
+    pub escrow: u128,
+    /// A short title derived from the on-chain text (first line, truncated) — no PII beyond the text
+    /// the deployer already published on-chain.
+    pub title: String,
+    pub deploy_block: u64,
+    pub deploy_tx: [u8; 32],
+    /// Unix timestamp of the deploy block (0 if that block is no longer retained).
+    pub created_at: u64,
+}
+
+/// Derive a short, single-line title from a contract's full on-chain text: the first non-empty line,
+/// trimmed and truncated to 80 chars (a `…` suffix when truncated). Pure function of the text (which is
+/// already public on-chain) — no PII surfaced beyond what the deployer published. Empty text → `""`.
+fn contract_title(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.chars().count() > 80 {
+        let truncated: String = line.chars().take(80).collect();
+        format!("{truncated}…")
+    } else {
+        line.to_string()
+    }
 }
 
 /// A per-account summary returned by `ubi_getAccount` (EXPL-1): the explorer/social-hub at-a-glance
@@ -2635,6 +2754,40 @@ fn contract_view_json(c: &PromptContract) -> Value {
     })
 }
 
+/// Render a [`BlockSummary`] into the `ubi_getRecentBlocks` JSON shape: a compact directory row
+/// (number/hash/parentHash/timestamp/txCount/gasUsed + a zero `miner` placeholder so the field set
+/// matches the explorer's other block views). Hex quantities; `txCount` a plain number for the UI.
+fn block_summary_json(s: &BlockSummary) -> Value {
+    json!({
+        "number": hex_u64(s.number),
+        "hash": hex_b256(&s.hash),
+        "parentHash": hex_b256(&s.parent_hash),
+        "timestamp": hex_u64(s.timestamp),
+        "txCount": s.tx_count,
+        "gasUsed": hex_u64(s.gas_used),
+        // Devnet blocks have no proposer; surfaced as the zero address (matches `decoded_block_json`).
+        "miner": "0x0000000000000000000000000000000000000000",
+    })
+}
+
+/// Render a [`ContractSummary`] into the `ubi_getContracts` JSON shape: a compact directory row
+/// (id/address/parties/status/escrow base units/title + deploy block/tx/createdAt). The full
+/// `text`/`vars`/`cases` live behind `ubi_getContract(id)`.
+fn contract_summary_json(s: &ContractSummary) -> Value {
+    json!({
+        "id": s.id,
+        "address": addr_hex(&s.address),
+        "parties": s.parties.iter().map(addr_hex).collect::<Vec<_>>(),
+        "status": contract_status_str(s.status),
+        "escrow": hex_u128(s.escrow),
+        "balance": hex_u128(s.escrow),
+        "title": s.title,
+        "deploy_block": s.deploy_block,
+        "deploy_tx": hash_hex(&s.deploy_tx),
+        "createdAt": s.created_at,
+    })
+}
+
 /// Render the **full** `ubi_getContract` detail: every [`contract_view_json`] field plus the contract's
 /// list of exec cases (each a [`exec_case_summary_json`]: id, invoker, trigger, status, the resulting
 /// canonical effect / abort, and the block it resolved in). Everything about the contract from chain
@@ -3412,6 +3565,28 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
+    // ubi_getContracts(limit?) → the most-recent deployed prompt contracts (newest-first by id), each a
+    // compact directory row { id, address, parties, status, escrow, balance, title, deploy_block,
+    // deploy_tx, createdAt }. The explorer's GLOBAL contracts directory (`getContractsOf` is per-address
+    // only). `limit` (param 1, hex or number) defaults to 50, capped at 100.
+    m.register_method("ubi_getContracts", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [limit?]"))?;
+        let limit = match seq.first() {
+            Some(v) if !v.is_null() => parse_stream_id_param(Some(v))?,
+            _ => 50,
+        }
+        .clamp(1, 100) as usize;
+        let rows: Vec<Value> = ctx
+            .recent_contracts(limit)
+            .iter()
+            .map(contract_summary_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(rows))
+    })
+    .unwrap();
+
     // ---- EXPL-1 address indexer reads (ubi_*) ----
 
     // ubi_getAddressActivity(address, limit?) → the most-recent txs touching the address (newest
@@ -3514,6 +3689,30 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     // VerdictSubmitted/StatusChanged/ContractDeployed/EffectCommitted/EffectAborted/Transfer…), and
     // the resulting `result` (an invoke → the committed effect or Aborted; a submitVerdict → the case
     // outcome + subject status). Null if the hash is unknown.
+    // ubi_getRecentBlocks(limit?, nonEmptyOnly?) → the most-recent blocks as compact summaries
+    // (newest-first), each { number, hash, parentHash, timestamp, txCount, gasUsed, miner }. `limit`
+    // (param 1, hex or number) defaults to 20, capped at 100. `nonEmptyOnly` (param 2, bool) skips
+    // empty blocks BEFORE the limit, so the explorer can page only blocks that contain txs (most devnet
+    // ticks are empty). Backs the explorer's recent-blocks directory.
+    m.register_method("ubi_getRecentBlocks", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [limit?, nonEmptyOnly?]"))?;
+        let limit = match seq.first() {
+            Some(v) if !v.is_null() => parse_stream_id_param(Some(v))?,
+            _ => 20,
+        }
+        .clamp(1, 100) as usize;
+        let non_empty_only = seq.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+        let rows: Vec<Value> = ctx
+            .recent_blocks(limit, non_empty_only)
+            .iter()
+            .map(block_summary_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(rows))
+    })
+    .unwrap();
+
     m.register_method("ubi_getTransaction", |params, ctx, _| {
         let seq: Vec<Value> = params
             .parse()

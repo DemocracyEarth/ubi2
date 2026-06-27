@@ -9,6 +9,10 @@
  *  - `ubi_getBlock(tag)` — fully decoded block: header fields + decoded tx list.
  *  - `ubi_getTransaction(hash)` — fully decoded tx: from/to/fee, decoded hub call,
  *    decoded logs, and the resulting effect/verdict/status.
+ *
+ * EXPL-3 (UI feed RPCs):
+ *  - `ubi_getRecentBlocks(limit?, nonEmptyOnly?)` — recent block summaries (newest-first).
+ *  - `ubi_getContracts(limit?)` — recent contract summaries (newest-first by id).
  */
 
 /** The human status of an address as it appears in the account summary. */
@@ -139,12 +143,45 @@ export interface DecodedBlock {
   transactions: DecodedTransaction[];
 }
 
+// ---- EXPL-3: UI feed types --------------------------------------------------------
+
+/**
+ * A lightweight block summary as returned by `ubi_getRecentBlocks`.
+ * All quantities are 0x-hex; `txCount` is a plain number.
+ */
+export interface BlockSummary {
+  number: string;
+  hash: string;
+  parentHash: string;
+  timestamp: string;
+  txCount: number;
+  gasUsed: string;
+  miner: string;
+}
+
+/**
+ * A lightweight contract summary as returned by `ubi_getContracts`.
+ * `escrow`/`balance` are 0x-hex base units; `id`/`deploy_block`/`createdAt` are plain numbers.
+ */
+export interface ContractSummary {
+  id: number;
+  address: string;
+  parties: string[];
+  status: string;
+  escrow: string;
+  balance: string;
+  title: string;
+  deploy_block: number;
+  deploy_tx: string;
+  createdAt: number;
+}
+
 interface JsonRpcCaller {
   call<T = unknown>(method: string, params?: unknown[]): Promise<T>;
 }
 
 /**
- * Explorer reads (EXPL-1 + EXPL-2) layered over any object exposing a JSON-RPC `call`.
+ * Explorer reads (EXPL-1 + EXPL-2 + EXPL-3) layered over any object exposing a JSON-RPC `call`.
  */
 export class ExplorerReader {
   constructor(private readonly rpc: JsonRpcCaller) {}
@@ -185,5 +222,25 @@ export class ExplorerReader {
    */
   async getDecodedTransaction(hash: string): Promise<DecodedTransaction | null> {
     return this.rpc.call<DecodedTransaction | null>("ubi_getTransaction", [hash]);
+  }
+
+  // ---- EXPL-3 ----
+
+  /**
+   * `ubi_getRecentBlocks(limit?, nonEmptyOnly?)` — recent block summaries, newest-first.
+   * `limit` defaults to 20, clamped 1..=100.
+   * `nonEmptyOnly` defaults to false; when true, empty tick blocks are skipped before the limit
+   * applies, so the caller gets a full page of blocks that contain transactions.
+   */
+  async getRecentBlocks(limit = 20, nonEmptyOnly = false): Promise<BlockSummary[]> {
+    return this.rpc.call<BlockSummary[]>("ubi_getRecentBlocks", [limit, nonEmptyOnly]);
+  }
+
+  /**
+   * `ubi_getContracts(limit?)` — recent contract summaries, newest-first by contract id.
+   * `limit` defaults to 50, clamped 1..=100.
+   */
+  async getContracts(limit = 50): Promise<ContractSummary[]> {
+    return this.rpc.call<ContractSummary[]>("ubi_getContracts", [limit]);
   }
 }
