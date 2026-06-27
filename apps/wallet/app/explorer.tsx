@@ -7,6 +7,12 @@
  * Tx page: from/to/fee, decoded hub call, decoded logs, result (ubi_getTransaction).
  * Account page: ubi_getAccount + ubi_getAddressActivity.
  * Latest blocks list polling every 4 s.
+ *
+ * Improvement (field-test): Non-empty blocks toggle (default ON) via ubi_getRecentBlocks.
+ * Improvement (field-test): Contracts directory via ubi_getContracts with contract badge.
+ *
+ * Detail views are also available as URL-addressable routes:
+ *   /tx/[hash], /block/[id], /address/[addr], /account/[addr]
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,493 +20,79 @@ import {
   Ubi2Client,
   ExplorerReader,
   formatUbi,
-  type Block,
-  type AccountSummary,
-  type ActivityRow,
-  type DecodedBlock,
   type DecodedTransaction,
-  type DecodedLog,
+  type DecodedBlock,
+  type BlockSummary,
+  type ContractSummary,
 } from "@ubi2/sdk";
 import { RPC_URL } from "./config";
+import {
+  TxDetail,
+  BlockDetail,
+  AccountView,
+  shortHash,
+  fmtTs,
+  getExplorer,
+} from "./explorer-components";
 
 const client = new Ubi2Client({ url: RPC_URL });
-const explorer = new ExplorerReader(client);
+const explorerReader = new ExplorerReader(client);
 
-const MAX_BLOCKS = 10;
 const POLL_MS = 4000;
 
 // ---- Helpers -----------------------------------------------------------------------
 
-function shortHash(h: string): string {
-  if (!h || h.length < 14) return h;
-  return `${h.slice(0, 8)}…${h.slice(-6)}`;
-}
-
-function shortAddr(a: string): string {
-  if (!a || a.length < 12) return a;
-  return `${a.slice(0, 6)}…${a.slice(-4)}`;
-}
-
-function fmtTs(hexSecs: string): string {
-  const secs = parseInt(hexSecs, 16);
-  if (!Number.isFinite(secs)) return "—";
-  const d = new Date(secs * 1000);
-  return d.toLocaleTimeString();
-}
-
-function fmtTsLong(hexSecs: string): string {
-  const secs = parseInt(hexSecs, 16);
-  if (!Number.isFinite(secs)) return "—";
-  return new Date(secs * 1000).toLocaleString();
-}
-
 function hexToUbi(hex: string, frac = 4): string {
-  try {
-    return formatUbi(BigInt(hex), frac);
-  } catch {
-    return "0 UBI";
-  }
+  try { return formatUbi(BigInt(hex), frac); } catch { return "0 UBI"; }
 }
 
-function parseBlockNum(s: string): number {
-  if (s.startsWith("0x")) return parseInt(s, 16);
-  return parseInt(s, 10);
+function short(addr: string): string {
+  if (!addr || addr.length < 12) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function kindBadge(kind: string): { label: string; cls: string } {
-  const map: Record<string, { label: string; cls: string }> = {
-    Transfer: { label: "transfer", cls: "kind-badge k-transfer" },
-    OpenStream: { label: "open stream", cls: "kind-badge k-stream" },
-    StopStream: { label: "stop stream", cls: "kind-badge k-stream" },
-    RequestVerification: { label: "apply PoH", cls: "kind-badge k-humanity" },
-    Vouch: { label: "vouch", cls: "kind-badge k-vouch" },
-    Challenge: { label: "challenge", cls: "kind-badge k-humanity" },
-    SubmitVerdict: { label: "verdict", cls: "kind-badge k-humanity" },
-    DeployContract: { label: "deploy", cls: "kind-badge k-deploy" },
-    FundContract: { label: "fund", cls: "kind-badge k-invoke" },
-    InvokeContract: { label: "invoke", cls: "kind-badge k-invoke" },
-    SubmitEffect: { label: "effect", cls: "kind-badge k-invoke" },
-    HumanitySystem: { label: "system", cls: "kind-badge k-system" },
-    ContractHub: { label: "contract hub", cls: "kind-badge k-deploy" },
-  };
-  return map[kind] ?? { label: kind.toLowerCase(), cls: "kind-badge k-system" };
+function fmtUnixTs(secs: number): string {
+  if (!Number.isFinite(secs) || secs === 0) return "—";
+  return new Date(secs * 1000).toLocaleTimeString();
 }
 
-function hubCallCls(hub?: string): string {
-  if (!hub) return "kind-badge k-system";
-  if (hub.includes("Stream")) return "kind-badge k-stream";
-  if (hub.includes("Humanity")) return "kind-badge k-humanity";
-  if (hub.includes("Contract")) return "kind-badge k-deploy";
-  return "kind-badge k-system";
-}
+// ---- Contract badge — marks an address as a known contract -------------------------
 
-function logCategoryClass(name: string | null): string {
-  if (!name) return "log-name log-unknown";
-  if (name.includes("Stream")) return "log-name log-stream";
-  if (name.includes("Case") || name.includes("Verdict") || name.includes("Status") || name.includes("Registered")) return "log-name log-humanity";
-  if (name.includes("Contract") || name.includes("Effect") || name.includes("Deployed")) return "log-name log-contract";
-  if (name === "Transfer") return "log-name log-transfer";
-  return "log-name log-unknown";
-}
-
-function Copy({ value }: { value: string }) {
-  const [done, setDone] = useState(false);
+function ContractBadge() {
   return (
-    <button
-      className="copy"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value);
-          setDone(true);
-          setTimeout(() => setDone(false), 1200);
-        } catch { /* unavailable */ }
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.25rem",
+        fontSize: "0.6rem",
+        fontWeight: 700,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        color: "var(--accent-2)",
+        background: "rgba(139,123,255,.12)",
+        border: "1px solid rgba(139,123,255,.28)",
+        borderRadius: "5px",
+        padding: "1px 5px",
+        verticalAlign: "middle",
+        marginLeft: "0.35rem",
       }}
     >
-      {done ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
-// ---- Log entry renderer ---------------------------------------------------------------
-
-function LogEntry({ log }: { log: DecodedLog }) {
-  const name = log.name ?? "Unknown";
-  const cls = logCategoryClass(log.name);
-  const args = log.args ?? {};
-
-  return (
-    <div className="log-row">
-      <span className={cls}>{name}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {Object.keys(args).length > 0 ? (
-          <div style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--muted)", wordBreak: "break-all" }}>
-            {Object.entries(args).map(([k, v]) => (
-              <span key={k} style={{ marginRight: ".75rem" }}>
-                <span style={{ color: "var(--faint)" }}>{k}:</span>{" "}
-                <span style={{ color: "var(--ink)" }}>{String(v)}</span>
-              </span>
-            ))}
-          </div>
-        ) : log.address ? (
-          <span style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--faint)" }}>
-            {shortAddr(log.address)}
-          </span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-// ---- Transaction Detail Panel ---------------------------------------------------------
-
-function TxDetail({ tx, onClose }: { tx: DecodedTransaction; onClose: () => void }) {
-  const blockNum = parseBlockNum(tx.blockNumber);
-  const feeHex = tx.fee ?? "0x0";
-  const feeUbi = hexToUbi(feeHex, 6);
-  const valueUbi = hexToUbi(tx.value ?? "0x0", 4);
-  const nonce = parseInt(tx.nonce ?? "0x0", 16);
-
-  return (
-    <div className="card" style={{ marginBottom: "1.25rem" }}>
-      <div className="row" style={{ marginBottom: "1rem" }}>
-        <div>
-          <div className="label" style={{ marginBottom: ".3rem" }}>Transaction</div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: ".78rem", color: "var(--muted)", wordBreak: "break-all" }}>
-            {tx.hash}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: ".5rem", flexShrink: 0 }}>
-          <Copy value={tx.hash} />
-          <button className="ghost" onClick={onClose} style={{ fontSize: ".75rem" }}>Back</button>
-        </div>
-      </div>
-
-      {/* Core fields */}
-      <dl className="kv" style={{ marginBottom: "1rem" }}>
-        <dt>Block</dt>
-        <dd>#{blockNum}</dd>
-        <dt>From</dt>
-        <dd style={{ wordBreak: "break-all" }}>
-          {tx.from} <Copy value={tx.from} />
-        </dd>
-        <dt>To</dt>
-        <dd style={{ wordBreak: "break-all" }}>{tx.to ?? "(contract create)"}</dd>
-        <dt>Value</dt>
-        <dd style={{ color: "var(--accent)" }}>{valueUbi}</dd>
-        <dt>Nonce</dt>
-        <dd>{nonce}</dd>
-        <dt>Fee</dt>
-        <dd style={{ color: "var(--warn)" }}>{feeUbi}</dd>
-      </dl>
-
-      {/* Decoded hub call */}
-      {tx.call && (
-        <div style={{ marginBottom: "1rem" }}>
-          <div className="label" style={{ marginBottom: ".5rem" }}>Decoded call</div>
-          <div style={{ background: "var(--glass-2)", border: "1px solid var(--line)", borderRadius: "10px", padding: ".75rem 1rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: ".6rem", marginBottom: ".5rem" }}>
-              {tx.call.hub && <span className={hubCallCls(tx.call.hub)}>{tx.call.hub}</span>}
-              {tx.call.method && <span style={{ fontFamily: "var(--mono)", fontSize: ".8rem", color: "var(--ink)", fontWeight: 600 }}>{tx.call.method}</span>}
-            </div>
-            {tx.call.args && Object.keys(tx.call.args).length > 0 && (
-              <div style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--muted)" }}>
-                {Object.entries(tx.call.args).map(([k, v]) => (
-                  <div key={k} style={{ marginBottom: ".2rem" }}>
-                    <span style={{ color: "var(--faint)" }}>{k}:</span>{" "}
-                    <span style={{ color: "var(--ink)", wordBreak: "break-all" }}>{String(v)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Decoded logs */}
-      {tx.logs && tx.logs.length > 0 && (
-        <div style={{ marginBottom: "1rem" }}>
-          <div className="label" style={{ marginBottom: ".5rem" }}>Event logs ({tx.logs.length})</div>
-          <div style={{ border: "1px solid var(--line)", borderRadius: "10px", padding: ".5rem .75rem" }}>
-            {tx.logs.map((log, i) => (
-              <LogEntry key={i} log={log} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Result / effect */}
-      {tx.result && (
-        <div>
-          <div className="label" style={{ marginBottom: ".5rem" }}>Result</div>
-          <div style={{ background: "rgba(79,231,168,.04)", border: "1px solid rgba(79,231,168,.18)", borderRadius: "10px", padding: ".75rem 1rem" }}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: ".75rem", color: "var(--muted)", wordBreak: "break-all" }}>
-              {JSON.stringify(tx.result, null, 2)}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Block Detail Panel ---------------------------------------------------------------
-
-function BlockDetail({ block, onClose, onSelectTx }: {
-  block: DecodedBlock;
-  onClose: () => void;
-  onSelectTx: (hash: string) => void;
-}) {
-  const blockNum = parseBlockNum(block.number);
-  const gasUsed = parseInt(block.gasUsed ?? "0x0", 16).toLocaleString();
-  const baseFee = hexToUbi(block.baseFeePerGas ?? "0x0", 9);
-
-  return (
-    <div className="card" style={{ marginBottom: "1.25rem" }}>
-      <div className="row" style={{ marginBottom: "1rem" }}>
-        <div>
-          <div className="label" style={{ marginBottom: ".3rem" }}>Block</div>
-          <span style={{ fontFamily: "var(--mono)", fontSize: "1.1rem", fontWeight: 700, color: "var(--accent)" }}>
-            #{blockNum}
-          </span>
-        </div>
-        <button className="ghost" onClick={onClose} style={{ fontSize: ".75rem" }}>Back</button>
-      </div>
-
-      <dl className="kv" style={{ marginBottom: "1rem" }}>
-        <dt>Hash</dt>
-        <dd style={{ wordBreak: "break-all", fontSize: ".72rem" }}>
-          {block.hash} <Copy value={block.hash} />
-        </dd>
-        <dt>Parent</dt>
-        <dd style={{ wordBreak: "break-all", fontSize: ".72rem" }}>{shortHash(block.parentHash)}</dd>
-        <dt>Timestamp</dt>
-        <dd>{fmtTsLong(block.timestamp)}</dd>
-        <dt>Miner</dt>
-        <dd style={{ wordBreak: "break-all" }}>{block.miner ?? "—"}</dd>
-        <dt>Gas used</dt>
-        <dd>{gasUsed}</dd>
-        <dt>Base fee</dt>
-        <dd style={{ color: "var(--warn)" }}>{baseFee}</dd>
-        <dt>State root</dt>
-        <dd style={{ wordBreak: "break-all", fontSize: ".68rem", color: "var(--faint)" }}>{shortHash(block.stateRoot ?? "")}</dd>
-        <dt>Txs root</dt>
-        <dd style={{ wordBreak: "break-all", fontSize: ".68rem", color: "var(--faint)" }}>{shortHash(block.transactionsRoot ?? "")}</dd>
-        <dt>Receipts root</dt>
-        <dd style={{ wordBreak: "break-all", fontSize: ".68rem", color: "var(--faint)" }}>{shortHash(block.receiptsRoot ?? "")}</dd>
-        <dt>Transactions</dt>
-        <dd style={{ color: "var(--ink)" }}>{block.txCount ?? block.transactions?.length ?? 0}</dd>
-      </dl>
-
-      {/* Transaction list */}
-      {block.transactions && block.transactions.length > 0 && (
-        <div>
-          <div className="label" style={{ marginBottom: ".5rem" }}>Transactions</div>
-          <div style={{ border: "1px solid var(--line)", borderRadius: "10px", overflow: "hidden" }}>
-            {block.transactions.map((tx, i) => {
-              const call = tx.call;
-              const hubLabel = call?.hub ?? call?.kind ?? "transfer";
-              const methodLabel = call?.method ?? "";
-              const badgeCls = hubCallCls(call?.hub);
-              const feeUbi = hexToUbi(tx.fee ?? "0x0", 6);
-              return (
-                <div
-                  key={tx.hash}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "7rem 1fr auto",
-                    gap: ".6rem",
-                    alignItems: "center",
-                    padding: ".65rem .85rem",
-                    borderTop: i === 0 ? "none" : "1px solid var(--line)",
-                    cursor: "pointer",
-                    transition: "background .12s",
-                  }}
-                  onClick={() => onSelectTx(tx.hash)}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-2)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                >
-                  <span className={badgeCls}>{hubLabel}</span>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {tx.hash}
-                    </div>
-                    <div style={{ fontSize: ".7rem", color: "var(--faint)", marginTop: ".1rem" }}>
-                      {shortAddr(tx.from)} → {tx.to ? shortAddr(tx.to) : "(create)"}
-                      {methodLabel && <span style={{ marginLeft: ".5rem", color: "var(--muted)" }}>· {methodLabel}</span>}
-                    </div>
-                  </div>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: ".7rem", color: "var(--faint)", textAlign: "right", whiteSpace: "nowrap" }}>
-                    {feeUbi} fee
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {(!block.transactions || block.transactions.length === 0) && (
-        <p className="muted small">No transactions in this block.</p>
-      )}
-    </div>
-  );
-}
-
-// ---- Account View Panel ---------------------------------------------------------------
-
-function AccountView({ address, onClose, onSelectTx }: {
-  address: string;
-  onClose: () => void;
-  onSelectTx: (hash: string) => void;
-}) {
-  const [summary, setSummary] = useState<AccountSummary | null>(null);
-  const [activity, setActivity] = useState<ActivityRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const [s, a] = await Promise.all([
-        explorer.getAccount(address),
-        explorer.getAddressActivity(address, 40),
-      ]);
-      setSummary(s);
-      setActivity(a);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [address]);
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
-  }, [load]);
-
-  const humanStatusCls =
-    summary?.human_status === "Verified"
-      ? "pill active"
-      : summary?.human_status === "Pending"
-        ? "pill poh-pending"
-        : summary?.human_status === "Challenged"
-          ? "pill poh-challenged"
-          : "pill completed";
-
-  return (
-    <div className="card" style={{ marginBottom: "1.25rem" }}>
-      <div className="row" style={{ marginBottom: ".85rem" }}>
-        <div>
-          <div className="label" style={{ marginBottom: ".3rem" }}>Account</div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: ".8rem", color: "var(--muted)", wordBreak: "break-all" }}>
-            {address}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: ".5rem" }}>
-          <Copy value={address} />
-          <button className="ghost" onClick={onClose} style={{ fontSize: ".75rem" }}>Back</button>
-        </div>
-      </div>
-
-      {loading && !summary && <p className="muted small">Loading…</p>}
-      {err && <p className="small" style={{ color: "var(--danger)" }}>{err}</p>}
-
-      {summary && (
-        <>
-          <div className="acct-grid" style={{ marginBottom: "1rem" }}>
-            <div className="acct-stat">
-              <div className="label">Balance</div>
-              <div className="acct-val" style={{ color: "var(--accent)" }}>{hexToUbi(summary.balance)}</div>
-            </div>
-            <div className="acct-stat">
-              <div className="label">Nonce</div>
-              <div className="acct-val">{parseInt(summary.nonce, 16)}</div>
-            </div>
-            <div className="acct-stat">
-              <div className="label">Identity</div>
-              <div className="acct-val">
-                {summary.human_status ? (
-                  <span className={humanStatusCls}>{summary.human_status}</span>
-                ) : (
-                  <span className="muted small">—</span>
-                )}
-              </div>
-            </div>
-            <div className="acct-stat">
-              <div className="label">Streams in / out</div>
-              <div className="acct-val">{summary.streams_in} / {summary.streams_out}</div>
-            </div>
-            <div className="acct-stat">
-              <div className="label">Contracts</div>
-              <div className="acct-val" style={{ color: "var(--accent-2)" }}>{summary.contracts}</div>
-            </div>
-            <div className="acct-stat">
-              <div className="label">Tx count</div>
-              <div className="acct-val">{summary.tx_count}</div>
-            </div>
-          </div>
-
-          {/* Activity feed */}
-          <div className="label" style={{ marginBottom: ".5rem" }}>
-            Recent activity ({activity.length})
-          </div>
-          {activity.length === 0 ? (
-            <p className="muted small">No activity yet.</p>
-          ) : (
-            <div style={{ border: "1px solid var(--line)", borderRadius: "10px", overflow: "hidden" }}>
-              {activity.map((row, i) => {
-                const badge = kindBadge(row.kind);
-                const blockNum = parseBlockNum(row.blockNumber);
-                const feeUbi = row.fee ? hexToUbi(row.fee, 6) : null;
-                return (
-                  <div
-                    key={`${row.hash}-${i}`}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "6.5rem 5rem 1fr auto",
-                      gap: ".5rem",
-                      alignItems: "center",
-                      padding: ".55rem .85rem",
-                      borderTop: i === 0 ? "none" : "1px solid var(--line)",
-                      cursor: "pointer",
-                      transition: "background .12s",
-                    }}
-                    onClick={() => onSelectTx(row.hash)}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-2)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <span className={badge.cls}>{badge.label}</span>
-                    <span className="block-num">#{blockNum}</span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {shortHash(row.hash)}
-                      {row.counterparty && (
-                        <span style={{ color: "var(--faint)", marginLeft: ".4rem" }}>· {shortAddr(row.counterparty)}</span>
-                      )}
-                    </span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: ".7rem", color: "var(--faint)", textAlign: "right", whiteSpace: "nowrap" }}>
-                      {feeUbi ?? (row.value !== "0x0" && row.value !== "0x00" ? hexToUbi(row.value, 4) : "")}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-    </div>
+      contract
+    </span>
   );
 }
 
 // ---- Main Explorer Component ----------------------------------------------------------
 
+type ExplorerTab = "blocks" | "contracts";
+
 type View =
   | { kind: "list" }
   | { kind: "block"; block: DecodedBlock }
   | { kind: "tx"; tx: DecodedTransaction }
-  | { kind: "account"; address: string };
+  | { kind: "account"; address: string }
+  | { kind: "contract"; contractId: number };
 
 interface ExplorerProps {
   /** Deep-link: open this block number on mount (consumed once). */
@@ -512,8 +104,19 @@ interface ExplorerProps {
 }
 
 export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget }: ExplorerProps = {}) {
-  const [blocks, setBlocks] = useState<Block[]>([]);
+  const [activeTab, setActiveTab] = useState<ExplorerTab>("blocks");
+
+  // Block list state
+  const [blocks, setBlocks] = useState<BlockSummary[]>([]);
+  const [nonEmptyOnly, setNonEmptyOnly] = useState(true);
   const [latest, setLatest] = useState<number | null>(null);
+  const [blocksLoading, setBlocksLoading] = useState(false);
+
+  // Contract directory state
+  const [contracts, setContracts] = useState<ContractSummary[]>([]);
+  const [contractsLoading, setContractsLoading] = useState(false);
+
+  // Search + detail state
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
@@ -521,19 +124,64 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
 
   const pollRef = useRef<() => void>(() => {});
 
-  const refresh = useCallback(async () => {
+  // Fetch blocks using the new ubi_getRecentBlocks RPC
+  const refreshBlocks = useCallback(async (nonEmpty: boolean) => {
+    setBlocksLoading(true);
     try {
-      const head = await client.blockNumber();
+      const [head, summaries] = await Promise.all([
+        client.blockNumber(),
+        explorerReader.getRecentBlocks(20, nonEmpty),
+      ]);
       setLatest(head);
-      const start = Math.max(0, head - (MAX_BLOCKS - 1));
-      const nums: number[] = [];
-      for (let n = head; n >= start; n--) nums.push(n);
-      const fetched = await Promise.all(nums.map((n) => client.getBlockByNumber(n)));
-      setBlocks(fetched.filter((b): b is Block => b != null));
+      setBlocks(summaries);
     } catch {
-      /* node may be down */
+      // Fall back to eth_getBlockByNumber if the new RPC is unavailable
+      try {
+        const head = await client.blockNumber();
+        setLatest(head);
+        const start = Math.max(0, head - 19);
+        const nums: number[] = [];
+        for (let n = head; n >= start; n--) nums.push(n);
+        const fetched = await Promise.all(nums.map((n) => client.getBlockByNumber(n)));
+        const summaries: BlockSummary[] = fetched
+          .filter((b): b is NonNullable<typeof b> => b != null)
+          .map((b) => ({
+            number: b.number,
+            hash: b.hash,
+            parentHash: b.parentHash,
+            timestamp: b.timestamp,
+            txCount: Array.isArray(b.transactions) ? b.transactions.length : 0,
+            gasUsed: b.gasUsed,
+            miner: b.miner,
+          }))
+          .filter((b) => !nonEmpty || b.txCount > 0);
+        setBlocks(summaries);
+      } catch {
+        /* node may be down */
+      }
+    } finally {
+      setBlocksLoading(false);
     }
   }, []);
+
+  const refreshContracts = useCallback(async () => {
+    setContractsLoading(true);
+    try {
+      const cs = await explorerReader.getContracts(50);
+      setContracts(cs);
+    } catch {
+      /* node may not support this RPC yet */
+      setContracts([]);
+    } finally {
+      setContractsLoading(false);
+    }
+  }, []);
+
+  const refresh = useCallback(() => {
+    refreshBlocks(nonEmptyOnly);
+    refreshContracts();
+  }, [nonEmptyOnly, refreshBlocks, refreshContracts]);
+
   pollRef.current = refresh;
 
   useEffect(() => {
@@ -541,6 +189,11 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
     const id = setInterval(() => pollRef.current(), POLL_MS);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Re-fetch blocks when the toggle changes
+  useEffect(() => {
+    refreshBlocks(nonEmptyOnly);
+  }, [nonEmptyOnly, refreshBlocks]);
 
   const goBack = useCallback(() => {
     setView({ kind: "list" });
@@ -551,11 +204,12 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
     setSearching(true);
     setSearchErr(null);
     try {
+      const explorer = getExplorer();
       const tx = await explorer.getDecodedTransaction(hash);
       if (tx) {
         setView({ kind: "tx", tx });
       } else {
-        setSearchErr("Transaction not found.");
+        setSearchErr("Transaction not found — it may have been rejected at submission (never mined).");
       }
     } catch (e) {
       setSearchErr(e instanceof Error ? e.message : String(e));
@@ -573,6 +227,7 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
         : /^\d+$/.test(String(numOrHash))
           ? `0x${parseInt(String(numOrHash), 10).toString(16)}`
           : String(numOrHash);
+      const explorer = getExplorer();
       const block = await explorer.getBlock(tag);
       if (block) {
         setView({ kind: "block", block });
@@ -619,6 +274,9 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
       setSearchErr("Enter: address (0x…40), tx hash (0x…64), or block number.");
     }
   }, [query, openTx, openBlock]);
+
+  // Check if an address is a known contract escrow address
+  const knownContractAddresses = new Set(contracts.map((c) => c.address.toLowerCase()));
 
   return (
     <div>
@@ -668,6 +326,7 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
           block={view.block}
           onClose={goBack}
           onSelectTx={openTx}
+          onSelectAddress={(addr) => setView({ kind: "account", address: addr })}
         />
       )}
 
@@ -675,6 +334,8 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
         <TxDetail
           tx={view.tx}
           onClose={goBack}
+          onSelectBlock={(n) => openBlock(n)}
+          onSelectAddress={(addr) => setView({ kind: "account", address: addr })}
         />
       )}
 
@@ -686,40 +347,278 @@ export function Explorer({ initialBlockTarget, initialTxTarget, onConsumeTarget 
         />
       )}
 
-      {/* Latest blocks list */}
-      <div className="card">
-        <div className="card-header">
-          <h3>Latest blocks</h3>
-          <span className="tag green">live</span>
+      {/* Tab switcher: Blocks | Contracts */}
+      <div className="card" style={{ padding: "0" }}>
+        <div
+          style={{
+            display: "flex",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          {(["blocks", "contracts"] as ExplorerTab[]).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                flex: 1,
+                padding: "0.85rem 1rem",
+                background: "transparent",
+                border: "none",
+                borderBottom: activeTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+                color: activeTab === tab ? "var(--ink)" : "var(--muted)",
+                fontWeight: activeTab === tab ? 600 : 400,
+                fontSize: "0.85rem",
+                cursor: "pointer",
+                transition: "color .15s",
+                fontFamily: "inherit",
+                letterSpacing: "-.01em",
+              }}
+            >
+              {tab === "blocks" ? "Blocks" : "Contracts"}
+            </button>
+          ))}
         </div>
-        {blocks.length === 0 ? (
-          <p className="muted small">No blocks yet — is the node running?</p>
-        ) : (
-          <div className="block-list">
-            {blocks.map((b, i) => {
-              const num = parseInt(b.number, 16);
-              const txCount = Array.isArray(b.transactions) ? b.transactions.length : 0;
-              return (
+
+        {/* Blocks tab */}
+        {activeTab === "blocks" && (
+          <div style={{ padding: "18px 22px" }}>
+            <div className="card-header" style={{ marginBottom: "0.85rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <h3 style={{ margin: 0 }}>Latest blocks</h3>
+                <span className="tag green">live</span>
+              </div>
+              {/* Non-empty toggle */}
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  cursor: "pointer",
+                  fontSize: "0.8rem",
+                  color: "var(--muted)",
+                  userSelect: "none",
+                }}
+              >
                 <div
-                  className="block-row"
-                  key={b.hash || b.number}
-                  style={{ cursor: "pointer", transition: "background .12s", borderRadius: "8px", padding: ".6rem .5rem" }}
-                  onClick={() => openBlock(num)}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-2)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  onClick={() => setNonEmptyOnly((v) => !v)}
+                  style={{
+                    width: "34px",
+                    height: "18px",
+                    borderRadius: "9px",
+                    background: nonEmptyOnly ? "var(--accent)" : "var(--glass-2)",
+                    border: `1px solid ${nonEmptyOnly ? "var(--accent)" : "var(--line-2)"}`,
+                    position: "relative",
+                    transition: "background .18s, border-color .18s",
+                    flexShrink: 0,
+                  }}
                 >
-                  <span className="block-num">#{num}</span>
-                  <span className="block-hash">{shortHash(b.hash)}</span>
-                  <span className="muted small">
-                    {txCount} tx{txCount !== 1 ? "s" : ""}
-                  </span>
-                  <span className="block-ts">{fmtTs(b.timestamp)}</span>
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "2px",
+                      left: nonEmptyOnly ? "17px" : "2px",
+                      width: "12px",
+                      height: "12px",
+                      borderRadius: "50%",
+                      background: nonEmptyOnly ? "#07080c" : "var(--muted)",
+                      transition: "left .18s",
+                    }}
+                  />
                 </div>
-              );
-            })}
+                <span>Non-empty only</span>
+              </label>
+            </div>
+
+            {nonEmptyOnly && (
+              <div
+                className="muted small"
+                style={{ marginBottom: "0.75rem", fontSize: "0.74rem", lineHeight: 1.5 }}
+              >
+                Showing blocks that contain at least one transaction. Toggle off to see all blocks
+                including empty tick-blocks.
+              </div>
+            )}
+
+            {blocksLoading && blocks.length === 0 ? (
+              <p className="muted small">Loading blocks…</p>
+            ) : blocks.length === 0 ? (
+              <p className="muted small">
+                {nonEmptyOnly
+                  ? "No blocks with transactions found yet — the chain may only have empty tick-blocks so far."
+                  : "No blocks yet — is the node running?"}
+              </p>
+            ) : (
+              <div className="block-list">
+                {blocks.map((b, i) => {
+                  const num = parseInt(b.number, 16);
+                  const txCount = b.txCount;
+                  return (
+                    <div
+                      className="block-row"
+                      key={b.hash || b.number}
+                      style={{
+                        cursor: "pointer",
+                        transition: "background .12s",
+                        borderRadius: "8px",
+                        padding: ".6rem .5rem",
+                        borderTop: i === 0 ? "none" : "1px solid var(--line)",
+                      }}
+                      onClick={() => openBlock(num)}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-2)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <span className="block-num">#{num}</span>
+                      <span className="block-hash">{shortHash(b.hash)}</span>
+                      <span
+                        className="muted small"
+                        style={{
+                          color: txCount > 0 ? "var(--accent)" : "var(--faint)",
+                          fontWeight: txCount > 0 ? 600 : 400,
+                        }}
+                      >
+                        {txCount} tx{txCount !== 1 ? "s" : ""}
+                      </span>
+                      <span className="block-ts">{fmtTs(b.timestamp)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Contracts tab */}
+        {activeTab === "contracts" && (
+          <div style={{ padding: "18px 22px" }}>
+            <div className="card-header" style={{ marginBottom: "0.85rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <h3 style={{ margin: 0 }}>Contract directory</h3>
+                <span className="tag violet">on-chain</span>
+              </div>
+              <span className="muted small" style={{ fontSize: "0.72rem" }}>
+                {contracts.length} contract{contracts.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            {contractsLoading && contracts.length === 0 ? (
+              <p className="muted small">Loading contracts…</p>
+            ) : contracts.length === 0 ? (
+              <p className="muted small">
+                No contracts deployed yet. Deploy one in the Contracts tab.
+              </p>
+            ) : (
+              <div>
+                {contracts.map((c, i) => {
+                  const escrowBig = (() => { try { return BigInt(c.escrow); } catch { return 0n; } })();
+                  const statusCls = c.status === "Active" ? "pill active" : "pill stopped";
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "4rem 1fr auto",
+                        gap: "0.75rem",
+                        alignItems: "center",
+                        padding: ".75rem .5rem",
+                        borderTop: i === 0 ? "none" : "1px solid var(--line)",
+                        cursor: "pointer",
+                        transition: "background .12s",
+                        borderRadius: "8px",
+                      }}
+                      onClick={() => setView({ kind: "account", address: c.address })}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-2)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <div>
+                        <span className="block-num">#{c.id}</span>
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: "0.8rem",
+                            color: "var(--ink)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            marginBottom: "0.2rem",
+                          }}
+                        >
+                          {c.title || "(no title)"}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.5rem",
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontFamily: "var(--mono)",
+                              fontSize: "0.7rem",
+                              color: "var(--faint)",
+                            }}
+                          >
+                            {short(c.address)}
+                            <ContractBadge />
+                          </span>
+                          <span className={statusCls} style={{ fontSize: "0.58rem" }}>
+                            {c.status}
+                          </span>
+                          <span className="muted small" style={{ fontSize: "0.7rem" }}>
+                            {c.parties.length} {c.parties.length === 1 ? "party" : "parties"}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "0.7rem",
+                              fontFamily: "var(--mono)",
+                              color: escrowBig > 0n ? "var(--accent)" : "var(--faint)",
+                            }}
+                          >
+                            {hexToUbi(c.escrow, 4)}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className="muted small" style={{ fontSize: "0.68rem" }}>
+                          block #{c.deploy_block}
+                        </div>
+                        <div className="muted small" style={{ fontSize: "0.65rem" }}>
+                          {fmtUnixTs(c.createdAt)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div
+              className="muted small"
+              style={{ marginTop: "0.85rem", fontSize: "0.72rem", lineHeight: 1.5 }}
+            >
+              Contract escrow addresses are marked with a{" "}
+              <ContractBadge />{" "}
+              badge throughout the explorer. Click any contract to view its account.
+            </div>
           </div>
         )}
       </div>
+
+      {/* Address-level contract badge legend */}
+      {knownContractAddresses.size > 0 && view.kind === "account" && (
+        <div
+          className="card"
+          style={{ padding: "0.65rem 1rem", fontSize: "0.75rem", color: "var(--muted)" }}
+        >
+          {knownContractAddresses.has(view.address.toLowerCase()) && (
+            <span>
+              This address is a contract escrow <ContractBadge />
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

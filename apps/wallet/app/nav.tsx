@@ -1,10 +1,12 @@
 "use client";
 
 /**
- * Obsidian-glass sticky nav: brand dot, tab rail, connection pill, settings gear.
+ * Obsidian-glass sticky nav: brand dot, tab rail, connection pill.
+ * "AI" is now a first-class tab alongside Wallet / Explorer / Identity / Contracts.
+ * The gear button is kept for quick-access but AI section is the primary settings home.
  */
 
-export type Section = "wallet" | "explorer" | "identity" | "contracts";
+export type Section = "wallet" | "explorer" | "identity" | "contracts" | "ai";
 
 interface NavProps {
   active: Section;
@@ -20,9 +22,10 @@ const TABS: { id: Section; label: string; violet?: boolean }[] = [
   { id: "explorer", label: "Explorer" },
   { id: "identity", label: "Identity" },
   { id: "contracts", label: "Contracts", violet: true },
+  { id: "ai", label: "AI", violet: true },
 ];
 
-export function Nav({ active, onSelect, conn, chainId, onSettings, settingsOpen }: NavProps) {
+export function Nav({ active, onSelect, conn, chainId }: NavProps) {
   const pillClass =
     conn === "ok" ? "conn-pill ok" : conn === "bad" ? "conn-pill bad" : "conn-pill warn";
   const pillText =
@@ -64,16 +67,6 @@ export function Nav({ active, onSelect, conn, chainId, onSettings, settingsOpen 
         <span className="conn-dot" />
         {pillText}
       </span>
-
-      {/* Settings gear */}
-      <button
-        className={`gear-btn ${settingsOpen ? "active" : ""}`}
-        title="Settings — configure the node's LLM backend (Ollama / Anthropic / OpenAI)"
-        onClick={onSettings}
-        aria-label="Settings"
-      >
-        ⚙
-      </button>
     </div>
   );
 }
