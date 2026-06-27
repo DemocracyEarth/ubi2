@@ -75,6 +75,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-17 · interface/security** — Harden NFT-card SVG rendering: the PoH + stream cards use
   `dangerouslySetInnerHTML` on the RPC-returned SVG (on-chain card is clean, but a hostile RPC could inject
   `<script>` = XSS). Render via `<img src=data:image/svg+xml;base64,…>` or DOMPurify. *Source:* `docs/reports/security-poh.md`.
+- **FU-18 · protocol** — `ubi_getRecentBlocks(nonEmptyOnly=true)` scans the unbounded blocks Vec under the
+  consensus mutex (Low). Bounded by chain length on devnet + matches the existing O(N) read shape; future:
+  side-index non-empty heights or cap the scan window. *Source:* `docs/reports/security-txui.md`.
+- **FU-19 · protocol** — `ubi_getContracts.createdAt` is a raw `u64` while every other RPC timestamp is
+  `hex_u64` (Info). Intentional (the SDK expects an integer) but inconsistent — document the deviation in the
+  spec. *Source:* `docs/reports/reliability-txui.md`.
 
 **Product backlog (field-test feedback · 2026-06-21 — verified live on an EVM wallet)**
 - **EXPL-1 · protocol/interface** — A *proper* block explorer: browse all blocks, txs, and accounts,
@@ -99,6 +105,16 @@ _(none)_
 _(none)_
 
 ## ✅ Done
+- **Cycle 7 · tx-confirmation + explorer + contract-UX · SHIPPED.** All gates green (446 tests). Fixed the
+  field-test bug where MetaMask showed mined txs as **"Dropped"** (the chain advertises baseFeePerGas, so
+  MetaMask sends EIP-1559 type-2 txs; `tx_to_json`/`receipt_to_json` hardcoded `type:0x0` + dropped the 1559
+  fields, so MetaMask read the returned tx as a different one taking the nonce — now emits the real signed type
+  + caps). Real explorer routes `/tx /block /address /account` (+ friendly "rejected before inclusion" panel,
+  no bare 404). Two read-RPCs (`ubi_getRecentBlocks` non-empty filter, `ubi_getContracts` directory). Five UI
+  items: non-empty-blocks toggle, **AI/Settings as a nav section** (active provider + masked key), template
+  **suggestion chips + tags**, **parties-field** clarity (real placeholders, ≥1-party rule), contract
+  **detail/interact + an explorer contracts directory + Contract badge**. Reports `docs/reports/*-txui.md`.
+  Follow-ups: FU-18/FU-19.
 - **Proof-of-Humanity NFT + branding · SHIPPED.** All gates green (415 tests). A **soulbound ERC-721 "Proof of
   Humanity"** on HumanityHub — every Verified human owns one (`tokenId = uint160(address)`; mint/burn on
   Verified↔not-Verified; transfers revert) with a **fully on-chain card** (the fingerprint mark in the yellow→pink
