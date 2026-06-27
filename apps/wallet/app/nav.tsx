@@ -6,7 +6,7 @@
  * The gear button is kept for quick-access but AI section is the primary settings home.
  */
 
-export type Section = "wallet" | "explorer" | "identity" | "contracts" | "ai";
+export type Section = "home" | "wallet" | "explorer" | "identity" | "contracts" | "ai";
 
 interface NavProps {
   active: Section;
@@ -18,6 +18,7 @@ interface NavProps {
 }
 
 const TABS: { id: Section; label: string; violet?: boolean }[] = [
+  { id: "home", label: "Home" },
   { id: "wallet", label: "Wallet" },
   { id: "explorer", label: "Explorer" },
   { id: "identity", label: "Identity" },
