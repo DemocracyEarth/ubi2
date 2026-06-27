@@ -2813,8 +2813,26 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         let now = now_secs();
         let acct = g.state.get(&from.into_array()).unwrap_or_default();
         let settled = acct.balance(now); // live balance, since settlement folds emission in
-        let expected_nonce =
-            acct.nonce + g.mempool.iter().filter(|p| p.from == from).count() as u64;
+        let sender_pending = g.mempool.iter().filter(|p| p.from == from).count();
+        // SEC-M5A-3: bound the mempool BEFORE admitting. Both caps (spec §10/§3.3, the canonical values
+        // in `ubi2_network::consts`) were previously unreferenced; an unbounded ingest let a flood of
+        // (individually valid) txs grow the mempool without limit on the gossip + RPC path. Enforce the
+        // GLOBAL cap and the PER-SENDER cap here, rejecting over-cap txs with a clear JSON-RPC error so a
+        // single sender cannot monopolize the mempool and the total is bounded. A duplicate (same nonce,
+        // already pending) re-arrival is caught by the nonce gate below, so it does not consume a slot.
+        if g.mempool.len() >= ubi2_network::consts::MEMPOOL_MAX_TXS {
+            return Err(invalid_params(format!(
+                "mempool full: at global cap of {} txs",
+                ubi2_network::consts::MEMPOOL_MAX_TXS
+            )));
+        }
+        if sender_pending >= ubi2_network::consts::MEMPOOL_MAX_PER_SENDER {
+            return Err(invalid_params(format!(
+                "mempool full for sender: at per-sender cap of {} txs",
+                ubi2_network::consts::MEMPOOL_MAX_PER_SENDER
+            )));
+        }
+        let expected_nonce = acct.nonce + sender_pending as u64;
         if nonce != expected_nonce {
             return Err(invalid_params(format!(
                 "nonce too {}: expected {expected_nonce}, got {nonce}",

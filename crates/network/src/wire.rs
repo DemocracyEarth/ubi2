@@ -279,21 +279,30 @@ impl WireBlock {
         recover_secp256k1(&self.hash(), &self.proposer_sig)
     }
 
-    /// The network-layer "verify what we can" check (§3.1): the carried `txs_root` matches the txs, and
-    /// — if signed — `ecrecover(proposer_sig) == proposer`. Full re-execution/parent/slot validation is
-    /// the node's `validate_and_apply_block` (§5.1); this only rejects obviously-malformed announcements
-    /// so they are not forwarded.
+    /// The network-layer "verify what we can" check (§3.1, fail-closed): the carried `txs_root` matches
+    /// the txs **and** the block carries a valid proposer signature (`ecrecover(proposer_sig) ==
+    /// proposer`). Full re-execution/parent/slot validation is the node's `validate_and_apply_block`
+    /// (§5.1); this only rejects obviously-malformed/unauthenticated announcements so they are not
+    /// forwarded — and, critically, so they are never **trusted for their NUMBER** by the sync driver.
+    ///
+    /// SECURITY (SEC-M5A-1): a previous version SKIPPED the signature check when `proposer_sig` was
+    /// empty. That let a forged, UNSIGNED block claiming `number = u64::MAX` pass shallow-verify, get its
+    /// (forged) tip pinned, and drive an unbounded sync loop. A gossiped/announced block that wants to be
+    /// believed about its height MUST be authenticated. We therefore **fail closed on an absent
+    /// signature**: an unsigned block never shallow-verifies. (Unsigned blocks only ever exist in the
+    /// single-node devnet, which does not gossip; the follower path always supplies a signed proposer.)
     pub fn shallow_verify(&self) -> bool {
         if self.recompute_txs_root() != self.txs_root {
             return false;
         }
-        if !self.proposer_sig.is_empty() {
-            match self.recover_proposer() {
-                Some(addr) => addr == self.proposer,
-                None => return false,
-            };
+        // Fail closed: an unsigned/empty signature is NOT trusted on the gossip/sync path.
+        if self.proposer_sig.is_empty() {
+            return false;
         }
-        true
+        match self.recover_proposer() {
+            Some(addr) => addr == self.proposer,
+            None => false,
+        }
     }
 }
 
@@ -646,6 +655,39 @@ mod tests {
         let mut trailing = enc.clone();
         trailing.push(0);
         assert_eq!(WireBlock::decode(&trailing), Err(WireError::TrailingBytes));
+    }
+
+    /// SEC-M5A-1: a forged UNSIGNED block (empty `proposer_sig`) — even one whose `txs_root` is internally
+    /// consistent and that claims a huge `number` to drive a sync loop — must NOT shallow-verify. Failing
+    /// closed on an absent signature is what stops the network surfacing/forwarding it and the sync driver
+    /// trusting its forged tip.
+    #[test]
+    fn unsigned_block_fails_shallow_verify_even_with_huge_number() {
+        let txs: Vec<Vec<u8>> = Vec::new(); // an empty-tx block (the cheapest forgery)
+        let mut forged = WireBlock {
+            number: u64::MAX,
+            parent_hash: B256::ZERO,
+            timestamp: 1_700_000_000,
+            txs_root: B256::ZERO,
+            state_root: B256::ZERO,
+            proposer: Address::ZERO,
+            proposer_sig: vec![], // UNSIGNED
+            txs,
+        };
+        forged.txs_root = forged.recompute_txs_root(); // internally consistent txs_root
+        assert!(
+            !forged.shallow_verify(),
+            "an unsigned block must fail shallow-verify (SEC-M5A-1) — it cannot be trusted for its number"
+        );
+
+        // A signature by the WRONG key (recovers to a different address than `proposer`) also fails.
+        let sk = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        forged.proposer = Address::repeat_byte(0xee); // not the signer's address
+        forged.proposer_sig = sign(&sk, &forged.hash());
+        assert!(
+            !forged.shallow_verify(),
+            "a signature that does not recover to `proposer` must fail shallow-verify"
+        );
     }
 
     #[test]

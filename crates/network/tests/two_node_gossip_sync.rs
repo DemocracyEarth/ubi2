@@ -24,6 +24,10 @@ use ubi2_network::{start, NetEvent, NetworkHandle};
 
 const CHAIN_ID: u64 = 0x5542;
 
+/// A proposer key for SIGNING test blocks. SEC-M5A-1: `shallow_verify` now fails closed on an unsigned
+/// block, so a gossiped block must carry a valid proposer signature to be delivered/forwarded.
+const PROPOSER_SECRET: [u8; 32] = [0x55; 32];
+
 fn genesis() -> B256 {
     B256::repeat_byte(0x42)
 }
@@ -64,15 +68,35 @@ async fn first_listen_addr(rx: &mut UnboundedReceiver<NetEvent>) -> Multiaddr {
     }
 }
 
+/// A SIGNED test block (SEC-M5A-1): the proposer field is the `PROPOSER_SECRET` address and
+/// `proposer_sig` is a valid signature over the header hash, so `shallow_verify` accepts it.
 fn mk_block(n: u64) -> WireBlock {
+    let key = ValidatorKey::from_bytes(&PROPOSER_SECRET).unwrap();
     let mut b = WireBlock {
         number: n,
         parent_hash: B256::repeat_byte(n as u8),
-        timestamp: 1_700_000_000 + n,
+        timestamp: 1_700_000_000u64.saturating_add(n),
         txs_root: B256::ZERO,
-        state_root: B256::repeat_byte((n + 1) as u8),
-        proposer: Address::ZERO,
+        state_root: B256::repeat_byte(n.wrapping_add(1) as u8),
+        proposer: key.address(),
         proposer_sig: vec![],
+        txs: vec![vec![n as u8; 8]],
+    };
+    b.txs_root = b.recompute_txs_root();
+    b.proposer_sig = key.sign_digest(&b.hash());
+    b
+}
+
+/// An UNSIGNED forged block claiming a huge number — used to prove the network drops it (SEC-M5A-1).
+fn mk_unsigned_block(n: u64) -> WireBlock {
+    let mut b = WireBlock {
+        number: n,
+        parent_hash: B256::repeat_byte(n as u8),
+        timestamp: 1_700_000_000u64.saturating_add(n),
+        txs_root: B256::ZERO,
+        state_root: B256::repeat_byte(n.wrapping_add(1) as u8),
+        proposer: Address::ZERO,
+        proposer_sig: vec![], // UNSIGNED
         txs: vec![vec![n as u8; 8]],
     };
     b.txs_root = b.recompute_txs_root();
@@ -262,6 +286,64 @@ async fn block_gossip_delivers_and_shallow_verifies() {
             assert_eq!(id, want_hash, "block message-id = block hash (§3.1)");
             assert_eq!(*got, block, "the block round-trips byte-identically");
             assert!(got.shallow_verify(), "delivered block shallow-verifies");
+        }
+        _ => unreachable!(),
+    }
+
+    drop(handle_a);
+    drop(handle_b);
+}
+
+/// SEC-M5A-1: a forged UNSIGNED block claiming `number = u64::MAX` gossiped by A must NOT be surfaced to
+/// B as a `BlockReceived` — the network's `shallow_verify` gate (now fail-closed on an empty signature)
+/// drops it before it ever reaches the node driver, so it can never pin a bogus tip / drive a sync loop.
+/// A subsequent VALID signed block from A still gets through, proving the drop is selective, not a stall.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forged_unsigned_high_number_block_is_dropped_not_delivered() {
+    let (handle_a, mut rx_a) = start(node_config([0x66; 32])).unwrap();
+    let (handle_b, mut rx_b) = start(node_config([0x77; 32])).unwrap();
+
+    let a_addr = first_listen_addr(&mut rx_a).await;
+    let _ = first_listen_addr(&mut rx_b).await;
+    let a_dial: Multiaddr = format!("{a_addr}/p2p/{}", handle_a.local_peer_id())
+        .parse()
+        .unwrap();
+    handle_b.dial(a_dial);
+    wait_for(
+        &mut rx_a,
+        |e| matches!(e, NetEvent::PeerConnected { .. }),
+        "A: connected",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // A publishes a forged UNSIGNED block claiming the maximum height.
+    let forged = mk_unsigned_block(u64::MAX);
+    handle_a.publish_block(forged);
+
+    // A genuine signed block follows; B must receive THIS one (and only this one).
+    let good = mk_block(7);
+    let good_hash = good.hash();
+    handle_a.publish_block(good.clone());
+
+    match wait_for(
+        &mut rx_b,
+        |e| matches!(e, NetEvent::BlockReceived { .. }),
+        "B: block received",
+    )
+    .await
+    {
+        NetEvent::BlockReceived { id, block: got, .. } => {
+            assert_eq!(
+                id, good_hash,
+                "the FIRST block B sees must be the valid signed one — the forged unsigned block was dropped (SEC-M5A-1)"
+            );
+            assert_ne!(
+                got.number,
+                u64::MAX,
+                "B must never surface the forged u64::MAX block"
+            );
+            assert!(got.shallow_verify());
         }
         _ => unreachable!(),
     }

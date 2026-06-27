@@ -376,7 +376,12 @@ fn ec1_ec2_ec3_ec4_ec7_m5_stage_a() {
         eprintln!("[m5] node {} RPC up on port {port}", i + 1);
     }
 
-    // ── Wait for mesh to form (all 3 nodes see 2 peers, up to 30 s) ──────────
+    // ── Wait for mesh to form (all 3 nodes see 2 peers) ──────────────────────
+    // The reconnect-until-connected sweep converges in a few seconds normally; the
+    // budget is generous (90 s) only so a CPU-starved CI box — where the 500 ms sweep
+    // ticks get delayed — still converges rather than flaking. poll_until returns the
+    // instant the mesh is up, so this does not slow a healthy run.
+    const MESH_BUDGET: Duration = Duration::from_secs(90);
     eprintln!("[m5] waiting for 3-node mesh to form (EC-1)...");
     for (i, node) in nodes.iter().enumerate() {
         let port = node.rpc_port;
@@ -389,13 +394,14 @@ fn ec1_ec2_ec3_ec4_ec7_m5_stage_a() {
                     None
                 }
             },
-            Duration::from_secs(30),
+            MESH_BUDGET,
         );
         let n = got.unwrap_or_else(|| {
             let actual = peer_count(port).unwrap_or(0);
             panic!(
-                "EC-1 FAIL: node {} has {actual} peers (expected 2) after 30s",
-                i + 1
+                "EC-1 FAIL: node {} has {actual} peers (expected 2) after {}s",
+                i + 1,
+                MESH_BUDGET.as_secs()
             )
         });
         eprintln!("[m5] EC-1: node {} peer count = {n}", i + 1);

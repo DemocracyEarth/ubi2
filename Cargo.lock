@@ -4510,6 +4510,7 @@ dependencies = [
  "tower 0.4.13",
  "tower-http",
  "tracing",
+ "ubi2-network",
  "ubi2-oracle",
  "ubi2-runtime",
 ]

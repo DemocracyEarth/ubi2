@@ -20,6 +20,22 @@ pub const PROTOCOL_SYNC: &str = "/ubi2/sync/1";
 /// exceeds this is clamped by the server before it reads blocks.
 pub const SYNC_MAX_BATCH: u64 = 128;
 
+/// Maximum number of blocks a peer-advertised tip may be ahead of our local head before we treat the
+/// advertisement as implausible and REFUSE to chase it (SEC-M5A-1). A forged announcement claiming
+/// `number = u64::MAX` would otherwise pin a bogus tip and drive an unbounded sync loop. We sync toward
+/// a peer that is plausibly ahead — many full sync batches' worth of headroom — but never toward an
+/// arbitrary attacker-chosen height. A genuinely far-behind node still catches up batch-by-batch: each
+/// applied batch advances the local head, which re-bounds the next acceptable look-ahead.
+pub const SYNC_MAX_LOOKAHEAD: u64 = SYNC_MAX_BATCH * 64; // 8192 blocks of headroom
+
+/// How many consecutive sync responses that make ZERO forward progress (applied 0 blocks) we tolerate
+/// from a peer before abandoning + penalizing it (SEC-M5A-1). A peer that advertised a tip it cannot
+/// actually serve — or that keeps replying empty/timeout — must not drive an unbounded re-request loop.
+/// After this many no-progress rounds the peer is penalized (counting toward the greylist threshold) and
+/// we stop chasing its advertised tip until it advertises a higher one again via a fresh, progressing
+/// response.
+pub const SYNC_MAX_NO_PROGRESS_ROUNDS: u32 = 3;
+
 /// Global mempool cap (spec §10, `MEMPOOL_MAX_TXS`). Enforced by the node's mempool; surfaced here as
 /// the canonical value so the rate-limit/anti-spam hooks and the node agree on one number.
 pub const MEMPOOL_MAX_TXS: usize = 4096;
@@ -34,6 +50,23 @@ pub const RATE_BUCKET_CAPACITY: u32 = 256;
 
 /// Per-peer token-bucket refill rate (tokens per second) for inbound gossip (FU-1, §3.3).
 pub const RATE_REFILL_PER_SEC: u32 = 64;
+
+/// Per-peer token-bucket capacity for inbound SYNC/Hello request-response messages (SEC-M5A-2). The
+/// sync path (`GetBlocks`/`Hello`) was previously un-rate-limited, so a peer could flood expensive
+/// range requests unboundedly. This bucket throttles it independently of the gossip bucket. Sized for a
+/// healthy join-sync burst (genesis→tip is many `GetBlocks` in quick succession) while still cutting off
+/// a flood; over-rate requests are dropped (not serviced) and count toward the greylist threshold.
+pub const SYNC_RATE_BUCKET_CAPACITY: u32 = 64;
+
+/// Per-peer refill rate (tokens per second) for the inbound SYNC/Hello bucket (SEC-M5A-2).
+pub const SYNC_RATE_REFILL_PER_SEC: u32 = 16;
+
+/// Max concurrent in-flight inbound SYNC (`GetBlocks`) requests we will service for a single peer at
+/// once (SEC-M5A-2). A peer opening many simultaneous range streams to exhaust us is capped here: a
+/// request over the cap is dropped (the channel is let drop, so the requester sees a failure) and the
+/// peer penalized. A response (or its channel drop) releases a slot. `Hello` handshakes are not counted
+/// (they are cheap and one-per-connection).
+pub const SYNC_MAX_INFLIGHT_PER_PEER: usize = 4;
 
 /// Protocol version exchanged in the `Hello` handshake (spec §4.1 `protocol_ver`). A peer with a
 /// different major version is treated as incompatible.

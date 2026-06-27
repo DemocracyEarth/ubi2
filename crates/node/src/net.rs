@@ -27,7 +27,9 @@ use std::collections::HashMap;
 
 use alloy_primitives::{Address as AlloyAddr, B256};
 use libp2p::{Multiaddr, PeerId};
-use ubi2_network::consts::{PROTOCOL_VERSION, SYNC_MAX_BATCH};
+use ubi2_network::consts::{
+    PROTOCOL_VERSION, SYNC_MAX_BATCH, SYNC_MAX_LOOKAHEAD, SYNC_MAX_NO_PROGRESS_ROUNDS,
+};
 use ubi2_network::wire::{Blocks, GetBlocks, Hello, WireBlock};
 use ubi2_network::{NetEvent, NetworkHandle};
 use ubi2_rpc::{Chain, PeerStatus};
@@ -38,6 +40,10 @@ struct PeerEntry {
     multiaddr: Option<Multiaddr>,
     validator: Option<AlloyAddr>,
     tip: Option<(u64, B256)>,
+    /// SEC-M5A-1: consecutive sync responses from this peer that made ZERO forward progress (applied 0).
+    /// Reset on any forward progress. When it crosses [`SYNC_MAX_NO_PROGRESS_ROUNDS`] the peer is
+    /// penalized + abandoned so a peer advertising a tip it cannot serve cannot drive an unbounded loop.
+    sync_no_progress: u32,
 }
 
 /// The node's network driver: holds the chain + handle + peer table and processes `NetEvent`s. One
@@ -173,6 +179,11 @@ impl NetDriver {
             return;
         }
         let bound = hello.verify_binding(&peer.to_bytes());
+        // SEC-M5A-1: a `Hello.tip` is peer-advertised and UNAUTHENTICATED — a hostile peer can claim any
+        // height. We record it for `ubi_getPeers`, but we only chase it if it is plausibly ahead (within
+        // SYNC_MAX_LOOKAHEAD of our head). An implausibly-far tip (e.g. u64::MAX) is logged and ignored
+        // for sync; it is never pinned as a target. A genuinely far-behind node still catches up because
+        // each applied batch re-bounds the next acceptable look-ahead.
         let entry = self.peers.entry(peer).or_default();
         entry.validator = bound;
         entry.tip = Some(hello.tip);
@@ -213,7 +224,22 @@ impl NetDriver {
             return; // already have this height (or behind via sync) — nothing to apply
         }
         if block.number > local_h + 1 {
-            // A gap: we're missing parents. Pull the range from this peer, then live gossip resumes.
+            // A gap: we're missing parents. Before trusting this announcement's NUMBER (and pinning it as
+            // a sync target) we fail closed on two SEC-M5A-1 conditions:
+            //   1. The block must be AUTHENTICATED by the Stage-A designated proposer. `shallow_verify`
+            //      already requires a valid proposer signature (it no longer passes an empty sig), and we
+            //      additionally check the recovered/declared proposer IS our designated proposer. A
+            //      forged UNSIGNED block claiming `number = u64::MAX` therefore never reaches `maybe_sync`.
+            //   2. The advertised height must be within SYNC_MAX_LOOKAHEAD of our head (handled in
+            //      `maybe_sync`) so even a *signed* (but absurd) number cannot pin an unreachable target.
+            if !self.announced_tip_is_trustworthy(&block) {
+                tracing::warn!(
+                    %from, number = block.number,
+                    "ignoring untrusted ahead-block announcement (unsigned / wrong proposer); not pinning tip"
+                );
+                self.handle.penalize_peer(from);
+                return;
+            }
             self.peers.entry(from).or_default().tip = Some((block.number, block.hash()));
             self.maybe_sync(from, block.number);
             return;
@@ -236,6 +262,26 @@ impl NetDriver {
                 tracing::warn!(%from, number = block.number, error = %e, "rejecting block; penalizing peer");
                 self.handle.penalize_peer(from);
             }
+        }
+    }
+
+    /// SEC-M5A-1: may we trust an ahead-of-head block ANNOUNCEMENT for its NUMBER (i.e. pin it as a sync
+    /// target)? Only if it is authenticated by the Stage-A designated proposer: a valid `txs_root` + a
+    /// valid proposer signature (`shallow_verify`) AND the block's `proposer` equals our designated
+    /// proposer. We cannot re-execute it here (we are missing its parents), so this authorship check is
+    /// the gate that stops a forged/unsigned/wrong-proposer block pinning a bogus tip. The look-ahead
+    /// distance bound is enforced separately in `maybe_sync`.
+    fn announced_tip_is_trustworthy(&self, block: &WireBlock) -> bool {
+        if !block.shallow_verify() {
+            return false; // unsigned or txs_root/sig mismatch — never trust its number
+        }
+        match self.designated_proposer {
+            // In a networked Stage-A deployment the designated proposer is always set; only its signed
+            // blocks advance the tip.
+            Some(dp) => block.proposer == dp,
+            // No designated proposer configured (single-node devnet) — there is no gossip peer to forge a
+            // tip, but fail closed anyway: do not chase an ahead announcement we cannot attribute.
+            None => false,
         }
     }
 
@@ -311,22 +357,71 @@ impl NetDriver {
                 }
             }
         }
+        // Allow a follow-up request regardless of the branch below (the in-flight pull has resolved).
+        self.sync_in_flight_to = 0;
+
         if applied > 0 {
             tracing::info!(%from, applied, tip = self.chain.tip().0, "applied sync batch");
+            // Forward progress: reset the no-progress counter and chase the next batch toward the tip.
+            if let Some(e) = self.peers.get_mut(&from) {
+                e.sync_no_progress = 0;
+            }
             self.refresh_advertised_state();
+            if let Some(peer_tip) = self.peers.get(&from).and_then(|e| e.tip).map(|(h, _)| h) {
+                self.maybe_sync(from, peer_tip);
+            }
+            return;
         }
-        // If still behind the peer's advertised tip, pull the next batch.
+
+        // SEC-M5A-1: NO forward progress (empty batch, an OutboundFailure-synthesized empty response, an
+        // overlapping batch, or a peer serving blocks it cannot link). Re-issuing `maybe_sync` here
+        // unconditionally — as the old code did — produces an UNBOUNDED re-request loop against a peer
+        // advertising a tip (possibly forged via u64::MAX) it cannot serve. Instead we count no-progress
+        // rounds and, past the bound, PENALIZE + abandon the peer rather than loop. The peer must offer a
+        // genuinely-progressing response (or re-advertise) to be chased again.
+        let rounds = {
+            let e = self.peers.entry(from).or_default();
+            e.sync_no_progress = e.sync_no_progress.saturating_add(1);
+            e.sync_no_progress
+        };
+        if rounds >= SYNC_MAX_NO_PROGRESS_ROUNDS {
+            tracing::warn!(
+                %from, rounds,
+                "sync made no progress for too many rounds; penalizing + abandoning peer (no re-request)"
+            );
+            // Penalize (counts toward the greylist threshold) and stop chasing this peer's tip: drop our
+            // recorded tip for it so a later `maybe_sync` does not re-target the same unreachable height.
+            self.handle.penalize_peer(from);
+            if let Some(e) = self.peers.get_mut(&from) {
+                e.tip = None;
+            }
+            return;
+        }
+        // Bounded retry: one more attempt toward the (still-recorded, still-plausible) tip.
+        tracing::debug!(%from, rounds, "sync made no progress; bounded retry");
         if let Some(peer_tip) = self.peers.get(&from).and_then(|e| e.tip).map(|(h, _)| h) {
-            self.sync_in_flight_to = 0; // allow the follow-up request
             self.maybe_sync(from, peer_tip);
         }
     }
 
     /// Request the missing range from `peer` if its `peer_tip` is ahead of our head and we don't already
     /// have an overlapping pull in flight.
+    ///
+    /// SEC-M5A-1: refuse to chase an implausibly-far advertised tip. A hostile peer can claim any height
+    /// (an unauthenticated `Hello.tip`, or a forged ahead-block number). We only sync toward a tip within
+    /// SYNC_MAX_LOOKAHEAD of our head; anything further is ignored (not pinned as a target). Each applied
+    /// batch advances `head`, which re-bounds the next acceptable look-ahead, so a genuinely far-behind
+    /// node still converges — it just cannot be slingshotted to u64::MAX in one step.
     fn maybe_sync(&mut self, peer: PeerId, peer_tip: u64) {
         let (head, _) = self.chain.tip();
         if peer_tip <= head {
+            return;
+        }
+        if peer_tip > head.saturating_add(SYNC_MAX_LOOKAHEAD) {
+            tracing::warn!(
+                %peer, peer_tip, head,
+                "ignoring implausibly-far advertised tip (> SYNC_MAX_LOOKAHEAD ahead); not chasing it"
+            );
             return;
         }
         if peer_tip <= self.sync_in_flight_to {
@@ -378,5 +473,103 @@ impl NetDriver {
     /// Advertise our initial `Hello` + peer table at startup (before any block is produced).
     pub fn announce_start(&self) {
         self.refresh_advertised_state();
+    }
+
+    // ---- test-only accessors (SEC-M5A-1 regression: the no-progress sync loop is BOUNDED) ----
+    #[cfg(test)]
+    fn test_set_peer_tip(&mut self, peer: PeerId, tip: (u64, B256)) {
+        self.peers.entry(peer).or_default().tip = Some(tip);
+    }
+    #[cfg(test)]
+    fn test_peer_tip(&self, peer: &PeerId) -> Option<(u64, B256)> {
+        self.peers.get(peer).and_then(|e| e.tip)
+    }
+    #[cfg(test)]
+    fn test_peer_no_progress(&self, peer: &PeerId) -> u32 {
+        self.peers
+            .get(peer)
+            .map(|e| e.sync_no_progress)
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod sync_loop_tests {
+    use super::*;
+    use ubi2_network::config::NetworkConfig;
+    use ubi2_rpc::Chain;
+
+    /// Build a `NetDriver` over a real (but standalone) network handle for unit-testing the sync-driver
+    /// logic. The swarm loop is spawned by `start`, but these tests never connect a peer — they drive
+    /// `on_sync_response` directly and assert the driver's own bookkeeping (tip pinning / no-progress
+    /// counting), which is where the SEC-M5A-1 loop bound lives.
+    fn test_driver(rt: &tokio::runtime::Runtime) -> (NetDriver, PeerId) {
+        let chain = Chain::new(ubi2_rpc::DEVNET_CHAIN_ID, 1_000);
+        let cfg = NetworkConfig::new(ubi2_rpc::DEVNET_CHAIN_ID, chain.genesis_hash());
+        let (handle, _rx) = rt.block_on(async { ubi2_network::start(cfg).unwrap() });
+        let designated = Some(AlloyAddr::repeat_byte(0xDD));
+        let driver = NetDriver::new(chain, handle, None, designated, false);
+        (driver, PeerId::random())
+    }
+
+    /// SEC-M5A-1: a peer advertising a tip it cannot serve (every sync response is empty) must NOT drive
+    /// an unbounded re-request loop. After `SYNC_MAX_NO_PROGRESS_ROUNDS` no-progress responses the driver
+    /// PENALIZES the peer and CLEARS its recorded tip, so subsequent `maybe_sync` stops targeting it.
+    #[test]
+    fn empty_responses_bound_the_loop_and_clear_the_tip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut driver, peer) = test_driver(&rt);
+        // Pin a forged-far tip (the SEC-M5A-1 scenario), then feed empty responses.
+        driver.test_set_peer_tip(peer, (u64::MAX, B256::ZERO));
+
+        for round in 1..SYNC_MAX_NO_PROGRESS_ROUNDS {
+            driver.on_sync_response(peer, Blocks { blocks: vec![] });
+            assert_eq!(
+                driver.test_peer_no_progress(&peer),
+                round,
+                "no-progress counter increments each empty round"
+            );
+            assert!(
+                driver.test_peer_tip(&peer).is_some(),
+                "tip still pinned during the bounded-retry window"
+            );
+        }
+        // The round that crosses the bound clears the tip + penalizes — the loop terminates.
+        driver.on_sync_response(peer, Blocks { blocks: vec![] });
+        assert_eq!(
+            driver.test_peer_tip(&peer),
+            None,
+            "SEC-M5A-1: after the no-progress bound the peer's tip is cleared (no more re-requesting)"
+        );
+
+        rt.shutdown_background();
+    }
+
+    /// SEC-M5A-1: `maybe_sync` refuses to chase a tip beyond `SYNC_MAX_LOOKAHEAD` of the local head — a
+    /// forged u64::MAX tip never sets `sync_in_flight_to`, so no range request is issued for it.
+    #[test]
+    fn maybe_sync_ignores_implausibly_far_tip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut driver, peer) = test_driver(&rt);
+        // Local head is genesis (0). An implausibly-far tip must be ignored (no in-flight target set).
+        driver.maybe_sync(peer, u64::MAX);
+        assert_eq!(
+            driver.sync_in_flight_to, 0,
+            "an implausibly-far tip must not arm a sync request (SEC-M5A-1)"
+        );
+        // A plausibly-ahead tip (within the look-ahead) DOES arm a bounded request.
+        driver.maybe_sync(peer, 10);
+        assert!(
+            driver.sync_in_flight_to > 0,
+            "a plausibly-ahead tip arms a bounded sync request"
+        );
+
+        rt.shutdown_background();
     }
 }

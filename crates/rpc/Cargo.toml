@@ -32,6 +32,10 @@ hyper.workspace = true
 # already uses (alloy-primitives `k256` feature pulls it transitively), so naming it directly adds no
 # new transitive weight. Used only for header signing/recovery — never reachable from the runtime.
 k256 = { version = "0.13", features = ["ecdsa"] }
+# M5 (SEC-M5A-3): the mempool size caps (`MEMPOOL_MAX_TXS` / `MEMPOOL_MAX_PER_SENDER`, spec §10/§3.3)
+# live in `ubi2-network::consts` as the single canonical source; `ingest_raw_tx` enforces both. The
+# network crate does NOT depend on rpc, so this edge stays acyclic; only `consts` (plain values) is used.
+ubi2-network = { path = "../network" }
 
 [dev-dependencies]
 # Security PoC (C5-SEC-3): drive a STUBBED live-style backend (a blocking reqwest client, no network)

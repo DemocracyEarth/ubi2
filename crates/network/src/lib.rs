@@ -107,10 +107,12 @@ pub enum NetEvent {
 }
 
 /// An opaque handle the node returns blocks through, fulfilling a [`NetEvent::SyncRequest`]. It carries
-/// the request-response [`ResponseChannel`] so the node never sees libp2p internals.
+/// the request-response [`ResponseChannel`] so the node never sees libp2p internals, plus the requesting
+/// `peer` so the loop can release that peer's in-flight sync slot when the response is sent (SEC-M5A-2).
 #[derive(Debug)]
 pub struct SyncResponder {
     channel: ResponseChannel<SyncResponse>,
+    peer: PeerId,
 }
 
 /// Commands the node sends into the swarm.
@@ -531,11 +533,14 @@ fn handle_cmd(st: &mut LoopState, cmd: NetCmd) {
                 .insert(rid, PendingKind::Blocks(reply_id));
         }
         NetCmd::RespondBlocks { responder, blocks } => {
+            let SyncResponder { channel, peer } = responder;
+            // SEC-M5A-2: this inbound request is resolved → release the peer's in-flight sync slot.
+            st.rate.release_sync_inflight(&peer);
             if st
                 .swarm
                 .behaviour_mut()
                 .sync
-                .send_response(responder.channel, SyncResponse::Blocks(blocks))
+                .send_response(channel, SyncResponse::Blocks(blocks))
                 .is_err()
             {
                 tracing::debug!("sync response channel closed before send");
@@ -668,29 +673,48 @@ fn handle_behaviour_event(st: &mut LoopState, ev: Ubi2BehaviourEvent) {
             match message {
                 request_response::Message::Request {
                     request, channel, ..
-                } => match request {
-                    // A peer handshakes us: surface its Hello to the node AND reply with our Hello
-                    // (§4.1, "peers exchange a Hello").
-                    SyncRequest::Hello(hello) => {
-                        let _ = st.evt_tx.send(NetEvent::Hello {
-                            peer,
-                            hello: Box::new(hello),
-                        });
-                        let _ = st
-                            .swarm
-                            .behaviour_mut()
-                            .sync
-                            .send_response(channel, SyncResponse::Hello(st.local_hello.clone()));
+                } => {
+                    // SEC-M5A-2: rate-limit the inbound SYNC/Hello request-response path (previously only
+                    // gossip was limited). An over-rate request is dropped (the channel is let drop so the
+                    // requester sees an InboundFailure) and the peer penalized → eventual greylist. This
+                    // covers both `Hello` floods and `GetBlocks` floods.
+                    let now = Instant::now();
+                    if !st.rate.allow_sync(&peer, now) {
+                        tracing::debug!(peer = %peer, "rate-limited inbound sync request dropped");
+                        penalize(st, peer);
+                        // Drop `channel` without responding (requester gets an InboundFailure → backoff).
+                        return;
                     }
-                    // A peer asks for a block range: hand the node a responder token (§4.2).
-                    SyncRequest::GetBlocks(request) => {
-                        let _ = st.evt_tx.send(NetEvent::SyncRequest {
-                            from: peer,
-                            request,
-                            token: SyncResponder { channel },
-                        });
+                    match request {
+                        // A peer handshakes us: surface its Hello to the node AND reply with our Hello
+                        // (§4.1, "peers exchange a Hello"). Handshakes are cheap and not in-flight-capped.
+                        SyncRequest::Hello(hello) => {
+                            let _ = st.evt_tx.send(NetEvent::Hello {
+                                peer,
+                                hello: Box::new(hello),
+                            });
+                            let _ = st.swarm.behaviour_mut().sync.send_response(
+                                channel,
+                                SyncResponse::Hello(st.local_hello.clone()),
+                            );
+                        }
+                        // A peer asks for a block range: cap concurrent in-flight pulls per peer
+                        // (SEC-M5A-2) before handing the node a responder token (§4.2). Over the cap ⇒
+                        // drop + penalize.
+                        SyncRequest::GetBlocks(request) => {
+                            if !st.rate.try_acquire_sync_inflight(&peer, now) {
+                                tracing::debug!(peer = %peer, "too many in-flight sync requests; dropping");
+                                penalize(st, peer);
+                                return; // drop `channel` (InboundFailure to the requester)
+                            }
+                            let _ = st.evt_tx.send(NetEvent::SyncRequest {
+                                from: peer,
+                                request,
+                                token: SyncResponder { channel, peer },
+                            });
+                        }
                     }
-                },
+                }
                 request_response::Message::Response {
                     request_id,
                     response,
