@@ -4,7 +4,7 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M5 — Economics & Governance · **M1–M4 shipped (cycles 1–4) ✅**
+**Current milestone:** M5 — Network & Consensus (real P2P) · **Stage A shipped ✅ · Stage B next** · **M1–M4 + cycles 5–7 + PoH-NFT shipped ✅** · (Economics & Governance → M6)
 
 | Field | Meaning |
 |---|---|
@@ -75,6 +75,15 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **FU-17 · interface/security** — Harden NFT-card SVG rendering: the PoH + stream cards use
   `dangerouslySetInnerHTML` on the RPC-returned SVG (on-chain card is clean, but a hostile RPC could inject
   `<script>` = XSS). Render via `<img src=data:image/svg+xml;base64,…>` or DOMPurify. *Source:* `docs/reports/security-poh.md`.
+- **FU-20 · protocol/security (M5 Stage D)** — Persistence integrity: `persist::from_snapshot` adopts
+  `chain.json` verbatim; on load, recompute `state_root` from the loaded state + verify block-hash/parent
+  linkage + the genesis anchor (defensible trusted-disk stance for Stage A). *Source:* `docs/reports/security-m5a.md`.
+- **FU-21 · protocol/security (M5 Stage D)** — Eclipse hardening: inbound-connection cap + peer eviction/
+  diversity once discovery (Kademlia) lands; Stage A static-bootstrap is not exposed. *Source:* `docs/reports/security-m5a.md`.
+- **FU-22 · reliability/test-infra** — (a) migrate the remaining hard-coded-port RPC integration tests
+  (m2_acceptance.rs etc.) to `TcpListener::bind(127.0.0.1:0)` to kill the parallel "Address already in use"
+  flake (m5a tests already do this); (b) genesis block `state_root` header is `B256::ZERO` by design, so
+  `ubi_stateRoot` at height 0 is uninformative — add a doc note / optional `ubi_inMemoryStateRoot`. *Source:* `docs/reports/{qa,reliability}-m5a.md`.
 - **FU-18 · protocol** — `ubi_getRecentBlocks(nonEmptyOnly=true)` scans the unbounded blocks Vec under the
   consensus mutex (Low). Bounded by chain length on devnet + matches the existing O(N) read shape; future:
   side-index non-empty heights or cap the scan window. *Source:* `docs/reports/security-txui.md`.

@@ -1,0 +1,28 @@
+[package]
+name = "ubi2-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# M5 Stage A — the P2P layer. ALL libp2p/async networking lives here (ADR-0004 Decision 1); the
+# deterministic core (crates/runtime) never depends on this crate, and this crate never depends on
+# crates/runtime's state model — it moves bytes and verifies the hashes/signatures it can, deferring
+# full validation to crates/node.
+
+[dependencies]
+libp2p = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+# `alloy-primitives::keccak256` for the message-id / wire hashes (matches runtime/rpc keccak); `k256`
+# (already in the tree, transitive via alloy) for the secp256k1 ecrecover that verifies proposer sigs +
+# the Hello peer_proof (PeerId <-> validator-address binding, ADR Decision 3).
+alloy-primitives = { workspace = true }
+k256 = { version = "0.13", features = ["ecdsa"] }
+# the request-response Codec trait is `#[async_trait]`; libp2p already pulls async-trait transitively.
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

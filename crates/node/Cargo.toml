@@ -13,6 +13,15 @@ path = "src/main.rs"
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
 ubi2-rpc = { path = "../rpc" }
+# M5 (Stage A): the P2P layer (libp2p, isolated here + in crates/network). The node wires the swarm to
+# the chain: routes gossiped txs into the mempool, broadcasts/validates blocks, and runs join-sync. All
+# async/libp2p stays in crates/network; the node only consumes its NetworkHandle/NetEvent API.
+ubi2-network = { path = "../network" }
+# The node maps `Multiaddr`/`PeerId` (re-exported by libp2p via crates/network) for bootstrap dialing
+# and the peer table; naming libp2p directly here keeps the wiring readable. Same tree crates/network
+# already pulls — no new transitive weight.
+libp2p = { workspace = true }
+futures.workspace = true
 # The node owns the live-oracle wiring: it reads its boot config, builds the provider-backed
 # HumanityOracle + ContractInterpreter via `ubi2-oracle::Backend`, and fills `crates/rpc`'s OracleFactory
 # seam (so `crates/rpc` itself stays free of the oracle crate). serde/serde_json parse + persist the
@@ -25,3 +34,10 @@ tracing-subscriber.workspace = true
 alloy-primitives.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# M5 Stage A integration test (m5_stage_a.rs): signs EIP-155 txs to exercise EC-2/3/4/7.
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+# k256 is pulled transitively by alloy-primitives (features = ["k256"]) — no new tree weight.
+k256 = { version = "0.13", features = ["ecdsa"] }

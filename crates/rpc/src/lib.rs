@@ -60,6 +60,8 @@ use ubi2_runtime::{
     GAS_TRANSFER,
 };
 
+pub mod persist;
+
 pub mod streams;
 use streams::{
     decode_token_id, parse_calldata, render_token_uri, CalldataError, CardData, Side, StreamOp,
@@ -297,32 +299,150 @@ pub struct StoredTx {
 }
 
 /// A devnet block. Empty blocks are valid (the clock tick still advances height — spec §M1-T1.6).
+///
+/// M5 (Stage A, spec `05-p2p-network.md` §2.2) extends the header with the consensus fields a follower
+/// needs to validate authorship + agreement across processes:
+///   * `txs_root`  — a commitment over the canonical, ordered tx list (the included tx hashes).
+///   * `state_root`— a commitment over the FULL post-execution state ([`ubi2_runtime::state_root`]).
+///   * `proposer`  — the validator address that produced the block (zero for the single-node devnet).
+///   * `proposer_sig` — the proposer's EVM-key signature over the header pre-image (empty when unsigned).
+///
+/// The header hash is `keccak256(number ‖ parent_hash ‖ timestamp ‖ txs_root ‖ state_root ‖ proposer)`,
+/// and `proposer_sig` signs that same pre-image, so `ecrecover(proposer_sig)` must equal `proposer`.
 #[derive(Clone, Debug)]
 pub struct Block {
     pub number: u64,
     pub hash: B256,
     pub parent_hash: B256,
     pub timestamp: u64,
+    /// M5: commitment over the canonical, ordered tx list (the included tx hashes). Pure function of
+    /// the block's txs (EC-4/EC-10).
+    pub txs_root: B256,
+    /// M5: commitment over the full post-block state ([`ubi2_runtime::state_root`]). Two honest nodes
+    /// that re-execute the same ordered txs against the same parent state compute the identical root.
+    pub state_root: B256,
+    /// M5: the validator that produced the block. Zero (`Address::ZERO`) on the single-proposer devnet
+    /// until a proposer key is configured (Stage B fills the round-robin schedule).
+    pub proposer: AlloyAddr,
+    /// M5: the proposer's secp256k1 signature over the header pre-image, as 65 raw bytes (`r‖s‖v`).
+    /// Empty when the block was produced without a configured proposer key (devnet default).
+    pub proposer_sig: Vec<u8>,
     pub txs: Vec<StoredTx>,
 }
 
 impl Block {
-    /// A deterministic, opaque block hash: `keccak256(number || parent_hash || timestamp)`.
-    /// Not Ethereum's real header hash (no full header on devnet) but stable and collision-resistant
-    /// enough for `getBlockByHash` / `newHeads` correlation.
-    fn compute_hash(number: u64, parent_hash: B256, timestamp: u64) -> B256 {
-        let mut buf = Vec::with_capacity(8 + 32 + 8);
+    /// The header pre-image `number ‖ parent_hash ‖ timestamp ‖ txs_root ‖ state_root ‖ proposer`
+    /// (spec §2.2). Both the block hash and `proposer_sig` are computed over this exact byte string, so
+    /// `ecrecover(proposer_sig)` recovers `proposer` and any field change moves the hash.
+    fn header_preimage(
+        number: u64,
+        parent_hash: B256,
+        timestamp: u64,
+        txs_root: B256,
+        state_root: B256,
+        proposer: &AlloyAddr,
+    ) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8 + 32 + 8 + 32 + 32 + 20);
         buf.extend_from_slice(&number.to_be_bytes());
         buf.extend_from_slice(parent_hash.as_slice());
         buf.extend_from_slice(&timestamp.to_be_bytes());
+        buf.extend_from_slice(txs_root.as_slice());
+        buf.extend_from_slice(state_root.as_slice());
+        buf.extend_from_slice(proposer.as_slice());
+        buf
+    }
+
+    /// The M5 block hash: `keccak256(header_preimage)` (spec §2.2). For the genesis block (and any
+    /// pre-M5 caller) the extra fields are zero, so this reduces to a stable commitment over the
+    /// original `(number, parent_hash, timestamp)` plus three zero roots/address.
+    fn compute_hash(
+        number: u64,
+        parent_hash: B256,
+        timestamp: u64,
+        txs_root: B256,
+        state_root: B256,
+        proposer: &AlloyAddr,
+    ) -> B256 {
+        keccak256(Block::header_preimage(
+            number,
+            parent_hash,
+            timestamp,
+            txs_root,
+            state_root,
+            proposer,
+        ))
+    }
+
+    /// The canonical `txs_root` over a block's ordered **user**-tx list: `keccak256(count ‖ each tx
+    /// hash)`. A pure function of the included tx hashes in block order, so a follower recomputes it and
+    /// rejects a block whose proposer reordered or altered the tx set (spec §5.3). The caller passes only
+    /// the raw, gossipable user txs (NOT the synthetic M3 sweep tx) so the wire block's
+    /// `recompute_txs_root` over the carried raw bytes matches byte-for-byte; the sweep's effects are
+    /// committed by `state_root` and regenerated deterministically. (Stage A uses the as-included order;
+    /// the §5.3 canonical `(sender, nonce)` re-ordering + verification is a Stage-B follower check.)
+    fn compute_txs_root(txs: &[StoredTx]) -> B256 {
+        let mut buf = Vec::with_capacity(8 + txs.len() * 32);
+        buf.extend_from_slice(&(txs.len() as u64).to_be_bytes());
+        for tx in txs {
+            buf.extend_from_slice(tx.hash.as_slice());
+        }
         keccak256(&buf)
     }
 }
+
+/// Why a follower rejected a network block ([`Chain::validate_and_apply_block`], spec §5.1 / AC-F2/F3).
+/// Every variant is fail-closed: the block is NOT applied and the source peer may be penalized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockError {
+    /// The block's height is not exactly `head + 1` (the follower is behind/ahead — drive sync).
+    NonContiguous { have: u64, got: u64 },
+    /// `parent_hash` does not match the local head (different chain / fork).
+    WrongParent,
+    /// `timestamp` is not strictly greater than the parent's (§5.1(4)).
+    BadTimestamp,
+    /// The block's `proposer` is not the Stage-A designated proposer (AC-F3).
+    WrongProposer,
+    /// `ecrecover(proposer_sig)` does not equal `proposer` (forged/unsigned authorship).
+    BadSignature,
+    /// A raw tx in the block did not decode (malformed/forged block).
+    UndecodableTx,
+    /// Re-execution produced a different `state_root`/`txs_root`/`hash` than the header claims — the
+    /// I1/I2 cross-node check failed (AC-F2). The block is rejected and rolled back.
+    StateRootMismatch { expected: B256, got: B256 },
+}
+
+impl std::fmt::Display for BlockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlockError::NonContiguous { have, got } => {
+                write!(f, "non-contiguous block: head={have}, got={got}")
+            }
+            BlockError::WrongParent => write!(f, "wrong parent hash"),
+            BlockError::BadTimestamp => write!(f, "timestamp not greater than parent"),
+            BlockError::WrongProposer => write!(f, "block proposer is not the designated proposer"),
+            BlockError::BadSignature => {
+                write!(f, "proposer signature does not recover to proposer")
+            }
+            BlockError::UndecodableTx => write!(f, "block contains an undecodable tx"),
+            BlockError::StateRootMismatch { expected, got } => {
+                write!(
+                    f,
+                    "state_root mismatch: expected {expected}, re-executed {got}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BlockError {}
 
 // ---------------------------------------------------------------------------------------------
 // Chain state
 // ---------------------------------------------------------------------------------------------
 
+/// Clone so the follower's [`Chain::validate_and_apply_block`] can snapshot-and-restore on a rejected
+/// block (fail-closed: a divergent block applies no state change). All fields are cheaply clonable.
+#[derive(Clone)]
 struct Inner {
     state: MemState,
     blocks: Vec<Block>,
@@ -336,6 +456,12 @@ struct Inner {
     /// Append-only in block order, so `ubi_getAddressActivity` returns most-recent-first by reversing.
     /// Each entry is recorded once per (address, tx) pair (deduped) so a self-transfer isn't doubled.
     addr_index: HashMap<Address, Vec<B256>>,
+    /// M5 (Stage A): `tx_hash → raw EIP-155 bytes`, populated by `ingest_raw_tx` (the RPC submit AND the
+    /// gossip-relay path both go through it). The proposer reads it to reconstruct the gossipable
+    /// `WireBlock` (raw txs are NOT stored on `StoredTx`); a synced/late-joiner node also feeds the raw
+    /// bytes of applied blocks here so it can re-serve sync. NOT part of the persisted snapshot (a
+    /// restarted node re-derives nothing from it that affects state — it is a relay convenience only).
+    raw_tx: HashMap<B256, Vec<u8>>,
 }
 
 /// What a queued tx will do when mined. M1 had only value transfers; M2 adds the two StreamHub ops.
@@ -987,18 +1113,146 @@ pub struct Chain {
     /// The loopback TCP-peer gate is always on; this scopes which browser origins may reach the admin
     /// surface (default: the local wallet at `http://localhost:3000`). See [`oracle_admin::AdminAccess`].
     admin_access: Arc<AdminAccess>,
+    /// M5 (Stage A): the optional proposer signing key. When set, [`Chain::produce_block`] stamps the
+    /// block's `proposer` (the key's address) and signs the header pre-image into `proposer_sig`, so a
+    /// follower can `ecrecover` the author (spec §2.2). `None` ⇒ the single-node devnet produces blocks
+    /// with a zero proposer + empty signature (unchanged M1–M4 behavior). The round-robin schedule that
+    /// rotates this across validators is Stage B.
+    proposer_key: Option<Arc<ProposerKey>>,
+    /// M5 (Stage A): the live network status the node publishes for the read-only `ubi_getPeers` /
+    /// `ubi_consensusStatus` RPCs. The peer table + the "is this node the proposer" flag live in
+    /// `crates/node` (which owns the swarm); the node updates this through [`Chain::set_net_status`] /
+    /// [`Chain::set_peers`] and the RPC handlers read it. Empty until the node wires the network.
+    net_status: Arc<Mutex<NetStatus>>,
+}
+
+/// A connected peer as the node sees it, surfaced read-only by `ubi_getPeers` (spec §11). The node
+/// (which owns the libp2p swarm + peer table) maps its transport `PeerInfo` into this and publishes it
+/// through [`Chain::set_peers`]; `crates/rpc` only renders it (no network types leak into rpc).
+#[derive(Clone, Debug)]
+pub struct PeerStatus {
+    /// The peer's libp2p `PeerId`, as a base58 string.
+    pub peer_id: String,
+    /// The multiaddr we connected over.
+    pub multiaddr: String,
+    /// The bound validator address (if the peer proved a PeerId↔address binding at the handshake).
+    pub validator: Option<AlloyAddr>,
+    /// The peer's last-reported tip `(height, hash)` from its `Hello` / block gossip.
+    pub tip: Option<(u64, B256)>,
+}
+
+/// Live network/consensus status the node publishes for the read-only RPCs (spec §11). Stage A: a peer
+/// list, whether THIS node is the designated proposer, and the designated proposer's address.
+#[derive(Clone, Debug, Default)]
+pub struct NetStatus {
+    pub peers: Vec<PeerStatus>,
+    /// True iff this node is the Stage-A designated block proposer.
+    pub is_proposer: bool,
+    /// The designated proposer's address (the single Stage-A authority); `None` until the node sets it.
+    pub designated_proposer: Option<AlloyAddr>,
+    /// k-deep finality depth (devnet default 6); `head − FINALITY_DEPTH` is the finalized height.
+    pub finality_depth: u64,
+}
+
+/// M5: a proposer's secp256k1 signing key + its derived EVM address. Used to sign block headers so a
+/// follower can recover the author. Held in an `Arc` on the [`Chain`] so the block-production task can
+/// sign without cloning key material per block.
+pub struct ProposerKey {
+    signing_key: k256::ecdsa::SigningKey,
+    address: AlloyAddr,
+}
+
+impl std::fmt::Debug for ProposerKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print key material.
+        f.debug_struct("ProposerKey")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProposerKey {
+    /// Build a proposer key from 32 raw secret bytes, deriving the EVM address from the public key
+    /// (`keccak256(uncompressed_pubkey[1..])[12..]`, the standard EVM derivation).
+    pub fn from_bytes(secret: &[u8; 32]) -> Result<Self, String> {
+        let signing_key =
+            k256::ecdsa::SigningKey::from_slice(secret).map_err(|e| format!("bad key: {e}"))?;
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = verifying_key.to_encoded_point(false);
+        // Uncompressed SEC1: 0x04 ‖ X(32) ‖ Y(32); EVM address = keccak256(X‖Y)[12..].
+        let hash = keccak256(&pubkey.as_bytes()[1..]);
+        let address = AlloyAddr::from_slice(&hash[12..]);
+        Ok(Self {
+            signing_key,
+            address,
+        })
+    }
+
+    /// The proposer's EVM address (the value stamped into `Block::proposer`).
+    pub fn address(&self) -> AlloyAddr {
+        self.address
+    }
+
+    /// Sign a 32-byte header hash, returning the 65-byte `r‖s‖v` signature (`v` = 27 + recovery id) —
+    /// the same encoding [`recover_proposer`] expects.
+    fn sign_prehash(&self, hash: &B256) -> Vec<u8> {
+        let (sig, recid) = self
+            .signing_key
+            .sign_prehash_recoverable(hash.as_slice())
+            .expect("sign 32-byte prehash");
+        let mut out = Vec::with_capacity(65);
+        out.extend_from_slice(&sig.r().to_bytes());
+        out.extend_from_slice(&sig.s().to_bytes());
+        out.push(27 + recid.to_byte());
+        out
+    }
+}
+
+/// M5: recover the proposer address from a 65-byte `r‖s‖v` signature over a header hash. Returns `None`
+/// on a malformed signature. Mirrors `ProposerKey::sign_prehash` so a follower verifies authorship
+/// (`ecrecover(proposer_sig) == proposer`, spec §2.2/§5.1). Pure; no chain state.
+pub fn recover_proposer(hash: &B256, sig: &[u8]) -> Option<AlloyAddr> {
+    if sig.len() != 65 {
+        return None;
+    }
+    let v = sig[64];
+    let recid_byte = v.checked_sub(27)?;
+    let recid = k256::ecdsa::RecoveryId::from_byte(recid_byte)?;
+    let signature = k256::ecdsa::Signature::from_slice(&sig[..64]).ok()?;
+    let vkey =
+        k256::ecdsa::VerifyingKey::recover_from_prehash(hash.as_slice(), &signature, recid).ok()?;
+    let pubkey = vkey.to_encoded_point(false);
+    let addr_hash = keccak256(&pubkey.as_bytes()[1..]);
+    Some(AlloyAddr::from_slice(&addr_hash[12..]))
 }
 
 impl Chain {
     /// Build a chain with a fresh genesis block at `genesis_time`. Seed accounts (e.g. the
     /// pre-verified dev account) via [`Chain::seed_account`] before serving.
     pub fn new(chain_id: u64, genesis_time: u64) -> Self {
-        let genesis_hash = Block::compute_hash(0, B256::ZERO, genesis_time);
+        // Genesis: empty txs ⇒ txs_root over zero txs; the state_root over the empty genesis state (it
+        // is reseeded by `seed_account`/`seed_verified_human` AFTER construction, so the genesis header
+        // commits the pre-seed empty root — this is fine: genesis is a fixed anchor, never re-executed).
+        let genesis_txs_root = Block::compute_txs_root(&[]);
+        let genesis_state_root = B256::ZERO;
+        let genesis_proposer = AlloyAddr::ZERO;
+        let genesis_hash = Block::compute_hash(
+            0,
+            B256::ZERO,
+            genesis_time,
+            genesis_txs_root,
+            genesis_state_root,
+            &genesis_proposer,
+        );
         let genesis = Block {
             number: 0,
             hash: genesis_hash,
             parent_hash: B256::ZERO,
             timestamp: genesis_time,
+            txs_root: genesis_txs_root,
+            state_root: genesis_state_root,
+            proposer: genesis_proposer,
+            proposer_sig: Vec::new(),
             txs: vec![],
         };
         let mut blocks_by_hash = HashMap::new();
@@ -1012,6 +1266,7 @@ impl Chain {
                 txs: HashMap::new(),
                 mempool: vec![],
                 addr_index: HashMap::new(),
+                raw_tx: HashMap::new(),
             })),
             chain_id,
             genesis_time,
@@ -1023,7 +1278,200 @@ impl Chain {
             // the localhost-only admin RPC (`with_oracle_admin`).
             oracle_admin: Arc::new(OracleAdmin::mock_only()),
             admin_access: Arc::new(AdminAccess::default()),
+            proposer_key: None,
+            net_status: Arc::new(Mutex::new(NetStatus {
+                finality_depth: 6,
+                ..Default::default()
+            })),
         }
+    }
+
+    /// M5 (Stage A): publish the live peer list for `ubi_getPeers` (the node calls this whenever its
+    /// peer table changes — connect/disconnect/Hello/tip update). Read-only surface (I6).
+    pub fn set_peers(&self, peers: Vec<PeerStatus>) {
+        self.net_status.lock().unwrap().peers = peers;
+    }
+
+    /// M5 (Stage A): publish whether THIS node is the designated proposer + the designated proposer's
+    /// address (the node sets this once at startup from its config). Backs `ubi_consensusStatus`.
+    pub fn set_proposer_role(&self, is_proposer: bool, designated: Option<AlloyAddr>) {
+        let mut s = self.net_status.lock().unwrap();
+        s.is_proposer = is_proposer;
+        s.designated_proposer = designated;
+    }
+
+    /// Snapshot of the live network status (for the RPC handlers + tests). Pure read.
+    pub fn net_status(&self) -> NetStatus {
+        self.net_status.lock().unwrap().clone()
+    }
+
+    /// M5 (Stage A): install the proposer signing key. When set, every block this node produces stamps
+    /// the key's address as `Block::proposer` and signs the header pre-image into `proposer_sig`, so a
+    /// follower can recover the author (spec §2.2). The single-node devnet runs without it (zero
+    /// proposer, empty signature). Stage B adds the round-robin schedule that decides *when* this node
+    /// is the proposer.
+    pub fn with_proposer_key(mut self, key: Arc<ProposerKey>) -> Self {
+        self.proposer_key = Some(key);
+        self
+    }
+
+    /// The configured proposer address, if any (the local validator address for `ubi_consensusStatus`).
+    pub fn proposer_address(&self) -> Option<AlloyAddr> {
+        self.proposer_key.as_ref().map(|k| k.address)
+    }
+
+    /// M5 (Stage A, A4 — the follower's block-validation entry point). Validate a block received from the
+    /// network and, on success, re-execute it and append it to the local chain. Implements spec §5.1
+    /// (Stage-A subset): valid parent, correct author, and a **byte-identical re-executed `state_root`**.
+    ///
+    /// Inputs are the wire header fields + the block's ordered **raw user-tx bytes** (`raw_txs`, exactly
+    /// the bytes that were gossiped — system/sweep txs are NOT carried; the follower regenerates them by
+    /// re-running the same deterministic sweeps). `expected_proposer` is the Stage-A designated proposer
+    /// (the node passes its single-proposer address); the block's `proposer` must equal it and the
+    /// signature must recover to it.
+    ///
+    /// Fail-closed: a block failing ANY check applies **no** state change (the trial executes against a
+    /// snapshot and is committed only if the recomputed `state_root` + `hash` match the claimed header).
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_and_apply_block(
+        &self,
+        number: u64,
+        parent_hash: B256,
+        timestamp: u64,
+        claimed_txs_root: B256,
+        claimed_state_root: B256,
+        proposer: AlloyAddr,
+        proposer_sig: &[u8],
+        raw_txs: &[Vec<u8>],
+        expected_proposer: Option<AlloyAddr>,
+    ) -> Result<Block, BlockError> {
+        // ---- Cheap header checks (no state mutation), in fail-fast order ----
+        // §5.1(2) parent + height + §5.1(4) timestamp sanity FIRST: a block off our chain is the most
+        // meaningful rejection (fork / behind-or-ahead) and is cheaper than the ecrecover below.
+        {
+            let g = self.inner.lock().unwrap();
+            let head = g.blocks.last().expect("genesis present");
+            if number != head.number + 1 {
+                return Err(BlockError::NonContiguous {
+                    have: head.number,
+                    got: number,
+                });
+            }
+            if parent_hash != head.hash {
+                return Err(BlockError::WrongParent);
+            }
+            if timestamp <= head.timestamp {
+                return Err(BlockError::BadTimestamp);
+            }
+        }
+
+        let claimed_hash = Block::compute_hash(
+            number,
+            parent_hash,
+            timestamp,
+            claimed_txs_root,
+            claimed_state_root,
+            &proposer,
+        );
+
+        // §5.1(1) author: the block must be signed by the slot's scheduled proposer. In Stage A that is
+        // the single designated proposer the node configured. A non-empty signature must recover to the
+        // claimed proposer; an empty signature is only accepted in the unsigned single-node devnet
+        // (expected_proposer == None) — a networked follower always supplies the expected proposer.
+        if let Some(exp) = expected_proposer {
+            if proposer != exp {
+                return Err(BlockError::WrongProposer);
+            }
+            match recover_proposer(&claimed_hash, proposer_sig) {
+                Some(recovered) if recovered == proposer => {}
+                _ => return Err(BlockError::BadSignature),
+            }
+        }
+
+        // Decode the ordered raw user txs into `PendingTx` (same structural decode the proposer used —
+        // chain-id bind, signer recovery, calldata shape). A tx that does not decode means the block is
+        // malformed/forged ⇒ reject (do not apply).
+        let mut pending = Vec::with_capacity(raw_txs.len());
+        for raw in raw_txs {
+            match decode_pending_tx(self.chain_id, raw) {
+                Ok(p) => pending.push(p),
+                Err(_) => return Err(BlockError::UndecodableTx),
+            }
+        }
+
+        // ---- §5.1(3) deterministic state transition (the I1/I2 cross-node check) ----
+        // Snapshot the inner state so a state-root mismatch rolls back to a no-op (fail-closed). Then
+        // re-execute the committed tx order via the SAME routine the proposer ran, stamping the block's
+        // original proposer + signature so the recomputed header is byte-identical.
+        let backup = self.inner.lock().unwrap().clone();
+        let produced =
+            self.execute_block(pending, timestamp, Some((proposer, proposer_sig.to_vec())));
+
+        if produced.state_root != claimed_state_root
+            || produced.txs_root != claimed_txs_root
+            || produced.hash != claimed_hash
+        {
+            // Roll back the trial execution entirely — the block is rejected and nothing is applied.
+            *self.inner.lock().unwrap() = backup;
+            return Err(BlockError::StateRootMismatch {
+                expected: claimed_state_root,
+                got: produced.state_root,
+            });
+        }
+
+        // ---- Mempool prune (follower hygiene) ----
+        // A follower's mempool is NOT drained by applying a block (only the proposer's `produce_block`
+        // takes the mempool). Without pruning, a tx that was mined (in this or an earlier block) or that
+        // has gone stale (its sender's account nonce has advanced past it) lingers forever, blocking the
+        // sender's later txs via the cumulative-nonce submit gate. After a successful apply, drop any
+        // mempool tx that is now mined or whose nonce is below its sender's current account nonce. This
+        // is local hygiene only — it touches no consensus state (the block already committed).
+        {
+            let mut g = self.inner.lock().unwrap();
+            let mined: std::collections::HashSet<B256> =
+                produced.txs.iter().map(|t| t.hash).collect();
+            let taken = std::mem::take(&mut g.mempool);
+            let mut kept = Vec::with_capacity(taken.len());
+            for p in taken {
+                let acct_nonce = g
+                    .state
+                    .get(&p.from.into_array())
+                    .map(|acc| acc.nonce)
+                    .unwrap_or(0);
+                let stale = mined.contains(&p.hash) || p.nonce < acct_nonce;
+                if !stale {
+                    kept.push(p);
+                }
+            }
+            g.mempool = kept;
+        }
+        Ok(produced)
+    }
+
+    /// Lock the inner state (for the persistence layer's read-only snapshot export). `pub(crate)` so
+    /// only sibling modules (e.g. [`persist`]) can reach `Inner`.
+    pub(crate) fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap()
+    }
+
+    /// FU-3 load path: replace this chain's state + block history with a loaded snapshot, rebuilding the
+    /// derived indexes (`blocks_by_hash`, the tx map, the per-address activity index) from the blocks so
+    /// the loaded chain is byte-identical (same tip, same `state_root`) to the saved one. Called only by
+    /// [`Chain::from_snapshot`] on a freshly-`new`'d chain. `pub(crate)`.
+    pub(crate) fn load_into(&self, state: MemState, blocks: Vec<Block>) {
+        let mut g = self.inner.lock().unwrap();
+        g.state = state;
+        g.blocks_by_hash.clear();
+        g.txs.clear();
+        g.addr_index.clear();
+        for (idx, b) in blocks.iter().enumerate() {
+            g.blocks_by_hash.insert(b.hash, idx);
+            for tx in &b.txs {
+                index_tx(&mut g.addr_index, tx);
+                g.txs.insert(tx.hash, tx.clone());
+            }
+        }
+        g.blocks = blocks;
     }
 
     /// Install the admin-method browser-access policy (the `Origin` allowlist for the loopback admin RPC).
@@ -1115,6 +1563,28 @@ impl Chain {
     /// block, and broadcasts it to `newHeads` subscribers. Called by the node on every clock tick;
     /// empty mempool ⇒ empty block (still advances height — spec §M1-T1.6).
     pub fn produce_block(&self, timestamp: u64) -> Block {
+        // The proposer mines the current mempool in FIFO order (the canonical commitment is the
+        // `txs_root` over that order; a follower re-executes the SAME committed order — see
+        // `validate_and_apply_block`). Take the mempool and delegate to the shared execution routine
+        // so the proposer and the follower run byte-identical state transitions (I1/I2).
+        let pending = std::mem::take(&mut self.inner.lock().unwrap().mempool);
+        self.execute_block(pending, timestamp, None)
+    }
+
+    /// The shared, deterministic block-execution routine driven by both [`Chain::produce_block`] (the
+    /// proposer, with its mempool) and [`Chain::validate_and_apply_block`] (a follower, with the block's
+    /// committed tx order). Given the parent state, an ordered `pending` tx list, and the block
+    /// `timestamp`, it applies every tx, runs the M3/M4 sweeps, computes `txs_root`/`state_root`, stamps
+    /// the header (signing with the local proposer key, or — for a follower — with `proposer_override`'s
+    /// pre-recovered `(proposer, sig)`), appends the block, and broadcasts it. Execution reads ONLY
+    /// `timestamp` as its clock (never a node-local wall-clock), so two honest nodes applying the same
+    /// ordered txs against the same parent reach a byte-identical `state_root` (EC-4/EC-10).
+    fn execute_block(
+        &self,
+        pending: Vec<PendingTx>,
+        timestamp: u64,
+        proposer_override: Option<(AlloyAddr, Vec<u8>)>,
+    ) -> Block {
         // Clone the AI-seam Arcs before locking state (the apply loop calls the oracle for liveness
         // grading and the interpreter for contract effects). Reading from the hot-swappable admin once
         // per block makes a mid-flight `setOracleConfig` swap atomic at the block boundary.
@@ -1123,9 +1593,31 @@ impl Chain {
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
-        let hash = Block::compute_hash(number, parent.hash, timestamp);
+        // M5: the committed block hash now commits `txs_root` + `state_root` (spec §2.2), which are only
+        // known *after* execution. But jury-selection entropy and the txs' `block_hash` are needed
+        // *during* execution. We therefore derive a **pre-execution** `entropy_hash` from the (already
+        // final) parent hash + number + timestamp — a pure, deterministic function of pre-execution
+        // inputs, so every node computes the same jury seeds (I1) — and use it as the block's identity
+        // through the loop. After execution we compute the roots and the real header `hash`, then
+        // back-fill it onto the stored txs so receipts carry the committed block hash. `entropy_hash`
+        // feeds ONLY the seeded PRNG (never balances/roots), so the swap does not change any state.
+        let entropy_hash = Block::compute_hash(
+            number,
+            parent.hash,
+            timestamp,
+            B256::ZERO,
+            B256::ZERO,
+            &AlloyAddr::ZERO,
+        );
+        let hash = entropy_hash;
 
-        let pending = std::mem::take(&mut g.mempool);
+        // The number of user txs (each `pending` entry yields exactly one stored tx in the loop below;
+        // any synthetic M3 sweep tx is appended AFTER, so `stored[..user_tx_count]` is exactly the user
+        // txs). `txs_root` commits ONLY these — the raw, gossipable txs a follower re-derives — so the
+        // wire block's `recompute_txs_root` (over the carried raw bytes) matches byte-for-byte. The
+        // sweep tx is a deterministic function of the user txs + state, already committed by `state_root`
+        // and regenerated identically on every node, so it needs no separate tx-list commitment.
+        let user_tx_count = pending.len();
         let mut stored = Vec::with_capacity(pending.len());
         for (i, p) in pending.into_iter().enumerate() {
             // ---- Real UBI gas fee (M5 fee-recycling foundation) ----
@@ -1535,16 +2027,78 @@ impl Chain {
             stored.push(tx);
         }
 
+        // ---- M5 (Stage A, §2.2/§5.3): compute the consensus header fields over the FINAL state ----
+        //
+        // `txs_root` commits the canonical ordered tx list; `state_root` commits the full post-block
+        // state (a pure function of state — `ubi2_runtime::state_root`, no floats, no hash-order). The
+        // header `hash` then commits both (+ proposer), and `proposer_sig` signs that pre-image, so a
+        // follower can re-execute, match `state_root` byte-for-byte, and recover the author (EC-4/EC-10).
+        let txs_root = Block::compute_txs_root(&stored[..user_tx_count.min(stored.len())]);
+        let state_root = B256::from(ubi2_runtime::state_root(&g.state));
+        // A follower (`proposer_override` is `Some`) commits the block's ORIGINAL proposer + signature
+        // verbatim, so its stored header is byte-identical to the proposer's (and the recomputed hash
+        // matches). The proposer path (`None`) stamps its own key (or zero/empty for the unsigned
+        // single-node devnet, preserving M1–M4 behaviour).
+        let (proposer, proposer_sig, final_hash) = match proposer_override {
+            Some((proposer, sig)) => {
+                let final_hash = Block::compute_hash(
+                    number,
+                    parent.hash,
+                    timestamp,
+                    txs_root,
+                    state_root,
+                    &proposer,
+                );
+                (proposer, sig, final_hash)
+            }
+            None => {
+                let proposer = self
+                    .proposer_key
+                    .as_ref()
+                    .map(|k| k.address)
+                    .unwrap_or(AlloyAddr::ZERO);
+                let final_hash = Block::compute_hash(
+                    number,
+                    parent.hash,
+                    timestamp,
+                    txs_root,
+                    state_root,
+                    &proposer,
+                );
+                let proposer_sig = self
+                    .proposer_key
+                    .as_ref()
+                    .map(|k| k.sign_prehash(&final_hash))
+                    .unwrap_or_default();
+                (proposer, proposer_sig, final_hash)
+            }
+        };
+
+        // Back-fill the committed block hash onto every stored tx (so a receipt's `blockHash` is the
+        // real header hash, not the pre-execution `entropy_hash`). Update both the in-block copies and
+        // the `g.txs` index. Stamped contracts already used `p.hash` (tx hash) for `deploy_tx`, which is
+        // unaffected.
+        for tx in stored.iter_mut() {
+            tx.block_hash = final_hash;
+        }
+        for tx in &stored {
+            g.txs.insert(tx.hash, tx.clone());
+        }
+
         let block = Block {
             number,
-            hash,
+            hash: final_hash,
             parent_hash: parent.hash,
             timestamp,
+            txs_root,
+            state_root,
+            proposer,
+            proposer_sig,
             txs: stored,
         };
         let idx = g.blocks.len();
         g.blocks.push(block.clone());
-        g.blocks_by_hash.insert(hash, idx);
+        g.blocks_by_hash.insert(final_hash, idx);
         drop(g);
 
         // Best-effort broadcast (ignored if there are no live subscribers).
@@ -1560,6 +2114,107 @@ impl Chain {
             .last()
             .expect("genesis present")
             .clone()
+    }
+
+    /// The current chain tip `(height, hash)`. Pure read. Used by the network handshake (`Hello.tip`)
+    /// and `ubi_consensusStatus`.
+    pub fn tip(&self) -> (u64, B256) {
+        let g = self.inner.lock().unwrap();
+        let b = g.blocks.last().expect("genesis present");
+        (b.number, b.hash)
+    }
+
+    /// The current head's committed `state_root` (the tip block's header field). Backs `ubi_stateRoot`
+    /// and the cross-node agreement check (EC-4/EC-10). Pure read.
+    pub fn state_root(&self) -> B256 {
+        self.inner
+            .lock()
+            .unwrap()
+            .blocks
+            .last()
+            .expect("genesis present")
+            .state_root
+    }
+
+    /// The `state_root` of the block at `height` (`None` if the height is beyond the tip). Pure read.
+    pub fn state_root_at(&self, height: u64) -> Option<B256> {
+        let g = self.inner.lock().unwrap();
+        g.blocks.get(height as usize).map(|b| b.state_root)
+    }
+
+    /// The full block at `height` (`None` beyond the tip). Pure read — backs the sync server (A5): a
+    /// peer asks for `[from, to]` and the node returns these blocks for re-execution.
+    pub fn block_at(&self, height: u64) -> Option<Block> {
+        let g = self.inner.lock().unwrap();
+        g.blocks.get(height as usize).cloned()
+    }
+
+    /// M5 (Stage A, §3.2): admit a tx that arrived via **gossip** into the local mempool, running the
+    /// EXACT same validation `eth_sendRawTransaction` uses (`ingest_raw_tx`: chain-id bind, signer
+    /// recovery, nonce, cumulative affordability, calldata shape). This is the **validate-before-
+    /// rebroadcast** gate: the node calls this on a `TxReceived` event and only re-gossips on `Ok`
+    /// (so an invalid/spam tx never propagates and the source peer is penalized). Returns the tx hash, or
+    /// a human error string (the node logs it + penalizes the peer). Idempotent at the chain level: a tx
+    /// already in the mempool re-validates and is rejected as a duplicate-nonce, so a re-arrival is a
+    /// no-op the node treats as "already known" (gossipsub already deduped by message-id upstream).
+    pub fn ingest_gossip_tx(&self, raw: &[u8]) -> Result<B256, String> {
+        ingest_raw_tx(self, raw).map_err(|e| e.message().to_string())
+    }
+
+    /// Whether a tx hash is already known to this node (in the mempool or already mined). The node uses
+    /// it to skip re-validating/re-gossiping a tx it has already seen (a second dedup layer on top of
+    /// gossipsub's message-id dedup). Pure read.
+    pub fn knows_tx(&self, hash: &B256) -> bool {
+        let g = self.inner.lock().unwrap();
+        g.txs.contains_key(hash) || g.mempool.iter().any(|p| &p.hash == hash)
+    }
+
+    /// M5 (Stage A): the raw EIP-155 bytes of a block's **user** txs, in block order — exactly the
+    /// `WireBlock.txs` payload the proposer gossips. A `StoredTx` whose raw bytes are not cached (a
+    /// synthetic M3 sweep system tx, or a tx the node never saw the raw form of) is skipped. The result,
+    /// fed to `WireBlock`, has `recompute_txs_root() == block.txs_root` (which commits only user txs).
+    pub fn raw_txs_for_block(&self, block: &Block) -> Vec<Vec<u8>> {
+        let g = self.inner.lock().unwrap();
+        block
+            .txs
+            .iter()
+            .filter_map(|tx| g.raw_tx.get(&tx.hash).cloned())
+            .collect()
+    }
+
+    /// M5 (Stage A): cache the raw bytes of txs applied from a network block / sync, so a synced node can
+    /// re-serve those blocks' raw txs to a later joiner. Keyed by `keccak256(raw)` (= the tx hash).
+    pub fn cache_raw_txs(&self, raws: &[Vec<u8>]) {
+        let mut g = self.inner.lock().unwrap();
+        for raw in raws {
+            let hash = B256::from(keccak256(raw).0);
+            g.raw_tx.insert(hash, raw.clone());
+        }
+    }
+
+    /// M5 (Stage A): the raw bytes of every tx currently in the mempool (in FIFO order). The node's
+    /// network driver gossips these on a short relay timer so a LOCALLY-submitted tx (via
+    /// `eth_sendRawTransaction`, which goes straight to the mempool without touching the network task)
+    /// reaches peers (EC-2). gossipsub dedups by the tx-hash message-id, so re-publishing an
+    /// already-seen tx is a cheap no-op — the relay is naturally bounded.
+    pub fn pending_raw_txs(&self) -> Vec<Vec<u8>> {
+        let g = self.inner.lock().unwrap();
+        g.mempool
+            .iter()
+            .filter_map(|p| g.raw_tx.get(&p.hash).cloned())
+            .collect()
+    }
+
+    /// The chain id (for the network `Hello` handshake + `ubi_consensusStatus`).
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    /// The genesis block hash (the network-identity anchor: peers with a different genesis hash are on a
+    /// different network and are disconnected at the handshake, spec §4.1). Pure read.
+    pub fn genesis_hash(&self) -> B256 {
+        let g = self.inner.lock().unwrap();
+        g.blocks.first().expect("genesis present").hash
     }
 
     /// Genesis unix time this chain was created at (also the dev account's `verified_at`).
@@ -1715,12 +2370,14 @@ impl Chain {
             "gasUsed": hex_u64(block_gas_used(block)),
             "gasLimit": "0x1c9c380",
             "baseFeePerGas": hex_u64(GAS_PRICE_WEI),
-            // Roots are zero placeholders on devnet (no full header) — surfaced so the explorer can
-            // render the field set Ethereum blocks carry; documented in the module-level deviations.
-            "stateRoot": hex_b256(&B256::ZERO),
-            "transactionsRoot": hex_b256(&B256::ZERO),
+            // M5: real consensus header fields (spec §2.2). `stateRoot`/`transactionsRoot` are the
+            // committed roots; `miner`/`proposer` is the block author; `proposerSig` is the hex sig.
+            "stateRoot": hex_b256(&block.state_root),
+            "transactionsRoot": hex_b256(&block.txs_root),
             "receiptsRoot": hex_b256(&B256::ZERO),
-            "miner": "0x0000000000000000000000000000000000000000",
+            "miner": hex_addr(&block.proposer),
+            "proposer": hex_addr(&block.proposer),
+            "proposerSig": format!("0x{}", hex::encode(&block.proposer_sig)),
             "transactions": txs,
         })
     }
@@ -2037,10 +2694,12 @@ fn block_to_json(block: &Block, full_txs: bool) -> Value {
         "nonce": "0x0000000000000000",
         "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
         "logsBloom": format!("0x{}", "0".repeat(512)),
-        "transactionsRoot": hex_b256(&B256::ZERO),
-        "stateRoot": hex_b256(&B256::ZERO),
+        // M5: real consensus roots + author. `transactionsRoot`/`stateRoot` are the committed header
+        // fields (no longer zero placeholders); `miner` is the block proposer.
+        "transactionsRoot": hex_b256(&block.txs_root),
+        "stateRoot": hex_b256(&block.state_root),
         "receiptsRoot": hex_b256(&B256::ZERO),
-        "miner": "0x0000000000000000000000000000000000000000",
+        "miner": hex_addr(&block.proposer),
         "difficulty": "0x0",
         "totalDifficulty": "0x0",
         "extraData": "0x",
@@ -2051,6 +2710,8 @@ fn block_to_json(block: &Block, full_txs: bool) -> Value {
         "transactions": txs,
         "uncles": [],
         "baseFeePerGas": hex_u64(GAS_PRICE_WEI),
+        // M5 extension fields (ubi_*-namespaced consensus header), MetaMask ignores unknown keys.
+        "proposer": hex_addr(&block.proposer),
     })
 }
 
@@ -2163,7 +2824,13 @@ fn resolve_block_tag(chain: &Chain, tag: &str) -> Option<Block> {
 
 /// Decode an EIP-155 legacy signed tx, recover the sender, and validate it against the chain rules.
 /// Returns the queued `PendingTx`'s hash. Public for unit testing the decode/recover/validate path.
-fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
+/// Decode + structurally-validate a raw EIP-155 tx into a [`PendingTx`], WITHOUT the affordability /
+/// pending-nonce submit gate (that gate lives in [`ingest_raw_tx`]). This is the shared parse path used
+/// by both the RPC submit (`ingest_raw_tx`) and the follower's block re-execution
+/// ([`Chain::validate_and_apply_block`]), so a tx that the proposer included decodes byte-identically on
+/// every node (the `chain_id`-bind, signer recovery, `to` requirement, and calldata-shape rules all run
+/// here). Returns the decoded `PendingTx`; the caller decides admission. Pure given `chain_id` + bytes.
+fn decode_pending_tx(chain_id: u64, raw: &[u8]) -> Result<PendingTx, ErrorObjectOwned> {
     // alloy decode: TxEnvelope::decode_2718 handles both typed (EIP-2718) and untyped legacy txs.
     let mut slice = raw;
     let env = TxEnvelope::decode_2718(&mut slice)
@@ -2172,11 +2839,10 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     // EIP-155 chain-id binding: reject txs signed for another chain (replay protection — spec §M1-T1.4).
     // Legacy pre-155 txs have `chain_id() == None`; we require explicit 155 binding to our chain.
     match env.chain_id() {
-        Some(id) if id == chain.chain_id => {}
+        Some(id) if id == chain_id => {}
         Some(other) => {
             return Err(invalid_params(format!(
-                "wrong chainId: tx is for {other}, devnet is {}",
-                chain.chain_id
+                "wrong chainId: tx is for {other}, devnet is {chain_id}"
             )))
         }
         None => {
@@ -2294,6 +2960,30 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         _ => 0,
     };
 
+    Ok(PendingTx {
+        hash,
+        from,
+        tx_to: to,
+        value,
+        nonce,
+        input,
+        kind,
+    })
+}
+
+/// Decode + admit a raw tx submitted via `eth_sendRawTransaction` (or relayed from gossip). Runs the
+/// shared structural decode ([`decode_pending_tx`]) then the affordability / pending-nonce SUBMIT gate
+/// (so the wallet gets a synchronous rejection rather than a silently-dropped tx), and pushes it onto
+/// the mempool. Returns the tx hash. The runtime re-validates + re-settles authoritatively at block
+/// time and fails closed; this gate is the UX layer on top.
+fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
+    let pending = decode_pending_tx(chain.chain_id, raw)?;
+    let hash = pending.hash;
+    let from = pending.from;
+    let value = pending.value;
+    let nonce = pending.nonce;
+    let kind = &pending.kind;
+
     // Validate nonce + spendable-balance affordability against current state at *now*, accounting
     // for this sender's other still-pending mempool txs (see the cumulative check below). The
     // runtime re-checks and re-settles authoritatively at block time and fails closed; this submit
@@ -2303,8 +2993,26 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
         let now = now_secs();
         let acct = g.state.get(&from.into_array()).unwrap_or_default();
         let settled = acct.balance(now); // live balance, since settlement folds emission in
-        let expected_nonce =
-            acct.nonce + g.mempool.iter().filter(|p| p.from == from).count() as u64;
+        let sender_pending = g.mempool.iter().filter(|p| p.from == from).count();
+        // SEC-M5A-3: bound the mempool BEFORE admitting. Both caps (spec §10/§3.3, the canonical values
+        // in `ubi2_network::consts`) were previously unreferenced; an unbounded ingest let a flood of
+        // (individually valid) txs grow the mempool without limit on the gossip + RPC path. Enforce the
+        // GLOBAL cap and the PER-SENDER cap here, rejecting over-cap txs with a clear JSON-RPC error so a
+        // single sender cannot monopolize the mempool and the total is bounded. A duplicate (same nonce,
+        // already pending) re-arrival is caught by the nonce gate below, so it does not consume a slot.
+        if g.mempool.len() >= ubi2_network::consts::MEMPOOL_MAX_TXS {
+            return Err(invalid_params(format!(
+                "mempool full: at global cap of {} txs",
+                ubi2_network::consts::MEMPOOL_MAX_TXS
+            )));
+        }
+        if sender_pending >= ubi2_network::consts::MEMPOOL_MAX_PER_SENDER {
+            return Err(invalid_params(format!(
+                "mempool full for sender: at per-sender cap of {} txs",
+                ubi2_network::consts::MEMPOOL_MAX_PER_SENDER
+            )));
+        }
+        let expected_nonce = acct.nonce + sender_pending as u64;
         if nonce != expected_nonce {
             return Err(invalid_params(format!(
                 "nonce too {}: expected {expected_nonce}, got {nonce}",
@@ -2330,7 +3038,7 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
             .fold(0u128, |acc, p| {
                 acc.saturating_add(spendable_debit(p.value, &p.kind))
             });
-        let need = pending_committed.saturating_add(spendable_debit(value, &kind));
+        let need = pending_committed.saturating_add(spendable_debit(value, kind));
         if settled < need {
             // Note the already-pending portion only when there is one, so the single-tx message is
             // unchanged. Keep "for deposit" wording on stream opens (their `value` is 0).
@@ -3684,6 +4392,79 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
+    // M5 (Stage A) — `ubi_stateRoot([numberOrTag?])` → the committed `state_root` of the head (or the
+    // given height/tag). Backs EC-4/EC-10: a test compares this string byte-for-byte across nodes. Pure
+    // read; no new write surface (I6).
+    m.register_method("ubi_stateRoot", |params, ctx, _| {
+        let seq: Vec<Value> = params.parse().unwrap_or_default();
+        let raw = seq.first().and_then(|v| v.as_str());
+        let root = match raw {
+            None | Some("latest") | Some("pending") => Some(ctx.state_root()),
+            Some(r) => ctx.resolve_block_ref(r).map(|b| b.state_root),
+        };
+        match root {
+            Some(r) => Ok::<_, ErrorObjectOwned>(json!(hex_b256(&r))),
+            None => Ok(Value::Null),
+        }
+    })
+    .unwrap();
+
+    // M5 (Stage A) — `ubi_getPeers` → the node's live peer table: each connected peer's libp2p PeerId,
+    // the multiaddr we connected over, the bound validator address (if it proved the PeerId↔address
+    // binding at the handshake), and its last-reported tip. Backs EC-1. Read-only (I6). The peer table
+    // lives in `crates/node` (which owns the swarm); the node publishes it via `Chain::set_peers`.
+    m.register_method("ubi_getPeers", |_params, ctx, _| {
+        let peers: Vec<Value> = ctx
+            .net_status()
+            .peers
+            .iter()
+            .map(|p| {
+                json!({
+                    "peerId": p.peer_id,
+                    "multiaddr": p.multiaddr,
+                    "validator": p.validator.map(|a| hex_addr(&a)),
+                    "tip": p.tip.map(|(h, hash)| json!({
+                        "height": hex_u64(h),
+                        "hash": hex_b256(&hash),
+                    })),
+                })
+            })
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!(peers))
+    })
+    .unwrap();
+
+    // M5 (Stage A) — `ubi_consensusStatus` → the node's head + author view + Stage-A role. Reports the
+    // single designated proposer, whether THIS node is it (`isProposer`), the connected-peer count, and
+    // k-deep `finalizedHeight` (`head − FINALITY_DEPTH`, floored at 0). Stage B fills `slot` /
+    // round-robin `validatorSet`. Pure read.
+    m.register_method("ubi_consensusStatus", |_params, ctx, _| {
+        let (height, hash) = ctx.tip();
+        let net = ctx.net_status();
+        // Prefer the node-published designated proposer; fall back to this node's own proposer key.
+        let proposer = net
+            .designated_proposer
+            .or_else(|| ctx.proposer_address())
+            .unwrap_or(AlloyAddr::ZERO);
+        let finalized = height.saturating_sub(net.finality_depth);
+        Ok::<_, ErrorObjectOwned>(json!({
+            "head": {
+                "height": hex_u64(height),
+                "hash": hex_b256(&hash),
+                "stateRoot": hex_b256(&ctx.state_root()),
+            },
+            "currentProposer": hex_addr(&proposer),
+            "validatorSet": [hex_addr(&proposer)],
+            "isProposer": net.is_proposer,
+            "peerCount": net.peers.len(),
+            "finalityDepth": hex_u64(net.finality_depth),
+            "finalizedHeight": hex_u64(finalized),
+            "chainId": hex_u64(ctx.chain_id()),
+            "genesisHash": hex_b256(&ctx.genesis_hash()),
+        }))
+    })
+    .unwrap();
+
     // ubi_getTransaction(hash) → a full decoded tx: from/to/value/nonce/fee/block, the decoded
     // system-hub `call` (hub + method + args), the decoded `logs` (StreamOpened/CaseOpened/
     // VerdictSubmitted/StatusChanged/ContractDeployed/EffectCommitted/EffectAborted/Transfer…), and
@@ -3878,13 +4659,14 @@ async fn new_heads_subscription(
                         "timestamp": hex_u64(block.timestamp),
                         "gasUsed": hex_u64(block_gas_used(&block)),
                         "gasLimit": "0x1c9c380",
-                        "miner": "0x0000000000000000000000000000000000000000",
+                        "miner": hex_addr(&block.proposer),
                         "difficulty": "0x0",
                         "extraData": "0x",
                         "nonce": "0x0000000000000000",
                         "baseFeePerGas": hex_u64(GAS_PRICE_WEI),
-                        "stateRoot": hex_b256(&B256::ZERO),
-                        "transactionsRoot": hex_b256(&B256::ZERO),
+                        // M5: real consensus roots + author on the newHeads header.
+                        "stateRoot": hex_b256(&block.state_root),
+                        "transactionsRoot": hex_b256(&block.txs_root),
                         "receiptsRoot": hex_b256(&B256::ZERO),
                         "logsBloom": format!("0x{}", "0".repeat(512)),
                         "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
@@ -4070,11 +4852,78 @@ mod tests {
 
     #[test]
     fn block_hash_is_deterministic() {
-        // I2-adjacent: same inputs ⇒ same block hash across two chains.
-        let h1 = Block::compute_hash(5, B256::repeat_byte(7), 1234);
-        let h2 = Block::compute_hash(5, B256::repeat_byte(7), 1234);
+        // I2-adjacent: same inputs ⇒ same block hash across two chains. M5: the hash now commits the
+        // full header (number ‖ parent ‖ timestamp ‖ txs_root ‖ state_root ‖ proposer).
+        let tr = B256::repeat_byte(3);
+        let sr = B256::repeat_byte(9);
+        let p = AlloyAddr::repeat_byte(1);
+        let h1 = Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, sr, &p);
+        let h2 = Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, sr, &p);
         assert_eq!(h1, h2);
-        assert_ne!(h1, Block::compute_hash(6, B256::repeat_byte(7), 1234));
+        // Any field change moves the hash.
+        assert_ne!(
+            h1,
+            Block::compute_hash(6, B256::repeat_byte(7), 1234, tr, sr, &p)
+        );
+        assert_ne!(
+            h1,
+            Block::compute_hash(5, B256::repeat_byte(7), 1234, B256::repeat_byte(4), sr, &p)
+        );
+        assert_ne!(
+            h1,
+            Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, B256::repeat_byte(8), &p)
+        );
+        assert_ne!(
+            h1,
+            Block::compute_hash(
+                5,
+                B256::repeat_byte(7),
+                1234,
+                tr,
+                sr,
+                &AlloyAddr::repeat_byte(2)
+            )
+        );
+    }
+
+    #[test]
+    fn proposer_sign_recover_roundtrips() {
+        // M5: a header signed by a proposer key recovers to that key's address (spec §2.2).
+        let key = ProposerKey::from_bytes(&[7u8; 32]).unwrap();
+        let hash = B256::repeat_byte(0x42);
+        let sig = key.sign_prehash(&hash);
+        assert_eq!(sig.len(), 65);
+        assert_eq!(recover_proposer(&hash, &sig), Some(key.address()));
+        // A different hash recovers a different (or no) address — not the proposer.
+        assert_ne!(
+            recover_proposer(&B256::repeat_byte(0x43), &sig),
+            Some(key.address())
+        );
+        // A malformed signature recovers nothing.
+        assert_eq!(recover_proposer(&hash, &sig[..64]), None);
+    }
+
+    #[test]
+    fn produced_block_carries_signed_header() {
+        // A chain with a proposer key stamps + signs the header; a follower recovers the author.
+        let key = Arc::new(ProposerKey::from_bytes(&[11u8; 32]).unwrap());
+        let chain = Chain::new(DEVNET_CHAIN_ID, 1_000).with_proposer_key(key.clone());
+        let b = chain.produce_block(1_002);
+        assert_eq!(b.proposer, key.address());
+        assert_eq!(
+            recover_proposer(&b.hash, &b.proposer_sig),
+            Some(key.address())
+        );
+        // The header hash commits the state_root + txs_root.
+        let recomputed = Block::compute_hash(
+            b.number,
+            b.parent_hash,
+            b.timestamp,
+            b.txs_root,
+            b.state_root,
+            &b.proposer,
+        );
+        assert_eq!(recomputed, b.hash);
     }
 
     #[test]

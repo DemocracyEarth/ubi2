@@ -5,6 +5,7 @@ members = [
     "crates/rpc",
     "crates/node",
     "crates/oracle",
+    "crates/network",
 ]
 
 [workspace.package]
@@ -54,3 +55,9 @@ hyper = "1"
 # `serde_json` itself but we only `--features json` on the blocking client so no async runtime is pulled
 # into the otherwise-sync oracle.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# M5 (crates/network ONLY): the libp2p P2P stack — Noise/TCP/Yamux transport, gossipsub on the two
+# ubi2 topics, request-response for block-range sync, and mDNS for the local devnet. Heavyweight tree,
+# FULLY ISOLATED in crates/network (ADR-0004 Decision 1); crates/runtime never sees it (asserted by a
+# build-level test). `tokio` provides the executor; `futures` the StreamExt the swarm loop polls.
+libp2p = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "gossipsub", "request-response", "mdns", "macros", "ed25519", "secp256k1"] }
+futures = "0.3"

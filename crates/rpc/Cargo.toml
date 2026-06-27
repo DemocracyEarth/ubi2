@@ -27,12 +27,17 @@ tower-http.workspace = true
 # the per-request extensions so the localhost-only admin RPC can enforce its loopback gate. `hyper`
 # names the incoming-body request type; both crates are already in the tree via jsonrpsee 0.24.
 hyper.workspace = true
+# M5 (Stage A): the proposer signs each block header with its secp256k1 key and a follower recovers the
+# author (`ecrecover(proposer_sig) == proposer`, spec §2.2). `k256` is the secp256k1 ECDSA impl alloy
+# already uses (alloy-primitives `k256` feature pulls it transitively), so naming it directly adds no
+# new transitive weight. Used only for header signing/recovery — never reachable from the runtime.
+k256 = { version = "0.13", features = ["ecdsa"] }
+# M5 (SEC-M5A-3): the mempool size caps (`MEMPOOL_MAX_TXS` / `MEMPOOL_MAX_PER_SENDER`, spec §10/§3.3)
+# live in `ubi2-network::consts` as the single canonical source; `ingest_raw_tx` enforces both. The
+# network crate does NOT depend on rpc, so this edge stays acyclic; only `consts` (plain values) is used.
+ubi2-network = { path = "../network" }
 
 [dev-dependencies]
-# QA (M1-T7) integration tests: sign EIP-155 legacy txs with the well-known devnet key and drive the
-# live HTTP JSON-RPC like a standard EVM client. k256 is the secp256k1 signer; alloy-rlp re-exported
-# for encode_2718. No extra HTTP crate — the test POSTs raw HTTP/1.1 over tokio TcpStream.
-k256 = { version = "0.13", features = ["ecdsa"] }
 # Security PoC (C5-SEC-3): drive a STUBBED live-style backend (a blocking reqwest client, no network)
 # through `produce_block` to prove the block-production task never panics dropping a blocking runtime.
 ubi2-oracle = { path = "../oracle" }
