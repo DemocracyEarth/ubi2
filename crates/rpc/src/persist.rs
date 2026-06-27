@@ -234,6 +234,14 @@ struct StoredTxDto {
     gas_used: u64,
     success: bool,
     revert_reason: Option<String>,
+    // EIP-2718 type byte + EIP-1559 sender fee caps (cycle-7). `#[serde(default)]` keeps snapshots
+    // written before these fields loadable — they default to a legacy type-0 tx.
+    #[serde(default)]
+    tx_type: u8,
+    #[serde(default)]
+    max_fee_per_gas: Option<u128>,
+    #[serde(default)]
+    max_priority_fee_per_gas: Option<u128>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -591,6 +599,9 @@ fn export_tx(tx: &StoredTx) -> StoredTxDto {
         gas_used: tx.gas_used,
         success: tx.success,
         revert_reason: tx.revert_reason.clone(),
+        tx_type: tx.tx_type,
+        max_fee_per_gas: tx.max_fee_per_gas,
+        max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
     }
 }
 
@@ -768,6 +779,9 @@ fn import_tx(dto: &StoredTxDto) -> StoredTx {
         gas_used: dto.gas_used,
         success: dto.success,
         revert_reason: dto.revert_reason.clone(),
+        tx_type: dto.tx_type,
+        max_fee_per_gas: dto.max_fee_per_gas,
+        max_priority_fee_per_gas: dto.max_priority_fee_per_gas,
     }
 }
 
