@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="UBI is a Universal Basic Income blockchain where verified humans earn 1 UBI per hour, contracts are written in plain language, and money flows as a continuous stream.">
+  <meta property="og:title" content="UBI — Universal Basic Income Blockchain">
+  <meta property="og:description" content="A blockchain where humans are verified by AI, contracts are written in plain language, and money flows as a continuous stream.">
+  <meta name="theme-color" content="#06060A">
+  <title>UBI — Universal Basic Income Blockchain</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============================================================
+     NAVIGATION
+     ============================================================ -->
+<nav class="site-nav" role="navigation" aria-label="Primary navigation">
+  <div class="nav-inner">
+    <a href="#hero" class="nav-brand" aria-label="UBI home">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <span class="brand-name">UBI</span>
+      <span class="brand-ens">ubi.eth</span>
+    </a>
+    <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false" aria-controls="nav-links">
+      <span></span><span></span><span></span>
+    </button>
+    <ul class="nav-links" id="nav-links" role="list">
+      <li><a href="#thesis">Thesis</a></li>
+      <li><a href="#poh">Humanity</a></li>
+      <li><a href="#streaming">Streaming</a></li>
+      <li><a href="#contracts">Contracts</a></li>
+      <li><a href="#network">Network</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a href="#run-node" class="nav-cta">Run a Node</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ============================================================
+     SECTION 1 — HERO
+     ============================================================ -->
+<section id="hero" class="section-hero" aria-label="Introduction">
+
+  <!-- VIDEO SLOT: hero background — drop an AI-generated ambient clip here.
+       Set data-video-slot="hero-bg" to identify this slot programmatically.
+       The <video> is hidden when empty; the canvas + gradient take over. -->
+  <video
+    data-video-slot="hero-bg"
+    class="hero-video"
+    autoplay muted loop playsinline
+    aria-hidden="true"
+    tabindex="-1"
+    poster="assets/hero-bg-poster.webp">
+    <source src="assets/hero-bg.mp4" type="video/mp4">
+  </video>
+
+  <!-- Animated particle node-network canvas -->
+  <canvas id="hero-canvas" aria-hidden="true"></canvas>
+
+  <div class="hero-inner">
+    <div class="hero-tag-row">
+      <span class="hero-tag">ubi.eth</span>
+      <span class="hero-tag">Chain ID 21826 / 0x5542</span>
+      <span class="hero-tag hero-tag-live">
+        <span class="pulse-dot" aria-hidden="true"></span>
+        Devnet Live
+      </span>
+    </div>
+
+    <h1 class="hero-headline">
+      A UBI blockchain where<br>
+      <span class="grad-text">citizens are verified humans</span>
+    </h1>
+
+    <p class="hero-sub">
+      Every verified human earns <strong>1 UBI per hour</strong>, continuously.
+      Contracts are written in plain language. The network is run by humans,
+      verified by AI.
+    </p>
+
+    <!-- Live streaming UBI counter -->
+    <div class="hero-counter" role="region" aria-label="Live UBI accrual counter">
+      <div class="counter-label">
+        <span class="counter-dot" aria-hidden="true"></span>
+        Live accrual &mdash; 1 UBI / hour
+      </div>
+      <div class="counter-display">
+        <span class="counter-num" id="ubi-counter" aria-live="polite" aria-atomic="true">0.000000</span>
+        <span class="counter-unit">UBI</span>
+      </div>
+      <div class="counter-meta">accruing since page load &middot; resets on refresh</div>
+    </div>
+
+    <div class="hero-ctas">
+      <a href="#run-node" class="btn btn-primary">Run a Node</a>
+      <a href="http://localhost:3000" class="btn btn-secondary" target="_blank" rel="noopener">Open the App</a>
+      <a href="WHITEPAPER.md" class="btn btn-ghost">Whitepaper</a>
+      <a href="https://github.com/democracy-earth/ubi2" class="btn btn-ghost" target="_blank" rel="noopener">
+        <!-- Inline SVG GitHub mark — no external request -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+        </svg>
+        GitHub
+      </a>
+    </div>
+
+    <div class="hero-scroll-hint" aria-hidden="true">
+      <span>Scroll to explore</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 5v14M5 12l7 7 7-7"/>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 2 — THE THESIS
+     ============================================================ -->
+<section id="thesis" class="section-thesis reveal-section" aria-labelledby="thesis-heading">
+  <div class="section-inner">
+    <div class="section-label">The Thesis</div>
+    <h2 id="thesis-heading" class="section-heading">
+      Four primitives.<br>
+      <span class="grad-text">One living economy.</span>
+    </h2>
+    <p class="section-sub">
+      Universal Basic Income requires no means-testing, no bureaucracy, and no indignity.
+      Just proof you are a unique human — and the money flows, automatically, forever.
+    </p>
+
+    <div class="pillars-grid">
+
+      <article class="pillar-card pillar-poh reveal-card" aria-labelledby="pillar-poh-title">
+        <!-- VIDEO SLOT: Proof-of-Humanity pillar — data-video-slot="pillar-poh"
+             Drop a Higgsfield clip showing verification flow here.
+             Falls back to animated SVG mark below. -->
+        <!-- pillar video removed for legibility (text sits on these cards) -->
+        <div class="pillar-mark poh-mark" aria-hidden="true">
+          <!-- PoH fingerprint — extracted from poh-logo.svg, scaled down -->
+          <svg viewBox="0 0 370 435" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="poh-grad" x1="89" y1="75" x2="279" y2="358" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FFFF00"/>
+                <stop offset="100%" stop-color="#FF6699"/>
+              </linearGradient>
+            </defs>
+            <path fill="url(#poh-grad)" d="M347.25 181.1Q347.25 147.05 334.2 115.65 321.15 84.2 297.1 60.15 273.05 36.05 241.6 23 210.15 10 176.15 9.95L171.15 9.95Q137.1 10 105.65 23 74.25 36.05 50.2 60.15 26.1 84.2 13.1 115.65 0.05 147.05 0 181.1L0 186.1Q0.05 203.45 4.5 220.25 8.9 237.1 17.4 252.25 25.9 267.4 37.9 279.95 49.95 292.5 64.75 301.65L79.75 310.85 79.75 418.7Q79.75 420.75 81.2 422.2 82.7 423.65 84.75 423.65L242.6 423.65Q244.65 423.65 246.1 422.2 247.6 420.75 247.6 418.7L247.6 377.15 295.75 377.15Q305.3 377.15 313.4 369.85 320.7 362.35 320.7 352.25L320.7 304.05 351.1 304.05Q359.45 304.05 365.95 296.45 368.5 292.85 369.2 288.5L369.2 283.3Q368.4 274.95 347.25 212.2L347.25 181.1Z"/>
+          </svg>
+        </div>
+        <div class="pillar-tag poh-tag">Proof of Humanity</div>
+        <h3 id="pillar-poh-title" class="pillar-title">AI-verified unique humans</h3>
+        <p class="pillar-desc">Social vouching adjudicated by a quorum of AI verifier nodes. No biometrics, no documents. Each verified human holds a soulbound NFT.</p>
+      </article>
+
+      <article class="pillar-card pillar-stream reveal-card" aria-labelledby="pillar-stream-title">
+        <!-- VIDEO SLOT: Streaming UBI pillar — data-video-slot="pillar-streaming"
+             Drop a Higgsfield clip showing money flowing here.
+             Falls back to canvas drip visualization. -->
+        <!-- pillar video removed for legibility (text sits on these cards) -->
+        <div class="pillar-mark stream-mark" aria-hidden="true">
+          <canvas id="drip-mini-1" width="60" height="60" aria-hidden="true"></canvas>
+        </div>
+        <div class="pillar-tag stream-tag">Streaming UBI</div>
+        <h3 id="pillar-stream-title" class="pillar-title">1 UBI per hour, continuously</h3>
+        <p class="pillar-desc">Money flows as a real-time stream from the protocol to every verified human. Streams extend account-to-account, turning payments into flows.</p>
+      </article>
+
+      <article class="pillar-card pillar-contracts reveal-card" aria-labelledby="pillar-contracts-title">
+        <!-- VIDEO SLOT: Prompt Contracts pillar — data-video-slot="pillar-contracts"
+             Drop a Higgsfield clip showing AI execution here.
+             Falls back to gradient background. -->
+        <!-- pillar video removed for legibility (text sits on these cards) -->
+        <div class="pillar-mark contract-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path d="M9 12h6M9 16h4M5 8h14M3 6a2 2 0 012-2h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6z"/>
+            <circle cx="18" cy="18" r="3" fill="currentColor" opacity=".3"/>
+            <path d="M16.5 18h3M18 16.5v3" stroke="currentColor"/>
+          </svg>
+        </div>
+        <div class="pillar-tag contract-tag">Prompt Contracts</div>
+        <h3 id="pillar-contracts-title" class="pillar-title">Contracts in plain language</h3>
+        <p class="pillar-desc">Write a contract in natural language. AI interpreter nodes reach consensus on the effect. Intent-as-law, not code-as-law.</p>
+      </article>
+
+      <article class="pillar-card pillar-network reveal-card" aria-labelledby="pillar-network-title">
+        <!-- VIDEO SLOT: Network pillar — data-video-slot="pillar-network"
+             Drop a Higgsfield clip showing node mesh here.
+             Falls back to canvas node visualization. -->
+        <!-- pillar video removed for legibility (text sits on these cards) -->
+        <div class="pillar-mark network-mark" aria-hidden="true">
+          <canvas id="node-mini-1" width="60" height="60" aria-hidden="true"></canvas>
+        </div>
+        <div class="pillar-tag network-tag">EVM Network</div>
+        <h3 id="pillar-network-title" class="pillar-title">Standard wallets, real P2P</h3>
+        <p class="pillar-desc">MetaMask-compatible. Real peer-to-peer networking with libp2p gossip, rotating PoA block production, and state roots that agree byte-for-byte across nodes.</p>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 3 — PROOF OF HUMANITY
+     ============================================================ -->
+<section id="poh" class="section-poh reveal-section" aria-labelledby="poh-heading">
+  <div class="section-inner">
+    <div class="section-label poh-label">Proof of Humanity</div>
+    <h2 id="poh-heading" class="section-heading">
+      Being human is the<br>
+      <span class="poh-grad-text">only requirement</span>
+    </h2>
+
+    <div class="poh-layout">
+      <div class="poh-content">
+        <p class="section-sub">
+          No biometrics. No government ID. No surveillance database.
+          Verification is probabilistic and adversarial — it degrades safely,
+          denying on uncertainty rather than guessing.
+        </p>
+
+        <div class="poh-steps">
+          <div class="poh-step reveal-card">
+            <div class="poh-step-num poh-grad-text" aria-hidden="true">01</div>
+            <div>
+              <h3 class="poh-step-title">Social Vouching</h3>
+              <p class="poh-step-desc">Existing verified humans vouch for new applicants. Each vouch is a signed on-chain transaction — MetaMask-signable, no bespoke tooling.</p>
+            </div>
+          </div>
+          <div class="poh-step reveal-card">
+            <div class="poh-step-num poh-grad-text" aria-hidden="true">02</div>
+            <div>
+              <h3 class="poh-step-title">AI Liveness Challenge</h3>
+              <p class="poh-step-desc">An LLM generates and grades liveness + interaction challenges, resistant to replay attacks and bots. Behavioral signals are combined — no single hard gate that excludes.</p>
+            </div>
+          </div>
+          <div class="poh-step reveal-card">
+            <div class="poh-step-num poh-grad-text" aria-hidden="true">03</div>
+            <div>
+              <h3 class="poh-step-title">Quorum Verdict</h3>
+              <p class="poh-step-desc">Independent verifier nodes each run their own AI backend at temperature 0 with a canonical structured output. A supermajority must agree before anyone is admitted — no single node decides who is human.</p>
+            </div>
+          </div>
+          <div class="poh-step reveal-card">
+            <div class="poh-step-num poh-grad-text" aria-hidden="true">04</div>
+            <div>
+              <h3 class="poh-step-title">Soulbound NFT</h3>
+              <p class="poh-step-desc">A verified human receives a non-transferable Proof-of-Humanity NFT. The NFT is the credential for streaming UBI, for joining the validator set, and for voting in governance.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animated vouch graph -->
+      <div class="poh-visual reveal-card" aria-label="Animated verification network graph">
+        <canvas id="vouch-graph" width="360" height="320" aria-hidden="true"></canvas>
+        <div class="poh-visual-legend">
+          <span class="legend-dot poh-verified-dot" aria-hidden="true"></span>
+          <span>Verified</span>
+          <span class="legend-dot poh-pending-dot" aria-hidden="true"></span>
+          <span>Pending</span>
+          <span class="legend-dot poh-juror-dot" aria-hidden="true"></span>
+          <span>AI Juror</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="poh-invariant reveal-card">
+      <div class="invariant-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <div>
+        <strong>Safe degradation invariant:</strong>
+        New claims are denied on uncertainty; established humans are revoked only by quorum + appeal.
+        Disputes go to a jury of verified-human AI-nodes. Bots and duplicates fail closed.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 4 — STREAMING UBI
+     ============================================================ -->
+<section id="streaming" class="section-streaming reveal-section" aria-labelledby="streaming-heading">
+  <div class="section-inner">
+    <div class="section-label stream-label">Streaming UBI</div>
+    <h2 id="streaming-heading" class="section-heading">
+      Money that<br>
+      <span class="stream-grad-text">flows like water</span>
+    </h2>
+
+    <div class="streaming-layout">
+
+      <div class="streaming-content">
+        <p class="section-sub">
+          UBI is not paid in instalments. It <em>streams</em> — accruing to your balance every second,
+          as a pure function of time. Two nodes computing your balance at the same timestamp agree
+          to the smallest unit. No floats. No rounding.
+        </p>
+
+        <div class="stream-facts">
+          <div class="stream-fact reveal-card">
+            <div class="stream-fact-num stream-grad-text">1</div>
+            <div class="stream-fact-unit">UBI / hour</div>
+            <div class="stream-fact-desc">accrued continuously from the moment of verification</div>
+          </div>
+          <div class="stream-fact reveal-card">
+            <div class="stream-fact-num stream-grad-text">2</div>
+            <div class="stream-fact-unit">Soulbound NFTs</div>
+            <div class="stream-fact-desc">minted per account-to-account stream (sender + recipient)</div>
+          </div>
+          <div class="stream-fact reveal-card">
+            <div class="stream-fact-num stream-grad-text">0</div>
+            <div class="stream-fact-unit">Floats</div>
+            <div class="stream-fact-desc">pure integer arithmetic on all consensus paths</div>
+          </div>
+        </div>
+
+        <div class="stream-mechanic reveal-card">
+          <h3 class="stream-mechanic-title">How streaming works</h3>
+          <div class="stream-flow-demo">
+            <div class="flow-node flow-protocol">
+              <span class="flow-label">Protocol</span>
+              <span class="flow-sublabel">Treasury</span>
+            </div>
+            <div class="flow-arrow" aria-label="streams to">
+              <canvas id="flow-arrow-canvas" width="120" height="40" aria-hidden="true"></canvas>
+              <span class="flow-rate">1 UBI/hr</span>
+            </div>
+            <div class="flow-node flow-human">
+              <span class="flow-label">Human</span>
+              <span class="flow-sublabel">Verified</span>
+            </div>
+            <div class="flow-arrow flow-arrow-2" aria-label="streams to">
+              <canvas id="flow-arrow-canvas-2" width="120" height="40" aria-hidden="true"></canvas>
+              <span class="flow-rate">custom</span>
+            </div>
+            <div class="flow-node flow-recipient">
+              <span class="flow-label">Anyone</span>
+              <span class="flow-sublabel">Recipient</span>
+            </div>
+          </div>
+          <p class="stream-note">
+            The UBI drip is itself a stream from the protocol to each human.
+            Account-to-account streams extend it in any direction, at any rate.
+            Each stream mints two ERC-721 NFTs you can view in MetaMask.
+          </p>
+        </div>
+      </div>
+
+      <!-- Live drip visualization -->
+      <div class="streaming-visual reveal-card" aria-label="Live token drip animation">
+        <canvas id="drip-canvas" width="280" height="360" aria-hidden="true"></canvas>
+        <div class="drip-live-display">
+          <div class="drip-label">Accruing now</div>
+          <div class="drip-amount">
+            <span id="drip-counter" class="drip-num">0.000000</span>
+            <span class="drip-unit">UBI</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 5 — PROMPT CONTRACTS
+     ============================================================ -->
+<section id="contracts" class="section-contracts reveal-section" aria-labelledby="contracts-heading">
+  <div class="section-inner">
+    <div class="section-label contract-label">Prompt Contracts</div>
+    <h2 id="contracts-heading" class="section-heading">
+      Write intent.<br>
+      <span class="contract-grad-text">AI executes it.</span>
+    </h2>
+
+    <p class="section-sub">
+      Smart contracts are written in natural language and executed by a quorum of AI interpreter nodes.
+      If the quorum agrees on the effect, it commits. If they disagree, the contract aborts — no partial
+      state, ever. <em>Intent-as-law</em>, not code-as-law.
+    </p>
+
+    <div class="contracts-layout">
+
+      <div class="contract-demo reveal-card" aria-label="Example prompt contract and AI execution">
+        <div class="demo-label">Example Prompt Contract</div>
+        <div class="contract-text-box">
+          "Transfer <strong>50 UBI</strong> from the escrow to <strong>Alice</strong> if and only if
+          she has submitted proof of completing the agreed task by <strong>Friday</strong>,
+          as attested by at least two of the three designated witnesses.
+          Otherwise, return the funds to the depositor."
+        </div>
+
+        <div class="demo-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+            <path d="M12 5v14M5 12l7 7 7-7"/>
+          </svg>
+          <span>AI Quorum interprets intent</span>
+        </div>
+
+        <div class="effect-box">
+          <div class="effect-label">Canonical Effect (agreed by supermajority)</div>
+          <div class="effect-ops">
+            <div class="effect-op effect-op-ok">
+              <span class="effect-op-icon" aria-hidden="true">
+                <svg viewBox="0 0 12 12" width="12" height="12" fill="none">
+                  <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1"/>
+                  <path d="M3.5 6l2 2 3-3" stroke="currentColor" stroke-width="1.2"/>
+                </svg>
+              </span>
+              <code>Transfer { from: escrow, to: alice, amount: 50_000000 }</code>
+            </div>
+          </div>
+          <div class="effect-quorum">
+            <span class="quorum-node quorum-agree" aria-label="Node A agrees">A</span>
+            <span class="quorum-node quorum-agree" aria-label="Node B agrees">B</span>
+            <span class="quorum-node quorum-agree" aria-label="Node C agrees">C</span>
+            <span class="quorum-result">Supermajority reached &mdash; committing</span>
+          </div>
+        </div>
+
+        <div class="effect-abort-note">
+          On disagreement: <span class="abort-text">abort deterministically</span> &mdash; escrow untouched, no partial state.
+        </div>
+      </div>
+
+      <div class="contracts-features">
+        <div class="contract-feature reveal-card">
+          <div class="cf-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">
+              <path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+            </svg>
+          </div>
+          <h3>Deterministic inference</h3>
+          <p>Temperature 0, pinned model, canonical structured-output schema. Two independent nodes interpreting the same contract produce the same canonical effect — or neither commits.</p>
+        </div>
+        <div class="contract-feature reveal-card">
+          <div class="cf-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">
+              <path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+          </div>
+          <h3>Multi-interpreter quorum</h3>
+          <p>N independent nodes each interpret the contract; the effect (state delta) commits only when a supermajority produce the same canonical output. No single node executes alone.</p>
+        </div>
+        <div class="contract-feature reveal-card">
+          <div class="cf-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">
+              <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+            </svg>
+          </div>
+          <h3>Least authority</h3>
+          <p>A prompt contract gets only the state and authority it was explicitly granted. Injection attempts fail closed — the quorum aborts, never executes malicious intent.</p>
+        </div>
+        <div class="contract-feature reveal-card">
+          <div class="cf-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">
+              <path d="M3 5h12M9 3v2m1.048 3.938A7 7 0 016.11 11.93a7 7 0 01-1.05 3.07M9 12h2M3 12h2M3 15h2M9 15h2M3 18h6M3 21h6"/>
+              <path d="M15 12l6 9M21 12l-6 9"/>
+            </svg>
+          </div>
+          <h3>Anyone can write one</h3>
+          <p>No Solidity. No ABIs. If you can state your intent in plain language, you can deploy a contract. The AI layer translates intent to a bounded, formally-safe effect language.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 6 — HOW A NODE WORKS / THE NETWORK
+     ============================================================ -->
+<section id="network" class="section-network reveal-section" aria-labelledby="network-heading">
+  <div class="section-inner">
+    <div class="section-label network-label">How the Network Works</div>
+    <h2 id="network-heading" class="section-heading">
+      AI is non-deterministic.<br>
+      <span class="network-grad-text">Consensus must not be.</span>
+    </h2>
+
+    <p class="section-sub">
+      The hardest problem: make a network of AI-backed nodes agree on state, reliably, without any
+      single point of control. The solution is elegant: contain non-determinism below the consensus
+      line, expose only a canonical effect agreed by a supermajority.
+    </p>
+
+    <!-- Animated node mesh -->
+    <div class="network-visual reveal-card" aria-label="Animated peer-to-peer node network">
+      <canvas id="network-canvas" width="780" height="320" aria-hidden="true"></canvas>
+      <div class="network-status-row">
+        <div class="net-stat">
+          <span class="net-stat-val" id="net-peers">3</span>
+          <span class="net-stat-label">Peers</span>
+        </div>
+        <div class="net-stat">
+          <span class="net-stat-val net-stat-green" id="net-blocks">—</span>
+          <span class="net-stat-label">Blocks</span>
+        </div>
+        <div class="net-stat">
+          <span class="net-stat-val net-stat-violet">2s</span>
+          <span class="net-stat-label">Block time</span>
+        </div>
+        <div class="net-stat">
+          <span class="net-stat-val">PoA</span>
+          <span class="net-stat-label">Consensus</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="network-concepts">
+
+      <div class="concept-card reveal-card">
+        <div class="concept-num">I1</div>
+        <h3>Deterministic consensus over non-deterministic AI</h3>
+        <p>Every LLM verdict runs at temperature 0 with a pinned model and emits a canonical, structured output. The network commits the <em>effect</em> — a state delta — only when an independent quorum of N interpreters produce the <em>same</em> canonical effect. On disagreement, the operation aborts deterministically.</p>
+      </div>
+
+      <div class="concept-card reveal-card">
+        <div class="concept-num">I2</div>
+        <h3>Reproducible time-based balances</h3>
+        <p>Streaming emission (1 UBI/hour), demurrage, and stream flows are pure functions of (state, timestamp). Integer arithmetic only — no floats on any consensus path. Two nodes computing a balance at the same timestamp agree to the smallest unit.</p>
+      </div>
+
+      <div class="concept-card reveal-card">
+        <div class="concept-num">P2P</div>
+        <h3>Real peer-to-peer networking</h3>
+        <p>libp2p transport (Noise/TCP/Yamux), gossipsub on two topics (transactions + blocks), request-response block sync. A fresh node syncs from genesis to the tip, re-executes every block, and must reach a byte-identical state root — or the sync is rejected.</p>
+      </div>
+
+      <div class="concept-card reveal-card">
+        <div class="concept-num">PoA</div>
+        <h3>Proof of Authority, round-robin</h3>
+        <p>Validators are PoH-verified humans. Block production rotates round-robin; if the current proposer misses its slot, the remaining nodes elect the next validator deterministically within 3 timeouts. The chain is live while a majority of validators are alive.</p>
+      </div>
+
+    </div>
+
+    <div class="network-flow-diagram reveal-card" aria-label="Block production and sync flow">
+      <h3 class="diagram-title">Block production flow</h3>
+      <div class="flow-diagram">
+        <div class="fd-step">
+          <div class="fd-icon fd-icon-tx">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <div class="fd-label">Tx submitted</div>
+          <div class="fd-sub">eth_sendRawTransaction</div>
+        </div>
+        <div class="fd-arrow" aria-hidden="true">&#8594;</div>
+        <div class="fd-step">
+          <div class="fd-icon fd-icon-gossip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <circle cx="12" cy="12" r="3"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/>
+              <path d="M12 2c-2.5 3-4 6-4 10s1.5 7 4 10M12 2c2.5 3 4 6 4 10s-1.5 7-4 10M2 12h20"/>
+            </svg>
+          </div>
+          <div class="fd-label">Gossip</div>
+          <div class="fd-sub">all peers in &lt;2s</div>
+        </div>
+        <div class="fd-arrow" aria-hidden="true">&#8594;</div>
+        <div class="fd-step">
+          <div class="fd-icon fd-icon-block">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-4 0v2M8 7V5a2 2 0 014 0M8 12h8M8 16h4"/>
+            </svg>
+          </div>
+          <div class="fd-label">Proposed</div>
+          <div class="fd-sub">signed by proposer</div>
+        </div>
+        <div class="fd-arrow" aria-hidden="true">&#8594;</div>
+        <div class="fd-step">
+          <div class="fd-icon fd-icon-validate">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <div class="fd-label">Validated</div>
+          <div class="fd-sub">followers re-execute</div>
+        </div>
+        <div class="fd-arrow" aria-hidden="true">&#8594;</div>
+        <div class="fd-step">
+          <div class="fd-icon fd-icon-finalized">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
+            </svg>
+          </div>
+          <div class="fd-label">Finalized</div>
+          <div class="fd-sub">k=6 deep, all agree</div>
+        </div>
+      </div>
+      <p class="diagram-note">
+        Followers re-execute every block and compare state roots byte-for-byte.
+        A block whose state root differs from the re-execution is rejected — the proposer cannot smuggle in divergent state.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 7 — EVM COMPATIBLE
+     ============================================================ -->
+<section id="evm" class="section-evm reveal-section" aria-labelledby="evm-heading">
+  <div class="section-inner">
+    <div class="section-label">EVM Compatible</div>
+    <h2 id="evm-heading" class="section-heading">
+      Add it to MetaMask.<br>
+      <span class="grad-text">It just works.</span>
+    </h2>
+
+    <p class="section-sub">
+      UBI exposes a standard EVM JSON-RPC. Any wallet that can add a custom network can read
+      streaming balances, sign transfers, and interact with the system hubs — no bespoke software needed.
+    </p>
+
+    <div class="evm-layout">
+      <div class="evm-network-card reveal-card" aria-label="MetaMask network configuration">
+        <div class="evm-card-label">Add to MetaMask</div>
+        <dl class="network-params">
+          <div class="net-param">
+            <dt>Network name</dt>
+            <dd>UBI devnet</dd>
+          </div>
+          <div class="net-param">
+            <dt>RPC URL</dt>
+            <dd><code>http://127.0.0.1:8545</code></dd>
+          </div>
+          <div class="net-param">
+            <dt>Chain ID</dt>
+            <dd><code>21826</code> / <code>0x5542</code></dd>
+          </div>
+          <div class="net-param">
+            <dt>Currency symbol</dt>
+            <dd><code>UBI</code></dd>
+          </div>
+          <div class="net-param">
+            <dt>ENS name</dt>
+            <dd><code>ubi.eth</code></dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="evm-hubs reveal-card">
+        <div class="evm-card-label">System Hubs (reserved addresses)</div>
+        <div class="hubs-list">
+          <div class="hub-row">
+            <span class="hub-name hub-stream">StreamHub</span>
+            <code class="hub-addr">0x…5742</code>
+            <span class="hub-ops">openStream / stopStream + stream NFTs</span>
+          </div>
+          <div class="hub-row">
+            <span class="hub-name hub-poh">HumanityHub</span>
+            <code class="hub-addr">0x…5048</code>
+            <span class="hub-ops">requestVerification / vouch / challenge</span>
+          </div>
+          <div class="hub-row">
+            <span class="hub-name hub-contract">ContractHub</span>
+            <code class="hub-addr">0x…5043</code>
+            <span class="hub-ops">deployContract / fundContract / invokeContract</span>
+          </div>
+          <div class="hub-row">
+            <span class="hub-name hub-treasury">Treasury</span>
+            <code class="hub-addr">0x…5542</code>
+            <span class="hub-ops">collects UBI gas fees (basis for fee recycling)</span>
+          </div>
+        </div>
+        <p class="hubs-note">
+          All operations are EIP-155 transactions to reserved addresses — MetaMask signs them.
+          Every tx pays gas in UBI (<code>gas_used × 1 gwei</code>). Onboarding is fee-exempt.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 8 — ROADMAP
+     ============================================================ -->
+<section id="roadmap" class="section-roadmap reveal-section" aria-labelledby="roadmap-heading">
+  <div class="section-inner">
+    <div class="section-label">Roadmap</div>
+    <h2 id="roadmap-heading" class="section-heading">
+      From devnet<br>
+      <span class="grad-text">to the commons</span>
+    </h2>
+
+    <div class="roadmap-list">
+
+      <div class="roadmap-item roadmap-done reveal-card">
+        <div class="roadmap-marker" aria-label="Shipped"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-done">Shipped</div>
+          <h3 class="roadmap-title">M1 — EVM RPC + Wallet</h3>
+          <p>MetaMask-compatible devnet RPC. Streaming balance that climbs at 1 UBI/hour. Wallet + block explorer.</p>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-done reveal-card">
+        <div class="roadmap-marker" aria-label="Shipped"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-done">Shipped</div>
+          <h3 class="roadmap-title">M2 — Streaming Primitive</h3>
+          <p>Collateralized 1:1 streams via StreamHub. Live net-stream balances. Two ERC-721 stream NFTs per stream with fully on-chain SVG art.</p>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-done reveal-card">
+        <div class="roadmap-marker" aria-label="Shipped"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-done">Shipped</div>
+          <h3 class="roadmap-title">M3 — AI Proof of Humanity</h3>
+          <p>Social vouching + AI-jury quorum (HumanityHub). Deterministic on-chain lifecycle. ClaudeOracle + MockOracle for the devnet. Sybil auto-challenge.</p>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-done reveal-card">
+        <div class="roadmap-marker" aria-label="Shipped"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-done">Shipped</div>
+          <h3 class="roadmap-title">M4 — Prompt Contracts</h3>
+          <p>Natural-language contracts → canonical effect language → interpreter quorum. ContractHub. ClaudeInterpreter + MockInterpreter. Full UBI app: wallet + explorer + identity + contracts.</p>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-active reveal-card">
+        <div class="roadmap-marker roadmap-marker-active" aria-label="In progress">
+          <span class="roadmap-pulse" aria-hidden="true"></span>
+        </div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-active">In Progress</div>
+          <h3 class="roadmap-title">M5 — Network & Consensus</h3>
+          <p>Real peer-to-peer networking (libp2p). Rotating PoA block production. Cross-node AI quorum — each node runs its own AI backend independently. State roots agree byte-for-byte across processes.</p>
+          <div class="roadmap-stages">
+            <span class="roadmap-stage stage-done">Stage A: tx gossip + block sync</span>
+            <span class="roadmap-stage stage-planned">Stage B: rotating proposer</span>
+            <span class="roadmap-stage stage-planned">Stage C: real AI quorum</span>
+            <span class="roadmap-stage stage-planned">Stage D: multi-host testnet</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-planned reveal-card">
+        <div class="roadmap-marker roadmap-marker-planned" aria-label="Planned"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-planned">Planned</div>
+          <h3 class="roadmap-title">M6 — Economics & Governance</h3>
+          <p>Demurrage + fee recycling on a real multi-node chain. Node-AI rewards split to the quorum nodes. Quadratic-delegation governance over bounded parameters.</p>
+        </div>
+      </div>
+
+      <div class="roadmap-item roadmap-planned reveal-card">
+        <div class="roadmap-marker roadmap-marker-planned" aria-label="Planned"></div>
+        <div class="roadmap-content">
+          <div class="roadmap-status status-planned">Planned</div>
+          <h3 class="roadmap-title">M7 — Public Testnet</h3>
+          <p>Hardened, observable shared testnet with a faucet. External users join, get verified, receive streaming UBI, and transact via standard wallets.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 9 — RUN A NODE
+     ============================================================ -->
+<section id="run-node" class="section-run-node reveal-section" aria-labelledby="run-node-heading">
+  <div class="section-inner">
+    <div class="section-label">Run a Node</div>
+    <h2 id="run-node-heading" class="section-heading">
+      Join the network.<br>
+      <span class="grad-text">Anyone can run a node.</span>
+    </h2>
+
+    <p class="section-sub">
+      Prerequisites: <strong>Rust</strong> (auto-pinned via rust-toolchain.toml), <strong>Node &ge; 20</strong>, <strong>pnpm</strong>.
+      No API key needed — the node defaults to a deterministic mock AI so the devnet always runs.
+    </p>
+
+    <div class="quickstart-grid">
+
+      <div class="quickstart-card reveal-card">
+        <div class="qs-step-label">Terminal 1 &mdash; The chain</div>
+        <pre class="code-block"><code><span class="code-comment"># Clear any stale node on :8545</span>
+pkill -f ubi2-node
+
+<span class="code-comment"># Build + serve EVM JSON-RPC on :8545</span>
+./scripts/devnet.sh</code></pre>
+        <p class="qs-note">HTTP + WebSocket at <code>http://127.0.0.1:8545</code></p>
+      </div>
+
+      <div class="quickstart-card reveal-card">
+        <div class="qs-step-label">Terminal 2 &mdash; The app</div>
+        <pre class="code-block"><code><span class="code-comment"># Install once</span>
+pnpm install
+
+<span class="code-comment"># Start the wallet at :3000</span>
+pnpm --filter @ubi2/wallet dev</code></pre>
+        <p class="qs-note">Open <code>http://localhost:3000</code></p>
+      </div>
+
+      <div class="quickstart-card reveal-card">
+        <div class="qs-step-label">MetaMask (optional)</div>
+        <div class="metamask-params">
+          <div class="mm-param">
+            <span class="mm-key">Network</span>
+            <span class="mm-val">UBI devnet</span>
+          </div>
+          <div class="mm-param">
+            <span class="mm-key">RPC</span>
+            <span class="mm-val"><code>http://127.0.0.1:8545</code></span>
+          </div>
+          <div class="mm-param">
+            <span class="mm-key">Chain ID</span>
+            <span class="mm-val"><code>21826</code></span>
+          </div>
+        </div>
+        <p class="qs-note">The app's "Add to MetaMask" button does this automatically.</p>
+      </div>
+
+      <div class="quickstart-card reveal-card">
+        <div class="qs-step-label">Real AI (optional)</div>
+        <pre class="code-block"><code><span class="code-comment"># Use a local model</span>
+ollama serve &amp;&amp; ollama pull &lt;model&gt;
+
+<span class="code-comment"># Or configure a cloud key</span>
+<span class="code-comment"># in Settings &gt; AI Backend</span></code></pre>
+        <p class="qs-note">Unconfigured: deterministic mock for all AI verdicts.</p>
+      </div>
+
+    </div>
+
+    <div class="skill-note reveal-card">
+      <div class="skill-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+          <path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+        </svg>
+      </div>
+      <div>
+        <strong>Agent-operated nodes:</strong> <code>SKILL.md</code> documents how an AI agent
+        can stand up and operate a node autonomously. UBI is developed by a team of 10 specialized
+        Claude Code subagents running an explicit loop: product &rarr; spec &rarr; build &rarr; test
+        &rarr; reliability &rarr; security &rarr; release.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================
+     FOOTER
+     ============================================================ -->
+<footer class="site-footer" role="contentinfo">
+  <div class="footer-inner">
+
+    <div class="footer-brand">
+      <div class="footer-logo">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span>UBI</span>
+      </div>
+      <div class="footer-ens">ubi.eth &middot; Chain ID 21826</div>
+      <p class="footer-tagline">
+        A Universal Basic Income blockchain built on four ideas: AI proof-of-humanity,
+        streaming UBI, prompt contracts, and an EVM-compatible network of verified-human nodes.
+      </p>
+      <div class="footer-org">
+        MIT License &middot;
+        <a href="https://democracy.earth" target="_blank" rel="noopener">Democracy Earth Foundation</a>
+      </div>
+    </div>
+
+    <div class="footer-pillars">
+      <h3 class="footer-col-title">The Four Pillars</h3>
+      <ul class="footer-pillars-list" role="list">
+        <li>
+          <span class="footer-pillar-dot poh-dot" aria-hidden="true"></span>
+          <a href="#poh">Proof of Humanity</a>
+        </li>
+        <li>
+          <span class="footer-pillar-dot stream-dot" aria-hidden="true"></span>
+          <a href="#streaming">Streaming UBI</a>
+        </li>
+        <li>
+          <span class="footer-pillar-dot contract-dot" aria-hidden="true"></span>
+          <a href="#contracts">Prompt Contracts</a>
+        </li>
+        <li>
+          <span class="footer-pillar-dot network-dot" aria-hidden="true"></span>
+          <a href="#network">P2P Network</a>
+        </li>
+      </ul>
+    </div>
+
+    <div class="footer-links">
+      <h3 class="footer-col-title">Resources</h3>
+      <ul role="list">
+        <li><a href="http://localhost:3000" target="_blank" rel="noopener">Open the App</a></li>
+        <li><a href="WHITEPAPER.md">Whitepaper</a></li>
+        <li><a href="https://github.com/democracy-earth/ubi2" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="#run-node">Run a Node</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+      </ul>
+    </div>
+
+  </div>
+
+  <div class="footer-bottom">
+    <span>Built by a team of AI agents &middot; Democracy Earth Foundation &copy; 2025</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
