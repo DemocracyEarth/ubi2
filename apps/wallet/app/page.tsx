@@ -13,6 +13,7 @@ import {
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY, NETWORK, getExplorerUrl } from "./config";
 import { Nav, type Section } from "./nav";
+import { Home } from "./home";
 import { Streams } from "./streams";
 import { Humanity } from "./humanity";
 import { Explorer } from "./explorer";
@@ -338,10 +339,10 @@ function ActivityFeed({ account }: { account: string }) {
   );
 }
 
-// ---- Home page ---------------------------------------------------------------
+// ---- App root page -----------------------------------------------------------
 
-export default function Home() {
-  const [section, setSection] = useState<Section>("wallet");
+export default function AppRoot() {
+  const [section, setSection] = useState<Section>("home");
   const [conn, setConn] = useState<Conn>("connecting");
   const [chainId, setChainId] = useState<number | null>(null);
   const [display, setDisplay] = useState<string>("—");
@@ -444,6 +445,18 @@ export default function Home() {
       />
 
       <main className="app-main">
+        {/* ------------------------------------------------------------------ */}
+        {/* HOME                                                                 */}
+        {/* ------------------------------------------------------------------ */}
+        {section === "home" && (
+          <Home
+            display={display}
+            isVerified={isVerified}
+            conn={conn}
+            onNavigate={setSection}
+          />
+        )}
+
         {/* ------------------------------------------------------------------ */}
         {/* WALLET                                                               */}
         {/* ------------------------------------------------------------------ */}
