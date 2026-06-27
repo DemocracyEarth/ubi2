@@ -27,6 +27,8 @@ logs/
 checkpoints/
 devnet-data/
 .ubi2-devnet/
+# M5: multi-node devnet per-node data dirs (scripts/devnet-multi.sh)
+.ubi2-multi/
 
 # OS / editor
 .DS_Store

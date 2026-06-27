@@ -22,6 +22,8 @@
 //!
 //! Import the dev account below to sign txs (its key is PUBLIC — see the constant).
 
+mod net;
+mod netcfg;
 mod oracle_cfg;
 
 use std::net::SocketAddr;
@@ -30,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 
 use alloy_primitives::address;
-use ubi2_rpc::{serve, AdminAccess, Chain, DEVNET_CHAIN_ID};
+use ubi2_rpc::{serve, AdminAccess, Chain, ProposerKey, DEVNET_CHAIN_ID};
 use ubi2_runtime::Account;
 
 /// Env var: comma-separated list of browser origins allowed to call the loopback admin RPC
@@ -84,6 +86,26 @@ fn now_secs() -> u64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // M5 (Stage A): a tiny utility subcommand — `ubi2-node peer-id <32-byte-hex-seed>` — prints the
+    // libp2p PeerId derived from an Ed25519 seed and exits. The multi-node devnet script uses it to
+    // precompute every node's PeerId (from its fixed seed) so it can wire a FULL cross-bootstrap mesh
+    // deterministically, with no mDNS (which is unavailable in sandboxed CI). Pure, no networking.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() >= 3 && args[1] == "peer-id" {
+            match netcfg::peer_id_for_seed_hex(&args[2]) {
+                Ok(id) => {
+                    println!("{id}");
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("peer-id: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -93,12 +115,13 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = std::env::var("UBI2_RPC_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8545".into())
         .parse()?;
-    let block_ms: u64 = std::env::var("UBI2_BLOCK_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2_000);
 
-    let genesis_time = now_secs();
+    // M5 (Stage A): resolve the node-network config from env (genesis time, P2P listen/bootstrap,
+    // proposer/validator keys, the designated proposer). With no `UBI2_P2P_ADDR` set, networking is
+    // disabled and the node boots exactly as the M1–M4 single-node devnet did.
+    let netcfg = netcfg::resolve(now_secs());
+    let block_ms = netcfg.block_ms;
+    let genesis_time = netcfg.genesis_time;
 
     // Select the AI backend (proof-of-humanity oracle + prompt-contract interpreter) from the node's
     // config file (`<data_dir>/oracle.json`) + `UBI2_ORACLE_*` env overrides. Absent a provider — or if
@@ -120,26 +143,70 @@ async fn main() -> anyhow::Result<()> {
     // default allows only the local wallet origin (`http://localhost:3000`); override via
     // `UBI2_ADMIN_ALLOWED_ORIGINS`.
     let admin_access = Arc::new(admin_access_from_env());
-    let chain = Chain::new(DEVNET_CHAIN_ID, genesis_time)
-        .with_oracle_admin(oracle_admin)
-        .with_admin_access(admin_access);
 
-    // Genesis: the pre-verified dev account (M3 proof-of-humanity stands in for this `verified` flag
-    // via the runtime `Verifier` trait). Streams 1 UBI/hour from genesis.
+    // M5 (FU-3): persistence. The chain (blocks + full state) is snapshotted under the data dir; on
+    // restart we reload it and resume at the same tip with the same `state_root` (no re-seed of
+    // genesis, no lost blocks). A fresh data dir (no snapshot) boots genesis as before. The oracle /
+    // admin / proposer wiring is node config, NOT part of the snapshot, so we re-attach it either way.
     let dev_addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-    chain.seed_account(Account {
-        address: dev_addr.into_array(),
-        verified: true,
-        verified_at: genesis_time,
-        last_settled_at: genesis_time,
-        settled_balance: 0,
-        nonce: 0,
-    });
-    // M3 (spec criterion 5): migrate the dev account to a `Verified` human in the proof-of-humanity
-    // registry, so `ubi_getHuman` reports it Verified and the M3 lifecycle treats it as a founder
-    // (it can vouch outward). The account cache above already gates emission; this keeps the two in
-    // sync at genesis.
-    chain.seed_verified_human(&dev_addr.into_array(), genesis_time);
+    let loaded_snapshot = match ubi2_rpc::persist::load(&data_dir) {
+        Ok(Some(snap)) if snap.chain_id() == DEVNET_CHAIN_ID => Some(snap),
+        Ok(Some(_)) => {
+            tracing::warn!("ignoring snapshot: chain_id mismatch with this node's config");
+            None
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load chain snapshot; starting from genesis");
+            None
+        }
+    };
+
+    // M5 (Stage A): if this node is the designated proposer it holds a signing key; stamp every block it
+    // produces with `proposer` + a header signature so followers recover the author (spec §2.2).
+    let proposer_key_arc: Option<Arc<ProposerKey>> = netcfg
+        .proposer_secret
+        .and_then(|b| ProposerKey::from_bytes(&b).ok())
+        .map(Arc::new);
+
+    let chain = if let Some(snap) = loaded_snapshot {
+        let tip = snap.tip_height();
+        let mut chain = Chain::from_snapshot(&snap)
+            .with_oracle_admin(oracle_admin)
+            .with_admin_access(admin_access);
+        if let Some(k) = &proposer_key_arc {
+            chain = chain.with_proposer_key(k.clone());
+        }
+        tracing::info!(
+            tip_height = tip,
+            "restored chain from persisted snapshot (FU-3)"
+        );
+        chain
+    } else {
+        let mut chain = Chain::new(DEVNET_CHAIN_ID, genesis_time)
+            .with_oracle_admin(oracle_admin)
+            .with_admin_access(admin_access);
+        if let Some(k) = &proposer_key_arc {
+            chain = chain.with_proposer_key(k.clone());
+        }
+
+        // Genesis: the pre-verified dev account (M3 proof-of-humanity stands in for this `verified`
+        // flag via the runtime `Verifier` trait). Streams 1 UBI/hour from genesis.
+        chain.seed_account(Account {
+            address: dev_addr.into_array(),
+            verified: true,
+            verified_at: genesis_time,
+            last_settled_at: genesis_time,
+            settled_balance: 0,
+            nonce: 0,
+        });
+        // M3 (spec criterion 5): migrate the dev account to a `Verified` human in the proof-of-humanity
+        // registry, so `ubi_getHuman` reports it Verified and the M3 lifecycle treats it as a founder
+        // (it can vouch outward). The account cache above already gates emission; this keeps the two in
+        // sync at genesis.
+        chain.seed_verified_human(&dev_addr.into_array(), genesis_time);
+        chain
+    };
 
     // M3 (board M3-T4 §4): register a few deterministic devnet jurors so every case has a jury to
     // draw from (the lifecycle fails closed with `NoJurors` otherwise). Register-only in M3 (staking
@@ -202,34 +269,127 @@ async fn main() -> anyhow::Result<()> {
         oracle_cfg::config_path(&data_dir).display()
     );
 
-    // Block-production loop: tick every `block_ms`, mine pending txs, advance height + newHeads.
+    // ---- M5 (Stage A): start the P2P network (if enabled) + run the node loop ----
     //
-    // `produce_block` invokes the oracle/interpreter inline, and a LIVE backend uses a **blocking**
-    // reqwest client. Calling that on the async runtime thread panics on inner-runtime drop ("Cannot
-    // drop a runtime in a context where blocking is not allowed") and would kill the node — and the op
-    // that triggers it (`requestVerification`) is fee-exempt and submittable by anyone, so it was a
-    // remotely-triggerable node-kill (C5-SEC-3). We therefore run each block tick on the blocking pool
-    // via `spawn_blocking`, so the blocking HTTP client is dropped on a blocking-allowed thread and the
-    // async loop never panics. A `JoinError` (a panic *inside* a tick) is logged and the loop continues —
-    // block production stays alive even if one tick's backend call panics.
-    let block_chain = chain.clone();
-    let mut ticker = tokio::time::interval(Duration::from_millis(block_ms));
-    ticker.tick().await; // consume the immediate first tick
+    // Networking is enabled iff `UBI2_P2P_ADDR` was set (see `netcfg`). When enabled we start the libp2p
+    // swarm, build a `NetDriver` that bridges it to the chain, and run a single loop that: processes
+    // inbound network events, ticks the proposer (only the designated proposer produces blocks),
+    // relays locally-submitted txs, and persists every new tip. With networking disabled the node runs
+    // the legacy single-node tick (this node mines every block — unchanged M1–M4 behaviour).
+    //
+    // NOTE (C5-SEC-3): the multi-node devnet runs the deterministic `MockOracle`/`MockInterpreter` (no
+    // blocking HTTP), so producing/applying blocks inline on the node loop is safe. A LIVE oracle (which
+    // uses a blocking reqwest client) is a single-node configuration; the networked Stage-A devnet does
+    // not use it. The legacy single-node tick below keeps its `spawn_blocking` hop for the live path.
+    tracing::info!(
+        "  role              : {}",
+        if netcfg.is_proposer {
+            "PROPOSER (produces blocks)"
+        } else if netcfg.network.is_some() {
+            "FOLLOWER (validates + applies)"
+        } else {
+            "SINGLE-NODE (no p2p)"
+        }
+    );
+    if let Some(dp) = netcfg.designated_proposer {
+        tracing::info!("  designated prop.  : 0x{}", hex::encode(dp.as_slice()));
+    }
 
-    tokio::select! {
-        _ = async {
-            loop {
-                ticker.tick().await;
-                let tick_chain = block_chain.clone();
-                match tokio::task::spawn_blocking(move || tick_chain.produce_block(now_secs())).await {
-                    Ok(b) => tracing::debug!(number = b.number, txs = b.txs.len(), "block produced"),
-                    Err(e) => tracing::error!(error = %e, "block tick panicked; continuing"),
+    let mut interval = tokio::time::interval(Duration::from_millis(block_ms));
+    interval.tick().await; // consume the immediate first tick
+
+    if let Some(mut net_config) = netcfg.network {
+        // Fill the real genesis hash now that the chain exists (the handshake anchor, §4.1).
+        net_config.genesis_hash = chain.genesis_hash();
+        let (net_handle, mut events) = ubi2_network::start(net_config)
+            .map_err(|e| anyhow::anyhow!("network start failed: {e}"))?;
+        tracing::info!("  p2p peer id       : {}", net_handle.local_peer_id());
+
+        let mut driver = net::NetDriver::new(
+            chain.clone(),
+            net_handle,
+            netcfg.validator_key,
+            netcfg.designated_proposer,
+            netcfg.is_proposer,
+        );
+        driver.announce_start();
+
+        // A fast, separate tx-relay timer so a LOCALLY-submitted tx (`eth_sendRawTransaction`, which
+        // lands straight in the mempool) reaches peers well within the EC-2 2-second bar, rather than
+        // waiting up to a full block interval. gossipsub dedups by tx-hash, so re-publishing is cheap.
+        //
+        // Bootstrap connectivity is NOT driven from here: the network layer owns a reconnect-until-
+        // connected sweep (re-dials any not-yet-connected bootstrap peer with bounded backoff), so the
+        // full mesh converges regardless of node boot order or transient dial failures — no node-side
+        // re-dial timer is needed (and the old count-gated one could wedge a node below full peer count).
+        let mut relay = tokio::time::interval(Duration::from_millis(250));
+        relay.tick().await;
+
+        loop {
+            tokio::select! {
+                ev = events.recv() => {
+                    match ev {
+                        Some(ev) => driver.on_event(ev),
+                        None => { tracing::warn!("network event stream closed"); break; }
+                    }
+                }
+                _ = relay.tick() => {
+                    driver.relay_pending_txs();
+                }
+                _ = interval.tick() => {
+                    // The proposer mines a block; persist the latest tip so a restart resumes
+                    // deterministically (FU-3). Followers do not produce blocks (Stage A).
+                    if let Some(b) = driver.tick_proposer(now_secs()) {
+                        tracing::debug!(number = b.number, txs = b.txs.len(), "block produced");
+                    }
+                    let snap = chain.export_snapshot();
+                    if let Err(e) = ubi2_rpc::persist::save(&data_dir, &snap) {
+                        tracing::warn!(error = %e, "failed to persist chain snapshot");
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("shutdown signal received");
+                    break;
                 }
             }
-        } => {},
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutdown signal received");
         }
+    } else {
+        // ---- Legacy single-node devnet tick (no p2p) ----
+        let block_chain = chain.clone();
+        let persist_dir = data_dir.clone();
+        tokio::select! {
+            _ = async {
+                loop {
+                    interval.tick().await;
+                    let tick_chain = block_chain.clone();
+                    let snap_dir = persist_dir.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        let b = tick_chain.produce_block(now_secs());
+                        let snap = tick_chain.export_snapshot();
+                        if let Err(e) = ubi2_rpc::persist::save(&snap_dir, &snap) {
+                            tracing::warn!(error = %e, "failed to persist chain snapshot");
+                        }
+                        b
+                    })
+                    .await;
+                    match res {
+                        Ok(b) => tracing::debug!(number = b.number, txs = b.txs.len(), "block produced"),
+                        Err(e) => tracing::error!(error = %e, "block tick panicked; continuing"),
+                    }
+                }
+            } => {},
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutdown signal received");
+            }
+        }
+    }
+
+    // Final snapshot on graceful shutdown so a clean stop always persists the latest tip.
+    let final_snap = chain.export_snapshot();
+    if let Err(e) = ubi2_rpc::persist::save(&data_dir, &final_snap) {
+        tracing::warn!(error = %e, "failed to persist final chain snapshot on shutdown");
+    } else {
+        tracing::info!("persisted final chain snapshot (FU-3)");
     }
 
     handle.stop()?;

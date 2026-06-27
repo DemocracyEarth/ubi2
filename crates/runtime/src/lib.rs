@@ -34,6 +34,9 @@ pub use lifecycle::{
     seed_verified_human, submit_verdict, system_challenge, vouch, LifecycleError, LivenessEvidence,
 };
 
+pub mod state_root;
+pub use state_root::state_root;
+
 pub mod contracts;
 pub use contracts::{
     contract_address, deploy_contract, fund_contract, invoke_contract, submit_effect,
@@ -183,6 +186,17 @@ pub fn charge_fee(
         });
     }
     sender.settled_balance -= fee;
+
+    // FU-13: a **zero** fee (the fee-exempt onboarding op, `GAS_ONBOARD == 0`) must not create or
+    // touch the TREASURY account. Creating a zero-balance `TREASURY` entry on a zero-gas op left a
+    // stray account in `MemState::accounts` that perturbs the state-root (a node that has processed an
+    // onboarding op would have a TREASURY entry a node that has not would lack), breaking byte-identical
+    // roots (EC-4/EC-10). When `fee == 0` nothing moves, so we write only the (nonce-untouched) sender —
+    // and even that only after settlement — and skip the treasury entirely.
+    if fee == 0 {
+        state.put(sender);
+        return Ok(0);
+    }
 
     let mut treasury = state.get(&TREASURY).unwrap_or(Account {
         address: TREASURY,
@@ -565,6 +579,31 @@ pub trait State: Send + Sync {
     fn next_exec_case_id(&mut self) -> ExecCaseId;
     /// Snapshot of all exec cases, sorted by id (deterministic order — I1).
     fn exec_cases(&self) -> Vec<ExecCase>;
+
+    // ---- M5: id-counter peeks (read-only; for the deterministic state root) ----
+    //
+    // The next-id counters are part of consensus state: a rolled-back op can advance a counter without
+    // leaving a registry entry, so two states with the same entries but different counters are NOT
+    // logically equal and must produce different roots. These read-only peeks let `state_root` commit
+    // the counters without mutating them. Default impls return 0 so non-`MemState` stores compile;
+    // `MemState` overrides them with the real values.
+
+    /// The id the next [`open_stream`] will receive (read-only peek of the counter). Pure read.
+    fn peek_next_stream_id(&self) -> StreamId {
+        0
+    }
+    /// The id the next case will receive (read-only peek). Pure read.
+    fn peek_next_case_id(&self) -> CaseId {
+        0
+    }
+    /// The id the next [`deploy_contract`] will receive (read-only peek). Pure read.
+    fn peek_next_contract_id(&self) -> ContractId {
+        0
+    }
+    /// The id the next exec case will receive (read-only peek). Pure read.
+    fn peek_next_exec_case_id(&self) -> ExecCaseId {
+        0
+    }
 }
 
 /// In-memory account + stream store (M1 default, extended for M2). Deterministic given the same
@@ -646,11 +685,20 @@ impl State for MemState {
     }
 
     fn outgoing(&self, addr: &Address) -> Vec<StreamId> {
-        self.outgoing.get(addr).cloned().unwrap_or_default()
+        // FU-13: return the index **sorted** so no consensus path (the `state_root` serialization, the
+        // `balance` inflow sum) depends on insertion order. Stream ids are assigned monotonically, so a
+        // single-node run is already ascending; sorting makes it order-independent across any path that
+        // could re-put streams out of id order, guaranteeing two logically-equal states iterate the same.
+        let mut v = self.outgoing.get(addr).cloned().unwrap_or_default();
+        v.sort_unstable();
+        v
     }
 
     fn incoming(&self, addr: &Address) -> Vec<StreamId> {
-        self.incoming.get(addr).cloned().unwrap_or_default()
+        // FU-13: sorted, for the same determinism reason as `outgoing` above.
+        let mut v = self.incoming.get(addr).cloned().unwrap_or_default();
+        v.sort_unstable();
+        v
     }
 
     fn next_stream_id(&mut self) -> StreamId {
@@ -805,6 +853,55 @@ impl State for MemState {
         let mut v: Vec<ExecCase> = self.exec_cases.values().cloned().collect();
         v.sort_by_key(|c| c.id);
         v
+    }
+
+    fn peek_next_stream_id(&self) -> StreamId {
+        self.next_id
+    }
+    fn peek_next_case_id(&self) -> CaseId {
+        self.next_case_id
+    }
+    fn peek_next_contract_id(&self) -> ContractId {
+        self.next_contract_id
+    }
+    fn peek_next_exec_case_id(&self) -> ExecCaseId {
+        self.next_exec_case_id
+    }
+}
+
+impl MemState {
+    /// The cleared-challenge cooldown set, returned **sorted** by `(challenger, subject)` for the
+    /// deterministic state root (the underlying store is a `HashSet`, whose iteration order is not
+    /// canonical). Pure read. Not on the [`State`] trait — only the root serializer needs it, and only
+    /// for `MemState`.
+    pub fn cleared_challenges_sorted(&self) -> Vec<(Address, Address)> {
+        let mut v: Vec<(Address, Address)> = self.cleared_challenges.iter().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    // ---- M5 (FU-3 persistence): id-counter setters used to restore a loaded snapshot ----
+    //
+    // The id counters are part of consensus state (a rolled-back op can advance one without leaving an
+    // entry — see `state_root`). Persistence captures them via the `peek_next_*` reads and restores
+    // them here so a node that stops/restarts has byte-identical state (same root). Concrete-type only
+    // (not on the `State` trait): only the persistence layer reaches for them.
+
+    /// Restore the next-stream-id counter (FU-3 load path).
+    pub fn set_next_stream_id(&mut self, id: StreamId) {
+        self.next_id = id;
+    }
+    /// Restore the next-case-id counter (FU-3 load path).
+    pub fn set_next_case_id(&mut self, id: CaseId) {
+        self.next_case_id = id;
+    }
+    /// Restore the next-contract-id counter (FU-3 load path).
+    pub fn set_next_contract_id(&mut self, id: ContractId) {
+        self.next_contract_id = id;
+    }
+    /// Restore the next-exec-case-id counter (FU-3 load path).
+    pub fn set_next_exec_case_id(&mut self, id: ExecCaseId) {
+        self.next_exec_case_id = id;
     }
 }
 
