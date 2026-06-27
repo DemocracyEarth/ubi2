@@ -225,7 +225,7 @@ async fn boot(addr: SocketAddr, genesis: u64) -> (Chain, jsonrpsee::server::Serv
 // =============================================================================================
 #[tokio::test]
 async fn type2_transfer_confirms_with_type_and_1559_fields() {
-    let addr: SocketAddr = "127.0.0.1:18601".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:18621".parse().unwrap();
     let genesis = now_secs() - 100 * 3_600; // dev account has streamed ~100 UBI
     let (chain, _handle) = boot(addr, genesis).await;
 
@@ -332,7 +332,7 @@ async fn type2_transfer_confirms_with_type_and_1559_fields() {
 // =============================================================================================
 #[tokio::test]
 async fn type2_contract_deploy_confirms() {
-    let addr: SocketAddr = "127.0.0.1:18602".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:18622".parse().unwrap();
     let genesis = now_secs() - 100 * 3_600;
     let (chain, _handle) = boot(addr, genesis).await;
 
@@ -398,7 +398,7 @@ async fn type2_contract_deploy_confirms() {
 // =============================================================================================
 #[tokio::test]
 async fn legacy_transfer_still_confirms_as_type0() {
-    let addr: SocketAddr = "127.0.0.1:18603".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:18623".parse().unwrap();
     let genesis = now_secs() - 100 * 3_600;
     let (chain, _handle) = boot(addr, genesis).await;
 
