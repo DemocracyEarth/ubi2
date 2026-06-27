@@ -850,33 +850,64 @@
 
   // ══════════════════════════════════════════════════════════════
   // 9. INTERSECTION OBSERVER — scroll reveal
-  //    We add .js-reveal to <body> first so CSS can target it.
-  //    Without JS (headless Chrome, no-script) elements stay visible.
+  //    Cards animate up when they enter the viewport.
+  //    Sections are never hidden (section-level visibility is CSS-only).
+  //    js-reveal class on body gates card animations.
   // ══════════════════════════════════════════════════════════════
   (function initReveal() {
-    if (REDUCED) {
-      // Everything visible immediately — no animation class needed
+    if (REDUCED) return; // everything visible with no animation
+
+    const cards = Array.prototype.slice.call(document.querySelectorAll('.reveal-card'));
+    if (!cards.length) return;
+
+    const show = el => el.classList.add('in-view');
+
+    // If IntersectionObserver is unavailable, NEVER hide content — show it all.
+    if (!('IntersectionObserver' in window)) {
+      cards.forEach(show);
       return;
     }
 
-    // Activate the hidden-by-default state only when JS is running
+    // Only now gate the cards as hidden (opacity:0). Anything that follows
+    // MUST guarantee they get un-hidden, in every environment.
     document.body.classList.add('js-reveal');
 
     const observer = new IntersectionObserver(
       entries => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
-            entry.target.classList.add('in-view');
+            show(entry.target);
             observer.unobserve(entry.target);
           }
         });
       },
-      { threshold: 0.08 }
+      { threshold: 0.04, rootMargin: '0px 0px -8% 0px' }
     );
 
-    document.querySelectorAll('.reveal-section, .reveal-card').forEach(el => {
-      observer.observe(el);
+    // Reveal cards already in (or near) the initial viewport without animation;
+    // observe the rest so they animate in on scroll.
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    cards.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.top < vh + 120) {
+        el.style.transition = 'none';
+        show(el);
+        requestAnimationFrame(() => { el.style.transition = ''; });
+      } else {
+        observer.observe(el);
+      }
     });
+
+    // FAIL-SAFE: in a non-scrolling context (embedded preview pane, iframe,
+    // unusual scroll root) the observer never fires for below-fold cards and
+    // they would stay at opacity:0 forever. Force-reveal anything still hidden
+    // once the page has settled, so the page is ALWAYS fully visible.
+    const failsafe = () => cards.forEach(el => { if (!el.classList.contains('in-view')) show(el); });
+    if (document.readyState === 'complete') {
+      setTimeout(failsafe, 1800);
+    } else {
+      window.addEventListener('load', () => setTimeout(failsafe, 1800), { once: true });
+    }
   })();
 
   // ══════════════════════════════════════════════════════════════
@@ -887,24 +918,17 @@
   // ══════════════════════════════════════════════════════════════
   (function initVideoSlots() {
     document.querySelectorAll('[data-video-slot]').forEach(video => {
-      // Check if any <source> child has a real src
-      const sources = video.querySelectorAll('source[src]');
-      const hasSrc = video.getAttribute('src') ||
-                     Array.from(sources).some(s => s.getAttribute('src') &&
-                       !s.getAttribute('src').startsWith('<!--'));
+      // Always start hidden; only show if the video actually loads
+      video.style.display = 'none';
+      video.setAttribute('aria-hidden', 'true');
 
-      if (!hasSrc) {
-        video.style.display = 'none';
-        video.setAttribute('aria-hidden', 'true');
-      } else {
-        // Video present — show and fade in on canplay
+      // Fade in only on successful canplay — handles missing assets gracefully
+      video.addEventListener('canplay', () => {
         video.style.display = 'block';
         video.style.opacity = '0';
         video.style.transition = 'opacity 1s ease';
-        video.addEventListener('canplay', () => {
-          video.style.opacity = '1';
-        }, { once: true });
-      }
+        requestAnimationFrame(() => { video.style.opacity = '1'; });
+      }, { once: true });
     });
   })();
 

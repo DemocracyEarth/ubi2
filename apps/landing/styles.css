@@ -408,7 +408,10 @@ pre, code { font-family: var(--mono); }
    ============================================================ */
 .section-hero {
   position: relative;
-  min-height: 100vh;
+  /* Use height capped at 100vh so it never bloats in tall headless screenshots */
+  height: 100vh;
+  max-height: 900px;
+  min-height: 600px;
   display: flex;
   align-items: flex-start;
   overflow: hidden;
@@ -1920,28 +1923,22 @@ pre, code { font-family: var(--mono); }
 
 /* ============================================================
    SCROLL REVEAL ANIMATIONS
-   JS adds .js-reveal to body before observer runs;
-   without JS (or in headless / no-script) everything is visible.
+   Only .reveal-card elements animate in (sections stay visible).
+   JS adds .js-reveal to body; without JS everything shows normally.
    ============================================================ */
-.js-reveal .reveal-section {
-  opacity: 0;
-  transform: translateY(32px);
-  transition: opacity .7s ease, transform .7s ease;
-}
-.js-reveal .reveal-section.in-view {
-  opacity: 1;
-  transform: translateY(0);
-}
-
 .js-reveal .reveal-card {
   opacity: 0;
-  transform: translateY(24px);
+  transform: translateY(22px);
   transition: opacity .55s ease, transform .55s ease;
 }
 .js-reveal .reveal-card.in-view {
   opacity: 1;
   transform: translateY(0);
 }
+
+/* reveal-section: just a semantic hook, no hiding */
+.reveal-section { }
+.reveal-section.in-view { }
 
 /* Stagger children in grids */
 .pillars-grid .reveal-card:nth-child(1) { transition-delay: .05s; }
