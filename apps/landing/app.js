@@ -47,8 +47,13 @@
   function resizeCanvas(canvas) {
     const dpr = getDPR();
     const rect = canvas.getBoundingClientRect();
-    const w = Math.round(rect.width * dpr);
-    const h = Math.round(rect.height * dpr);
+    // Defensive: a real on-screen canvas never exceeds the viewport. Clamp the
+    // measured size so a canvas whose CSS leaves its display height to derive
+    // from the (dpr-scaled) buffer can't feed back and grow without bound.
+    const cssW = Math.min(rect.width, window.innerWidth || rect.width);
+    const cssH = Math.min(rect.height, window.innerHeight || rect.height);
+    const w = Math.round(cssW * dpr);
+    const h = Math.round(cssH * dpr);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width  = w;
       canvas.height = h;

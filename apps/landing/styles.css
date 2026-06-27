@@ -1039,7 +1039,11 @@ pre, code { font-family: var(--mono); }
   background: linear-gradient(90deg, transparent, rgba(79,231,168,.35), transparent);
 }
 
-#drip-canvas { width: 100%; max-width: 280px; }
+#drip-canvas { width: 100%; max-width: 280px; aspect-ratio: 280 / 360; height: auto; }
+/* Pin the flow-arrow canvases' DISPLAY size. Without a CSS size, the canvas
+   display tracks its (dpr-scaled) buffer and doubles every frame on HiDPI
+   screens — a runaway that explodes the layout. */
+#flow-arrow-canvas, #flow-arrow-canvas-2 { width: 120px; height: 40px; }
 
 .drip-live-display {
   text-align: center;
