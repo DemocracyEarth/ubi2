@@ -72,6 +72,12 @@ use humanity::{
     u64_topic as h_u64_topic, CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
 };
 
+pub mod poh_nft;
+use poh_nft::{
+    addr_of_token_id, render_token_uri as render_poh_token_uri, token_id_of,
+    CardData as PohCardData,
+};
+
 pub mod contracts;
 use contracts::{
     addr_topic as c_addr_topic, derive_trigger, parse_calldata as parse_contract_calldata,
@@ -597,6 +603,65 @@ fn status_changed_log(subject: &Address, status: HumanStatus) -> TxLog {
     }
 }
 
+/// The standard ERC-721 `Transfer(from, to, tokenId)` mint log for the "Proof of Humanity" token of
+/// `human` (`0x0 → human`, `tokenId == human as uint160`). Emitted by the HumanityHub when `human`
+/// transitions to `Verified`.
+fn poh_mint_log(human: &Address) -> TxLog {
+    let h = AlloyAddr::from(*human);
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            transfer_topic(),
+            addr_topic(&AlloyAddr::ZERO),
+            addr_topic(&h),
+            u256_topic(token_id_of(&h)),
+        ],
+        data: Vec::new(),
+    }
+}
+
+/// The standard ERC-721 `Transfer(from, to, tokenId)` burn log for the "Proof of Humanity" token of
+/// `human` (`human → 0x0`). Emitted by the HumanityHub when `human` is `Revoked`.
+fn poh_burn_log(human: &Address) -> TxLog {
+    let h = AlloyAddr::from(*human);
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            transfer_topic(),
+            addr_topic(&h),
+            addr_topic(&AlloyAddr::ZERO),
+            u256_topic(token_id_of(&h)),
+        ],
+        data: Vec::new(),
+    }
+}
+
+/// Emit the lifecycle `StatusChanged` log for `subject`'s transition to `status`, plus the soulbound
+/// PoH ERC-721 `Transfer` mint/burn whenever the transition crosses the token-existence boundary. The
+/// PoH token of an address **exists iff its status is `Verified`** (the exact predicate `ownerOf` /
+/// `balanceOf` use), so:
+///   * `prev != Verified` → `Verified` mints (`0x0 → subject`);
+///   * `prev == Verified` → not-`Verified` (Revoked, or Challenged) burns (`subject → 0x0`).
+///
+/// `prev` is the status *before* the transition, so a `Verified→Verified` no-op never re-mints. Keeping
+/// mint/burn aligned with the `ownerOf`/`balanceOf` predicate guarantees the log stream is a faithful
+/// transcript of token existence (an indexer can reconstruct ownership from Transfer logs alone).
+fn humanity_status_logs(
+    subject: &Address,
+    prev: Option<HumanStatus>,
+    status: HumanStatus,
+) -> Vec<TxLog> {
+    let mut logs = vec![status_changed_log(subject, status)];
+    let was_verified = prev == Some(HumanStatus::Verified);
+    let is_verified = status == HumanStatus::Verified;
+    if is_verified && !was_verified {
+        logs.push(poh_mint_log(subject)); // token comes into existence
+    } else if was_verified && !is_verified {
+        logs.push(poh_burn_log(subject)); // token leaves existence (Revoked or Challenged)
+    }
+    logs
+}
+
 // ---------------------------------------------------------------------------------------------
 // M4 prompt-contract event logs (carried in tx receipts — spec 04 §"RPC / interfaces"). Same
 // `{address, topics, data}` shape as the StreamHub/HumanityHub logs.
@@ -708,7 +773,12 @@ fn sweep_finalize(state: &mut dyn State, now_block: u64, verified_at_secs: u64) 
     let mut logs = Vec::new();
     for subject in pending {
         if finalize_registration(state, &subject, now_block, verified_at_secs).is_ok() {
-            logs.push(status_changed_log(&subject, HumanStatus::Verified));
+            // Pending→Verified: emit StatusChanged + the PoH ERC-721 mint (0x0 → subject).
+            logs.extend(humanity_status_logs(
+                &subject,
+                Some(HumanStatus::Pending),
+                HumanStatus::Verified,
+            ));
         }
     }
     logs
@@ -1164,10 +1234,15 @@ impl Chain {
                         if let Some(case) = g.state.get_case(case_id) {
                             logs.push(case_opened_log(&case));
                         }
-                        // A Verified subject flips to Challenged when a challenge opens.
+                        // A Verified subject flips to Challenged when a challenge opens — its PoH token
+                        // leaves existence (status no longer Verified), so emit StatusChanged + a burn.
                         if let Some(h) = g.state.get_human(&subject.into_array()) {
                             if h.status == HumanStatus::Challenged {
-                                logs.push(status_changed_log(&subject.into_array(), h.status));
+                                logs.extend(humanity_status_logs(
+                                    &subject.into_array(),
+                                    Some(HumanStatus::Verified),
+                                    h.status,
+                                ));
                             }
                         }
                         logs
@@ -1193,11 +1268,16 @@ impl Chain {
                         .map(|_status| {
                             let mut logs =
                                 vec![verdict_submitted_log(*case_id, &p.from, verdict.verdict)];
-                            // If the committed effect changed the subject's status, log it.
+                            // If the committed effect changed the subject's status, log it — plus the
+                            // PoH ERC-721 mint/burn when the transition crosses the token boundary
+                            // (Challenged→Verified clears a challenge ⇒ no mint; *→Revoked burns a
+                            // previously-Verified token).
                             if let Some(subj) = subject {
                                 if let Some(h) = g.state.get_human(&subj) {
                                     if Some(h.status) != pre_status {
-                                        logs.push(status_changed_log(&subj, h.status));
+                                        logs.extend(humanity_status_logs(
+                                            &subj, pre_status, h.status,
+                                        ));
                                     }
                                 }
                             }
@@ -2184,6 +2264,97 @@ fn erc721_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned> 
     }
 }
 
+/// Dispatch a "Proof of Humanity" ERC-721 / ERC-165 / ERC-721-Metadata view call against the
+/// HumanityHub collection, returning ABI-encoded result bytes. Stateless ownership: `tokenId` is the
+/// human address as `uint160`, and the token *exists* (does not revert) iff that address's
+/// `ubi_getHuman` status is `Verified`. Unknown selectors return empty data; soulbound mutators revert.
+fn poh_nft_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned> {
+    use alloy_sol_types::SolCall;
+    use poh_nft::{
+        balanceOfCall, encode_address, encode_bool, encode_string, encode_u256, nameCall,
+        ownerOfCall, supportsInterfaceCall, symbolCall, tokenURICall, IFACE_ERC165, IFACE_ERC721,
+        IFACE_ERC721_METADATA, POH_NAME, POH_SYMBOL,
+    };
+
+    if data.len() < 4 {
+        return Err(invalid_params("calldata too short for a selector"));
+    }
+    let sel: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    // supportsInterface(bytes4)
+    if sel == supportsInterfaceCall::SELECTOR {
+        let call = supportsInterfaceCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad supportsInterface args: {e}")))?;
+        let id: [u8; 4] = call.interfaceId.0;
+        let yes = id == IFACE_ERC165 || id == IFACE_ERC721 || id == IFACE_ERC721_METADATA;
+        return Ok(encode_bool(yes));
+    }
+    // name() / symbol()
+    if sel == nameCall::SELECTOR {
+        return Ok(encode_string(POH_NAME));
+    }
+    if sel == symbolCall::SELECTOR {
+        return Ok(encode_string(POH_SYMBOL));
+    }
+    // balanceOf(address) → 1 iff Verified, else 0.
+    if sel == balanceOfCall::SELECTOR {
+        let call = balanceOfCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad balanceOf args: {e}")))?;
+        let verified = chain
+            .get_human(&call.owner.into_array())
+            .map(|h| h.status == HumanStatus::Verified)
+            .unwrap_or(false);
+        return Ok(encode_u256(U256::from(u8::from(verified))));
+    }
+    // ownerOf(uint256) → the address iff Verified, else revert.
+    if sel == ownerOfCall::SELECTOR {
+        let call = ownerOfCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad ownerOf args: {e}")))?;
+        let addr = addr_of_token_id(call.tokenId)
+            .ok_or_else(|| execution_reverted("ERC721: invalid token"))?;
+        let verified = chain
+            .get_human(&addr.into_array())
+            .map(|h| h.status == HumanStatus::Verified)
+            .unwrap_or(false);
+        if !verified {
+            return Err(execution_reverted(
+                "ERC721: owner query for nonexistent token",
+            ));
+        }
+        return Ok(encode_address(addr));
+    }
+    // tokenURI(uint256) → the on-chain fingerprint card iff Verified, else revert.
+    if sel == tokenURICall::SELECTOR {
+        let call = tokenURICall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad tokenURI args: {e}")))?;
+        let addr = addr_of_token_id(call.tokenId)
+            .ok_or_else(|| execution_reverted("ERC721: invalid token"))?;
+        let human = chain
+            .get_human(&addr.into_array())
+            .filter(|h| h.status == HumanStatus::Verified)
+            .ok_or_else(|| execution_reverted("ERC721Metadata: URI query for nonexistent token"))?;
+        let card = PohCardData {
+            address: addr,
+            status: human.status,
+            verified_at: human.verified_at,
+            vouches: human.vouches_in.len(),
+            reputation: human.reputation,
+        };
+        return Ok(encode_string(&render_poh_token_uri(&card)));
+    }
+    // Soulbound mutators (transfer/approve) reach eth_call only if a tool simulates them: revert.
+    // (One token per human, non-transferable.)
+    if sel == poh_nft::transferFromCall::SELECTOR
+        || sel == poh_nft::safeTransferFromCall::SELECTOR
+        || sel == poh_nft::approveCall::SELECTOR
+        || sel == poh_nft::setApprovalForAllCall::SELECTOR
+    {
+        return Err(execution_reverted("soulbound"));
+    }
+    // Unknown selector → empty data (matches the StreamHub view fallback).
+    Ok(Vec::new())
+}
+
 /// Parse a stream-id JSON param accepting either a hex quantity (`"0x.."`) or a JSON number.
 fn parse_stream_id_param(v: Option<&Value>) -> RpcResult<u64> {
     let v = v.ok_or_else(|| invalid_params("missing stream id"))?;
@@ -2673,12 +2844,19 @@ fn decode_log_json(log: &TxLog) -> Value {
             "id": topic_u64(1), "caller": topic_addr(2),
         }})
     } else if sig == transfer_topic() {
-        // ERC-721 Transfer(from, to, tokenId) — the two stream-NFT mints. tokenId is in topic[3].
+        // ERC-721 Transfer(from, to, tokenId). The emitter disambiguates the collection: the StreamHub
+        // mints stream tokens (two per stream); the HumanityHub mints/burns the Proof-of-Humanity
+        // soulbound token (one per verified human, tokenId == the human address as uint160).
         let token_id = log
             .topics
             .get(3)
             .map(|t| hex_u256(U256::from_be_bytes(t.0)));
-        json!({ "name": "Transfer", "hub": "StreamHub", "args": {
+        let hub = if log.address == HUMANITY_HUB {
+            "HumanityHub"
+        } else {
+            "StreamHub"
+        };
+        json!({ "name": "Transfer", "hub": hub, "args": {
             "from": topic_addr(1), "to": topic_addr(2), "token_id": token_id,
         }})
     } else if sig == case_opened_topic() {
@@ -3029,12 +3207,15 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             .and_then(decode_hex)
             .unwrap_or_default();
 
-        // Only StreamHub is a "contract"; everything else stays `0x`.
-        let is_hub = to.as_deref() == Some(STREAM_HUB.as_slice());
-        if !is_hub {
+        // The StreamHub (UBI Streams) and the HumanityHub (Proof of Humanity) each answer an ERC-721
+        // view surface; every other target stays `0x` (M1 behavior — no general EVM).
+        let out = if to.as_deref() == Some(STREAM_HUB.as_slice()) {
+            erc721_call(ctx, &data)?
+        } else if to.as_deref() == Some(HUMANITY_HUB.as_slice()) {
+            poh_nft_call(ctx, &data)?
+        } else {
             return Ok::<_, ErrorObjectOwned>(json!("0x"));
-        }
-        let out = erc721_call(ctx, &data)?;
+        };
         Ok::<_, ErrorObjectOwned>(json!(format!("0x{}", hex::encode(&out))))
     })
     .unwrap();

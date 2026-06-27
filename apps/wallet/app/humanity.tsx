@@ -1,20 +1,23 @@
 "use client";
 
 /**
- * M3 Proof-of-Humanity UI — cycle 6.
+ * M3 Proof-of-Humanity UI — cycle 7 (PoH brand + NFT card).
  *
  * Changes:
- *  - Vouch UX: surfaces ubi_getPendingCases so the user can pick a valid target
- *    (only accounts with an OPEN Registration case can be vouched for). Shows
- *    the failed-tx reason inline (e.g. "vouchee has no open registration").
- *  - AI mock banner in the Identity section.
- *  - Challenge UX mirrors the vouch improvement.
+ *  - PoH brand palette applied to all identity surfaces (card.poh, gradient accents,
+ *    fingerprint mark, achievement banner).
+ *  - PoH NFT card: fetches tokenURI from HumanityHub via PohNftReader and renders
+ *    the on-chain SVG inline; shows token attributes.
+ *  - "Add to MetaMask" (wallet_watchAsset ERC721) button in the NFT card.
+ *  - Verified state feels like an achievement: green #009966 banner + fingerprint mark.
+ *  - The rest (vouch, challenge, pending cases) is re-skinned with PoH-green hints.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Ubi2Client,
   HumanityReader,
+  PohNftReader,
   OracleAdminClient,
   sendHumanityTx,
   encodeRequestVerification,
@@ -24,15 +27,18 @@ import {
   humanStatusLabel,
   verdictLabel,
   confidenceLabel,
+  pohTokenId,
   HUMANITY_HUB,
   type HumanRecord,
   type CaseRecord,
   type JurorRecord,
+  type PohCard,
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
+const pohReader = new PohNftReader(client);
 const oracle = new OracleAdminClient(client);
 
 interface Injected {
@@ -68,6 +74,100 @@ async function requestFrom(injected: Injected, fallback: string): Promise<string
 function short(addr: string): string {
   if (!addr || addr.length < 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+// ---- Inline PoH mark (fingerprint-in-shield, gradient-filled) --------------------
+// Extracted from poh-logo.svg: the mask path + gradient fill rectangle.
+
+function PohMark({ size = 28, className = "" }: { size?: number; className?: string }) {
+  const gradId = "poh-mark-grad";
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 370 414"
+      className={className}
+      aria-label="Proof of Humanity mark"
+    >
+      <defs>
+        <linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#FFFF00" />
+          <stop offset="100%" stopColor="#FF6699" />
+        </linearGradient>
+        <mask id="poh-mark-mask">
+          <path
+            fill="#FFFFFF"
+            d="
+M 347.25 181.1
+Q 347.25 147.05 334.2 115.65 321.15 84.2 297.1 60.15 273.05 36.05 241.6 23 210.15 10 176.15 9.95 174.897265625 9.9517578125 173.65 9.95 172.40078125 9.9517578125 171.15 9.95 137.1 10 105.65 23 74.25 36.05 50.2 60.15 26.1 84.2 13.1 115.65 0.05 147.05 0 181.1 0.0033203125 182.2296875 0 183.35 0.001953125 184.7263671875 0 186.1 0.05 203.45 4.5 220.25 8.9 237.1 17.4 252.25 25.9 267.4 37.9 279.95 49.95 292.5 64.75 301.65
+L 79.75 310.85 79.75 418.7
+Q 79.75 420.75 81.2 422.2 82.7 423.65 84.75 423.65
+L 242.6 423.65
+Q 244.65 423.65 246.1 422.2 247.6 420.75 247.6 418.7
+L 247.6 377.15 295.75 377.15
+Q 300.7 377.15 305.3 375.25 309.85 373.35 313.4 369.85 316.9 366.35 318.8 361.75 320.7 357.2 320.7 352.25
+L 320.7 304.05 351.1 304.05
+Q 355.5 304.05 359.45 302.05 363.4 300 365.95 296.45 368.5 292.85 369.2 288.5 369.5890625 285.8658203125 369.2 283.3 369.8205078125 279.015625 368.4 274.95
+L 347.25 212.2 347.25 181.1
+M 332.3 218
+Q 332.3 218.85 332.55 219.6
+L 353.95 283.1
+Q 353.980859375 283.1904296875 354 283.25 353.620703125 284.544140625 352.85 285.65 351.7 287.25 349.9 288.2 348.2853515625 289.007421875 346.5 289.05
+L 310.7 289.05
+Q 308.65 289.1 307.15 290.55 305.75 292 305.7 294.05
+L 305.7 347.55
+Q 305.6390625 350.3458984375 304.55 352.95 303.4 355.7 301.35 357.8 299.25 359.9 296.5 361.05 293.8935546875 362.1400390625 291.05 362.2
+L 237.6 362.2
+Q 235.55 362.2 234.05 363.65 232.6 365.1 232.6 367.2
+L 232.6 408.7 94.75 408.7 94.75 303.05
+Q 94.75 301.75 94.1 300.65 93.45 299.5 92.35 298.8
+L 74.95 288.15
+Q 61.25 279.65 50.1 268.05 38.95 256.45 31.1 242.4 23.2 228.35 19.1 212.75 15.2994140625 198.1578125 14.95 183.05 15.5302734375 152.651171875 27.25 124.4 39.5 94.8 62.2 72.15 84.85 49.45 114.45 37.2 142.941796875 25.38046875 173.65 24.9 204.35625 25.38046875 232.8 37.2 262.45 49.45 285.1 72.15 307.75 94.8 320.05 124.4 331.76171875 152.7470703125 332.3 183.3
+L 332.3 218
+M 234.25 188.1
+Q 234.25 186.15 232.9 184.75 231.5 183.4 229.6 183.35
+L 229.25 183.35
+Q 227.8 183.45 226.65 184.35
+L 176.7 222.2 126.8 184.3
+Q 125.9 183.6 124.75 183.4 123.65 183.2 122.55 183.5 121.45 183.85 120.6 184.65 119.8 185.4 119.4 186.5 119.05 187.6 119.2 188.7 119.4 189.85 120.05 190.8
+L 172.85 266.35
+Q 173.5 267.3 174.55 267.8 175.55 268.35 176.7 268.35 177.85 268.35 178.9 267.8 179.95 267.3 180.6 266.35
+L 233.35 190.85
+Q 234.25 189.65 234.25 188.1
+M 174.4 77.35
+Q 173.3 77.95 172.65 79.05
+L 123.9 160.15
+Q 123 161.75 123.3 163.5 123.65 165.25 125.05 166.35
+L 173.85 203.95
+Q 175.1 204.95 176.7 204.95 178.3 204.95 179.6 203.95
+L 228.35 166.35
+Q 229.8 165.25 230.1 163.5 230.45 161.75 229.55 160.15
+L 180.75 79.05
+Q 180.1 77.95 179.05 77.35 177.95 76.75 176.7 76.75 175.45 76.75 174.4 77.35
+M 176.75 136.45
+Q 177.6 136.45 178.4 136.8
+L 219.8 155.55
+Q 221.35 156.25 221.9 157.85 222.5 159.4 221.8 160.95 221.15 162.45 219.55 163.05 217.95 163.65 216.45 162.95
+L 178.2 145.65
+Q 177.5 145.3 176.7 145.3 175.95 145.3 175.25 145.65
+L 137 162.95
+Q 135.5 163.65 133.85 163.1 132.3 162.5 131.6 160.95 130.9 159.4 131.5 157.85 132.1 156.25 133.65 155.55
+L 175.05 136.8
+Q 175.85 136.45 176.75 136.45 Z"
+          />
+        </mask>
+      </defs>
+      <rect
+        x="0"
+        y="0"
+        width="370"
+        height="424"
+        fill={`url(#${gradId})`}
+        mask="url(#poh-mark-mask)"
+      />
+    </svg>
+  );
 }
 
 // ---- AI Mock Banner ---------------------------------------------------------------
@@ -130,17 +230,147 @@ function MockAiBanner({ onSettings }: { onSettings?: () => void }) {
 // ---- Status pill -----------------------------------------------------------------
 
 function StatusPill({ status }: { status: string }) {
+  if (status === "Verified") {
+    return <span className="pill poh-verified">{humanStatusLabel(status as never)}</span>;
+  }
   const cls =
-    status === "Verified"
-      ? "pill active"
-      : status === "Pending"
-        ? "pill poh-pending"
-        : status === "Challenged"
-          ? "pill poh-challenged"
-          : status === "Revoked"
-            ? "pill stopped"
-            : "pill completed";
+    status === "Pending"
+      ? "pill poh-pending"
+      : status === "Challenged"
+        ? "pill poh-challenged"
+        : status === "Revoked"
+          ? "pill stopped"
+          : "pill completed";
   return <span className={cls}>{humanStatusLabel(status as never)}</span>;
+}
+
+// ---- PoH NFT card ----------------------------------------------------------------
+
+function PohNftCard({ account, human }: { account: string; human: HumanRecord }) {
+  const [card, setCard] = useState<PohCard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [watchNote, setWatchNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setErr(null);
+    const tokenId = pohTokenId(account);
+    pohReader
+      .fetchPohCard(tokenId)
+      .then((c) => { if (alive) { setCard(c); setLoading(false); } })
+      .catch((e: unknown) => { if (alive) { setErr(errMessage(e)); setLoading(false); } });
+    return () => { alive = false; };
+  }, [account, human.status]);
+
+  const addToMetaMask = useCallback(async () => {
+    const eth = (window as unknown as { ethereum?: { request: (a: unknown) => Promise<unknown> } }).ethereum;
+    if (!eth) {
+      setWatchNote({ kind: "err", text: "MetaMask not detected." });
+      return;
+    }
+    try {
+      // tokenId as decimal string (wallet_watchAsset expects decimal for ERC721)
+      const tokenId = pohTokenId(account).toString(10);
+      await eth.request({
+        method: "wallet_watchAsset",
+        params: {
+          type: "ERC721",
+          options: {
+            address: HUMANITY_HUB,
+            tokenId,
+          },
+        },
+      });
+      setWatchNote({ kind: "ok", text: "PoH NFT added to MetaMask." });
+    } catch (e) {
+      setWatchNote({ kind: "err", text: errMessage(e) });
+    }
+  }, [account]);
+
+  // Extract a few key attributes for the sidebar
+  const getAttr = (traitType: string): string | number | undefined =>
+    card?.attributes.find((a) => a.trait_type === traitType)?.value;
+
+  return (
+    <div className="poh-nft-card">
+      <div className="poh-nft-card-head">
+        <span className="poh-nft-label">Proof of Humanity NFT</span>
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <button className="ghost poh" style={{ fontSize: "0.7rem", padding: "0.25rem 0.65rem" }} onClick={addToMetaMask}>
+            Add to MetaMask
+          </button>
+          <span
+            style={{
+              fontSize: "0.68rem",
+              fontFamily: "var(--mono)",
+              color: "var(--faint)",
+              alignSelf: "center",
+            }}
+          >
+            {short(HUMANITY_HUB)}
+          </span>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="muted small" style={{ fontStyle: "italic" }}>Loading NFT card…</div>
+      )}
+      {err && !loading && (
+        <div className="small" style={{ color: "var(--danger)" }}>{err}</div>
+      )}
+
+      {card && !loading && (
+        <div className="poh-nft-body">
+          {/* On-chain SVG */}
+          <div
+            className="poh-nft-svg"
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: the SVG comes from the trusted local devnet node
+            dangerouslySetInnerHTML={{ __html: card.svg }}
+          />
+
+          {/* Attributes sidebar */}
+          <div className="poh-nft-attrs">
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Status</span>
+              <span className="poh-nft-attr-val green">{getAttr("Status") ?? "—"}</span>
+            </div>
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Token</span>
+              <span className="poh-nft-attr-val" style={{ fontSize: "0.68rem" }}>
+                #{pohTokenId(account).toString(10).slice(0, 8)}…
+              </span>
+            </div>
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Verified</span>
+              <span className="poh-nft-attr-val">{getAttr("Verified date") ?? "—"}</span>
+            </div>
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Vouches</span>
+              <span className="poh-nft-attr-val">{getAttr("Vouches") ?? human.vouches_in.length}</span>
+            </div>
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Reputation</span>
+              <span className="poh-nft-attr-val">{getAttr("Reputation") ?? human.reputation}</span>
+            </div>
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Collection</span>
+              <span className="poh-nft-attr-val" style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
+                {card.name.split(" — ")[0]}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {watchNote && (
+        <div className={`notice ${watchNote.kind}`} style={{ marginTop: "0.6rem" }}>
+          {watchNote.text}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---- Pending case row (for picking vouch target) ---------------------------------
@@ -165,13 +395,13 @@ function PendingCasePickerRow({
         padding: "0.55rem 0.5rem",
         borderTop: "1px solid var(--line)",
         fontSize: "0.82rem",
-        background: isOpen && isRegistration ? "rgba(79,231,168,.03)" : "transparent",
+        background: isOpen && isRegistration ? "rgba(0,153,102,.03)" : "transparent",
       }}
     >
       <span
         style={{
           fontFamily: "var(--mono)",
-          color: "var(--accent)",
+          color: "var(--poh-green)",
           fontWeight: 600,
           fontSize: "0.8rem",
         }}
@@ -180,7 +410,7 @@ function PendingCasePickerRow({
       </span>
       <span className="addr" style={{ fontSize: "0.78rem" }}>{short(c.subject)}</span>
       <span
-        className={c.kind === "Registration" ? "pill active" : "pill poh-challenged"}
+        className={c.kind === "Registration" ? "pill poh-verified" : "pill poh-challenged"}
         style={{ fontSize: "0.62rem" }}
       >
         {c.kind}
@@ -216,11 +446,11 @@ function CaseRow({ c }: { c: CaseRecord }) {
         ? "Escalated"
         : "Open";
 
-  const kindCls = c.kind === "Registration" ? "pill active" : "pill poh-challenged";
+  const kindCls = c.kind === "Registration" ? "pill poh-verified" : "pill poh-challenged";
 
   return (
     <div className="poh-case-row">
-      <span className="poh-case-id">#{c.id}</span>
+      <span className="poh-case-id" style={{ color: "var(--poh-green)" }}>#{c.id}</span>
       <span className="addr" style={{ fontSize: "0.78rem" }}>{short(c.subject)}</span>
       <span className={kindCls} style={{ fontSize: "0.66rem" }}>{c.kind}</span>
       <span className="muted small">{statusText}</span>
@@ -307,6 +537,7 @@ export function Humanity({
 
   const canApply = !human || human.status === "Unverified" || human.status === "Revoked";
   const canVouch = human?.status === "Verified";
+  const isVerified = human?.status === "Verified";
 
   // Pending Registration cases that are still Open — these are valid vouch targets
   const vouchableCases = cases.filter(
@@ -371,7 +602,6 @@ export function Humanity({
       setVouchTo("");
       setTimeout(refresh, 2500);
     } catch (e) {
-      // Surface the on-chain revert reason if present
       const msg = errMessage(e);
       setNote({ kind: "err", text: msg });
     } finally {
@@ -407,7 +637,6 @@ export function Humanity({
       setChallengeRef("");
       setTimeout(refresh, 2500);
     } catch (e) {
-      // Surface the on-chain revert reason
       const msg = errMessage(e);
       setNote({ kind: "err", text: msg });
     } finally {
@@ -433,14 +662,37 @@ export function Humanity({
       {/* Mock AI banner */}
       {isMockAi && <MockAiBanner onSettings={onSettings} />}
 
-      {/* Human status card */}
-      <section className="card">
-        <h2>Proof of Humanity</h2>
+      {/* Human status card — PoH branded */}
+      <section className="card poh">
+        {/* PoH section heading */}
+        <div className="poh-section-head">
+          <PohMark size={28} className="poh-mark" />
+          <span className="poh-section-title">Proof of Humanity</span>
+        </div>
 
         {loadErr && (
           <p className="small" style={{ color: "var(--danger)", marginBottom: "0.75rem" }}>
             {loadErr}
           </p>
+        )}
+
+        {/* Achievement banner when Verified */}
+        {isVerified && human && (
+          <div className="poh-achievement">
+            <PohMark size={36} className="poh-achievement-icon" />
+            <div className="poh-achievement-text">
+              <div className="poh-achievement-title">Verified Human</div>
+              <div className="poh-achievement-sub">
+                This account holds a soulbound Proof of Humanity NFT (POH).
+                {human.verified_at
+                  ? ` Verified ${new Date(human.verified_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.`
+                  : ""}
+                {human.vouches_in.length > 0
+                  ? ` Vouched by ${human.vouches_in.length} ${human.vouches_in.length === 1 ? "peer" : "peers"}.`
+                  : ""}
+              </div>
+            </div>
+          </div>
         )}
 
         <div className="poh-status-row">
@@ -472,6 +724,12 @@ export function Humanity({
               <div className="muted small">{human.vouches_in.length}</div>
             </div>
           )}
+          {human && (
+            <div>
+              <div className="label">Reputation</div>
+              <div className="muted small">{human.reputation}</div>
+            </div>
+          )}
         </div>
 
         {human && human.vouches_in.length > 0 && (
@@ -488,7 +746,7 @@ export function Humanity({
         {canApply && (
           <div className="poh-action-block">
             <button
-              className="primary"
+              className="primary poh"
               onClick={applyVerification}
               disabled={busy === "apply"}
               style={{ marginTop: "0.5rem" }}
@@ -497,7 +755,8 @@ export function Humanity({
             </button>
             <div className="muted small" style={{ marginTop: "0.4rem" }}>
               Submits a liveness commitment to HumanityHub ({short(HUMANITY_HUB)}) to open a
-              Registration case. After the challenge window (5 blocks) clears, you become Verified.
+              Registration case. After the challenge window (5 blocks) clears, you become Verified
+              and receive your PoH NFT.
             </div>
           </div>
         )}
@@ -512,11 +771,20 @@ export function Humanity({
         </div>
 
         {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
+
+        {/* PoH NFT card — shown only when Verified */}
+        {isVerified && human && (
+          <PohNftCard account={account} human={human} />
+        )}
       </section>
 
       {/* Vouch action */}
-      <section className="card">
-        <h2>Vouch for address</h2>
+      <section className="card poh">
+        {/* Section heading */}
+        <div className="poh-section-head">
+          <PohMark size={20} className="poh-mark" />
+          <span className="poh-section-title">Vouch for address</span>
+        </div>
 
         {!canVouch && (
           <p className="muted small" style={{ marginBottom: "0.75rem" }}>
@@ -527,26 +795,15 @@ export function Humanity({
 
         {canVouch && (
           <>
-            <div
-              style={{
-                background: "rgba(79,231,168,.05)",
-                border: "1px solid rgba(79,231,168,.18)",
-                borderRadius: "9px",
-                padding: "0.65rem 0.85rem",
-                marginBottom: "0.85rem",
-                fontSize: "0.78rem",
-                color: "var(--muted)",
-                lineHeight: 1.55,
-              }}
-            >
-              You can only vouch for accounts that have an <b style={{ color: "var(--ink)" }}>open Registration case</b>{" "}
-              (i.e. they applied for verification but haven&apos;t been verified yet). Vouching for an
-              address without a pending registration will fail with a &quot;vouchee has no open
-              registration&quot; error from the node.
+            <div className="poh-vouch-hint">
+              You can only vouch for accounts that have an{" "}
+              <b style={{ color: "var(--ink)" }}>open Registration case</b>{" "}
+              (i.e. they applied for verification but haven&apos;t been verified yet). Vouching for
+              an address without a pending registration will fail.
               {vouchableCases.length > 0 && (
                 <>
                   {" "}There {vouchableCases.length === 1 ? "is" : "are"} currently{" "}
-                  <b style={{ color: "var(--accent)" }}>{vouchableCases.length}</b> pending
+                  <b style={{ color: "var(--poh-green)" }}>{vouchableCases.length}</b> pending
                   candidate{vouchableCases.length !== 1 ? "s" : ""}.
                 </>
               )}
@@ -577,7 +834,7 @@ export function Humanity({
                 {showVouchPicker && (
                   <div
                     style={{
-                      border: "1px solid var(--line)",
+                      border: "1px solid rgba(0,153,102,.22)",
                       borderRadius: "10px",
                       overflow: "hidden",
                     }}
@@ -621,7 +878,7 @@ export function Humanity({
             </div>
 
             <button
-              className="primary"
+              className="primary poh"
               onClick={submitVouch}
               disabled={!canVouch || busy === "vouch"}
             >
@@ -639,7 +896,20 @@ export function Humanity({
 
       {/* Challenge action */}
       <section className="card">
-        <h2>Challenge address</h2>
+        <div className="poh-section-head">
+          <span style={{ fontSize: "1rem", lineHeight: 1 }}>⚠</span>
+          <span
+            className="poh-section-title"
+            style={{
+              background: "none",
+              WebkitBackgroundClip: "unset",
+              color: "var(--danger)",
+              WebkitTextFillColor: "unset",
+            }}
+          >
+            Challenge address
+          </span>
+        </div>
         <div
           style={{
             background: "rgba(255,107,107,.05)",
@@ -652,7 +922,8 @@ export function Humanity({
             lineHeight: 1.55,
           }}
         >
-          Challenges can only be submitted against accounts that are <b style={{ color: "var(--ink)" }}>Verified</b>{" "}
+          Challenges can only be submitted against accounts that are{" "}
+          <b style={{ color: "var(--ink)" }}>Verified</b>{" "}
           or have an open Registration case. If the target does not meet these criteria, the
           transaction will fail and the node will return a reason inline.
         </div>
@@ -692,8 +963,11 @@ export function Humanity({
       </section>
 
       {/* Pending cases */}
-      <section className="card">
-        <h2>Pending cases ({cases.length})</h2>
+      <section className="card poh">
+        <div className="poh-section-head">
+          <PohMark size={20} className="poh-mark" />
+          <span className="poh-section-title">Pending cases ({cases.length})</span>
+        </div>
         {cases.length === 0 ? (
           <p className="muted small">No open cases.</p>
         ) : (
@@ -715,7 +989,7 @@ export function Humanity({
                   {short(j.address)}
                   {j.active && (
                     <span
-                      className="pill active"
+                      className="pill poh-verified"
                       style={{ marginLeft: "0.35rem", fontSize: "0.6rem" }}
                     >
                       active
