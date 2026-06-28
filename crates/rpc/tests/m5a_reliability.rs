@@ -1012,3 +1012,31 @@ fn r_f2_atomic_overwrite_is_safe() {
     let _ = std::fs::remove_dir_all(&tmpdir);
     let _ = nonce;
 }
+
+/// Regression — tx gossip raw-byte cache. `ingest_raw_tx` MUST cache a locally-admitted tx's raw bytes
+/// (`raw_tx`) so the node's relay timer can gossip it via `pending_raw_txs`. The #12+#13 merge dropped
+/// that `insert`, so a node accepted a tx via RPC but had nothing to gossip — tx propagation silently
+/// broke (the multi-process EC-2 failure). This locks the invariant with a fast, non-ignored test so the
+/// regression can't recur unnoticed: an admitted tx is always available to gossip, byte-for-byte.
+#[test]
+fn r_admitted_tx_is_gossipable_via_pending_raw_txs() {
+    let (proposer, _joiner) = proposer_follower_pair();
+    let raw = sign_transfer(&DEV_KEY, PAYEE, 1_000, 0);
+
+    assert!(
+        proposer.pending_raw_txs().is_empty(),
+        "nothing pending before ingest"
+    );
+    proposer.ingest_gossip_tx(&raw).expect("tx admitted");
+
+    let pending = proposer.pending_raw_txs();
+    assert_eq!(
+        pending.len(),
+        1,
+        "the admitted tx must be available to gossip"
+    );
+    assert_eq!(
+        pending[0], raw,
+        "pending_raw_txs must return the exact submitted raw bytes (EC-2)"
+    );
+}

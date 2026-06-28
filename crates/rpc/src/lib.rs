@@ -3064,7 +3064,15 @@ fn ingest_raw_tx(chain: &Chain, raw: &[u8]) -> Result<B256, ErrorObjectOwned> {
     // `decode_pending_tx` already produced a fully-formed `PendingTx` (incl. tx_type + the EIP-1559
     // fee caps); push it directly rather than rebuilding it from locals (the merge of #12 + #13 left a
     // stray rebuild here that referenced fields out of scope).
-    chain.inner.lock().unwrap().mempool.push(pending);
+    {
+        let mut g = chain.inner.lock().unwrap();
+        // Cache the raw bytes so the network driver can gossip a LOCALLY-submitted tx (`pending_raw_txs`)
+        // and the proposer can reconstruct the gossipable block (`StoredTx` drops the raw RLP). Keyed by
+        // the tx hash (= the gossipsub message-id). This insert was dropped in the #12+#13 merge — its
+        // absence left locally-submitted txs un-gossipable, breaking tx propagation (EC-2).
+        g.raw_tx.insert(hash, raw.to_vec());
+        g.mempool.push(pending);
+    }
     Ok(hash)
 }
 
