@@ -1,39 +1,68 @@
 name: ci
 
-# Runs the build + the Definition-of-Done test gates on every push / PR.
-# (release task M1-T10). The security/reliability *reports* live in docs/reports/.
+# The Definition-of-Done gates on every push / PR. Make this a REQUIRED status check in branch
+# protection so a merge can't reach main red.
+#
+# Two silent breaks previously reached main via hand-merges — a compile error and a dropped tx-gossip
+# cache. The compile error any `cargo build` catches; the gossip break is caught ONLY by the
+# multi-process `m5_stage_a` test, which needs a freshly-built node binary (a plain `cargo test` does
+# not rebuild the spawned `ubi2-node` binary). Hence the dedicated `multinode` job below.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   chain:
-    name: chain (rust)
+    name: chain (rust — fmt, clippy, build, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (pinned via rust-toolchain.toml)
         run: rustup show && rustc --version
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Format + lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
       - name: Build
         run: cargo build --workspace --locked
-      - name: Test (gates: qa + reliability property tests)
-        run: cargo test --workspace --locked
-      - name: Format + lint
-        run: cargo fmt --all --check && cargo clippy --workspace -- -D warnings
+      # Single-threaded: several integration tests bind fixed localhost ports and race under
+      # parallelism (FU-22 — migrate them to ephemeral ports). Serial is reliable in CI.
+      - name: Test (qa + reliability property tests)
+        run: cargo test --workspace --locked -- --test-threads=1
+
+  multinode:
+    name: chain (rust — multi-node acceptance, m5_stage_a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (pinned via rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # The test spawns the `target/debug/ubi2-node` BINARY as separate processes; `cargo test --test …`
+      # does NOT rebuild that binary, so build the whole workspace first or the test runs stale code.
+      - name: Build node binary
+        run: cargo build --workspace --locked
+      - name: m5_stage_a (EC-1/2/3/4/7 — mesh, tx gossip, height + state-root agreement, late-join sync)
+        run: cargo test --test m5_stage_a -p ubi2-node -- --ignored --nocapture
 
   interfaces:
-    name: interfaces (node)
+    name: interfaces (node — build + typecheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
