@@ -94,46 +94,117 @@ risk and highest-leverage next step.
 **Depends on:** M1–M4 (all shipped). FU-3 and FU-13 are prerequisites for Stage A.
 **Milestone brief:** [`milestones/m5-p2p-network.md`](milestones/m5-p2p-network.md)
 
-## M6 — Economics & Governance ⬜
-**Goal:** demurrage + fee recycling live on a real multi-node chain; node-AI rewards split contract-invoke
-and verification fees to the actual quorum nodes that did the AI work (FU-15); minimal
-quadratic-delegation governance over bounded parameters.
+## M6 — ZK-Passport Proof of Humanity ⬜ *(leads; next milestone)*
+**Goal:** harden sybil resistance with an optional, additive, privacy-preserving ZK proof path over
+government-issued e-passports, while keeping the existing social-vouching + AI-jury path fully intact
+and available for anyone without a passport.
 
-**Why after M5:** fee-splitting to the AI quorum is undesignable until the quorum is a real set of
-independent nodes. Economic parameters governing multi-node fee flow must be stress-tested against
-actual multi-node behavior, not a single-process simulation. Governance over network parameters is
-meaningful only when those parameters govern a real network.
+**Why now (before DAOs):** the vouching + AI-jury path is probabilistic and game-able at scale — on a
+free-money chain the economic incentive to sybil grows with network value. A nullifier-based uniqueness
+proof (one-passport-one-human, cryptographically enforced) is the strongest available sybil-resistance
+upgrade. DAOs and governance (M7) gate membership on PoH quality; building them on the hardened PoH
+foundation makes them substantively trustworthy. Attribute commitments (citizenship, age bucket, expiry)
+captured here give M7 DAOs real selectors without requiring users to re-verify.
 
-**Exit criteria:** demurrage and fee recycling demonstrated on the M5 multi-node devnet; fee-split to
-quorum nodes visible on-chain; a parameter change passes via quadratic delegation. **Depends on:** M5.
+**Inclusion constraint (non-negotiable):** ZK-passport is an optional, additive verification path,
+never the sole gate. Humans without a passport continue to verify via vouching + AI jury at Standard
+assurance level. Full UBI eligibility is unchanged for all verified humans regardless of level.
 
-## M7 — Public Testnet ⬜
-**Goal:** a hardened, observable shared testnet with a faucet and docs. **Exit:** external users join,
-get verified, receive streaming UBI, and transact via standard wallets. **Depends on:** M5 Stage D
-(which targets the multi-host testnet), M6.
+**Assurance-level model:**
+- `STD` — vouching + AI-jury quorum (M3 path). Social attestation, probabilistic uniqueness.
+- `ENH` — ZK-passport proof accepted by verifier quorum. Cryptographic nullifier, government-attested
+  existence, attribute commitments (nationality bucket, age bucket, expiry).
+- `DUAL` — both paths completed. Strongest assurance.
+
+**Key exit criteria (full list in [`milestones/zk-passport-poh.md`](milestones/zk-passport-poh.md)):**
+- A new user can verify via social vouching OR ZK-passport. Both yield `Verified` status.
+- Submitting a ZK proof for the same passport from a second address is rejected chain-wide (nullifier
+  uniqueness enforced).
+- A valid test-passport proof is accepted; a tampered proof or untrusted CSCA root is rejected
+  fail-closed (I4).
+- After a successful proof, the chain stores: nullifier, attribute commitments, assurance level. It
+  stores no name, document number, exact date of birth, or nationality in plaintext (I6).
+- An existing STD-level human is unaffected; no regression in the M3 path.
+- The ZK proof is verified by the cross-node quorum (M5 Stage C infrastructure); no single node alone
+  commits. Agreement commits; injected disagreement aborts deterministically.
+- A `verifyAttribute(address, 'over18')` call returns correct results without revealing the birth date.
+
+**Staged delivery:** Stage A (ZK proof pipeline + CSCA registry, off-chain) → Stage B (on-chain
+verifier + `submitZkPassportProof` op) → Stage C (app NFC flow) → Stage D (attribute verifier, over-18
+template). **Depends on:** M5.
 
 ---
 
-### Sequencing rationale (M5 before M6)
+## Browser/Mobile Light Node ⬜ *(parallel track, does not block M6 or M7)*
+**Goal:** a WASM-compiled light-node that runs in a browser or mobile app, syncs block headers,
+verifies state proofs, and generates ZK-passport proofs locally (so passport NFC data never leaves
+the device). This track is parallel: it can proceed alongside M6 and does not gate M7. Its primary
+deliverable for M6 is the on-device ZK proof generation (Stage A of the light-node track feeds M6
+Stage C). Full light-node sync and verification are a standalone capability.
 
-The previous roadmap had Economics & Governance as M5. This document moves it to M6 for three reasons:
+**Exit criteria (light-node-specific):** a browser tab loads the WASM light node, syncs headers from
+a full node, and verifies an account balance against a state proof without running a full node. The
+ZK passport proof generator runs in-browser in under 60 seconds on a modern device.
 
-1. **FU-15 (node-AI rewards)** — the primary economic novelty in M6 is rewarding the AI nodes that
-   perform quorum work. There is nothing to reward until Stage C of M5 exists: independent nodes with
-   independent AI backends. Writing reward-split logic for a quorum that runs in one process is a
-   placeholder, not a feature.
+**Milestone brief:** [`milestones/browser-lightnode.md`](milestones/browser-lightnode.md) *(to be authored on the `feat/zkpoh-lightnode-design` branch)*.
+**Depends on:** M5 (for the header chain to sync against); WASM-compilable runtime (already enforced
+by the build-level dependency test).
 
-2. **Economic parameter validity** — demurrage decay rates and fee-recycling ratios should be calibrated
-   against observed multi-node fee flow. Setting them on a single-node chain and then changing them
-   after M5 introduces a needless spec churn cycle.
+---
 
-3. **Risk ordering** — I1 (deterministic quorum across independent processes) is the hardest unproven
-   invariant. It is safer to prove it before layering economic incentives on top of it.
+## M7 — DAOs & Governance ⬜
+**Goal:** minimal, anti-capture governance over bounded parameters, and the first citizenship/attribute-
+gated DAOs built on the hardened PoH + prompt contracts substrate. Node-AI rewards (FU-15) split
+contract-invoke and verification fees to the actual quorum nodes. Demurrage + fee recycling tuned
+against real multi-node fee flow.
+
+**Why after M6:** DAOs gate membership on PoH quality. A DAO whose membership is backed by
+nullifier-proven, government-attested unique humans is substantively sybil-resistant. Building DAOs
+before M6 means either no real attribute gates (decorative DAOs) or retroactive re-verification of
+all members. The attribute commitments and CSCA registry delivered in M6 are the DAO substrate. FU-15
+(node-AI rewards) is also undesignable until the quorum is a real, identifiable set of independent
+nodes (M5) with known fee flows to distribute.
+
+**Exit criteria:** a parameter change passes via quadratic delegation on the M5 multi-node devnet;
+fee-split to quorum nodes is visible on-chain; at least one attribute-gated DAO (e.g., over-18
+membership) uses the M6 ZK attribute verifier; demurrage and fee recycling demonstrated on multi-node.
+**Depends on:** M5, M6.
+
+## M8 — Public Testnet ⬜
+**Goal:** a hardened, observable shared testnet with a faucet and docs. **Exit:** external users join,
+get verified (via either path), receive streaming UBI, and transact via standard wallets. **Depends
+on:** M5 Stage D (multi-host hardening), M6, M7.
+
+---
+
+### Sequencing rationale
+
+**M5 before M6 (ZK-Passport-PoH):** M6's EC-7 requires the real cross-node AI quorum (M5 Stage C).
+The ZK verifier must run on a real multi-node network. Running it on a single-node devnet would simulate
+the cross-node property rather than prove it, which is exactly the risk M5 exists to retire.
+
+**M6 (ZK-Passport-PoH) before M7 (DAOs):** DAOs gate membership on PoH quality and depend on attribute
+commitments that M6 delivers. Building DAOs before M6 yields membership lists with no cryptographic
+uniqueness guarantee and no real attribute selectors — the defining properties of interesting DAOs are
+absent. Hardening PoH first makes DAOs substantively trustworthy.
+
+**Economics (demurrage, fee recycling, FU-15 node-AI rewards) into M7:** FU-15 rewards the quorum nodes
+that did AI work — there is nothing to reward until M5 Stage C delivers independent nodes with
+independent AI backends. Economic parameters should be calibrated against observed multi-node fee flow
+(M5), not set on a single-node simulation. Both arguments that previously moved Economics from M5 to M6
+now move it to M7, where it is bundled with the DAO governance that controls those parameters.
+
+**Light-node track parallel to M6/M7:** the WASM light node does not block the ZK-passport on-chain
+work. Its primary coupling to M6 is the in-browser ZK proof generator (M6 Stage C). The rest of the
+light-node capability (header sync, state proofs) proceeds independently and feeds into the M8 public
+testnet experience.
 
 ---
 
 ### Backlog (not yet scheduled)
 BFT (Byzantine fault tolerance, active-adversary consensus) · full block explorer + chain indexer ·
 real-time "dripping" UX polish · AI provider network token-for-compute marketplace · progressive
-decentralization / parameter ossification · mobile wallet · cross-chain bridge · advanced stream
-composition (split/merge/marketplace) · DHT peer discovery · validator staking and slashing.
+decentralization / parameter ossification · advanced mobile wallet · cross-chain bridge · advanced
+stream composition (split/merge/marketplace) · DHT peer discovery · validator staking and slashing ·
+additional ZK document types (national identity cards, residence permits) · citizenship-specific stream
+gates · ZK attribute verifiers beyond over-18.
