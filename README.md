@@ -1,23 +1,33 @@
 # UBI
 
-**A Universal Basic Income blockchain where humans are verified by AI, contracts are written in plain
-language, and money flows as a continuous stream.**
+**A Universal Basic Income blockchain where humans are verified by AI and zero-knowledge cryptography,
+contracts are written in plain language, and money flows as a continuous stream — verifiable from any
+browser or phone.**
 
-UBI is an EVM-compatible chain built around four ideas:
+UBI is an EVM-compatible chain built around six ideas:
 
 1. **AI proof-of-humanity** — you become a verified, unique human through social **vouching** adjudicated
    by a **quorum of AI verifier nodes** (liveness grading + sybil analysis + dispute resolution). No
    biometrics, no documents.
-2. **Streaming UBI** — every verified human accrues **1 UBI per hour**, continuously. Streams extend
+2. **ZK-passport proof-of-humanity** — an optional, additive upgrade path: a zero-knowledge proof over
+   an ICAO-9303 NFC e-passport (Groth16/BN254, adapted from the OpenPassport/Self circuit) produces a
+   **one-passport-one-human nullifier** and opaque **attribute commitments** (age, nationality, expiry —
+   no PII on-chain). Completing either path yields full `Verified` status and the same 1 UBI/hour stream.
+3. **Streaming UBI** — every verified human accrues **1 UBI per hour**, continuously. Streams extend
    account-to-account in real time, turning payments into flows.
-3. **Prompt contracts** — smart contracts written in **natural language** and executed by a **quorum of
+4. **Prompt contracts** — smart contracts written in **natural language** and executed by a **quorum of
    AI interpreter nodes** that agree on the resulting effect, or abort. *Intent-as-law*, not code-as-law.
-4. **EVM-compatible JSON-RPC** — standard wallets (MetaMask) add it as a custom network and read
-   streaming balances, send txs, and sign contract/vouch operations.
+5. **EVM-compatible JSON-RPC** — standard wallets (MetaMask) add it as a custom network and read
+   streaming balances, send txs, and sign contract/vouch/ZK-passport operations.
+6. **Browser and mobile light nodes** — anyone can run a node in a browser tab or on their phone. The
+   deterministic runtime compiles to WASM; a light client syncs blocks over a WebSocket gateway,
+   re-executes every block, and checks the `state_root` byte-for-byte. A lying server is caught, not
+   trusted. Phone + NFC + WASM = ZK-passport proof generated and submitted on-device.
 
-> Status: a working single-node **devnet**. Milestones M1 (EVM RPC + wallet), M2 (streaming + stream
-> NFTs), M3 (AI proof-of-humanity), and M4 (prompt contracts) are shipped, plus native UBI fees, a
-> configurable LLM backend, and a deep block explorer. See [`docs/roadmap.md`](docs/roadmap.md).
+> Status: M1–M4 shipped (EVM RPC, streaming, AI PoH, prompt contracts). M5 Stage A (P2P networking)
+> shipped. M6 ZK-passport PoH and the browser/mobile light node are **Stage 1 shipped** (crates
+> `zkpoh` and `runtime-wasm` in tree; `packages/light-client` in tree). The in-browser PWA and the
+> real NFC passport-scan flow are upcoming stages. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 
@@ -56,7 +66,8 @@ Unconfigured, proof-of-humanity verdicts and contract interpretation use the det
 - **Explorer** — search any address / tx hash / block; drill into blocks (all header fields + decoded
   txs) and transactions (decoded hub call, logs, the resulting effect/verdict, fee).
 - **Identity** — proof-of-humanity: your status, vouches in/out, vouch for / challenge others, the
-  pending-cases queue, and the jurors.
+  pending-cases queue, and the jurors. The ZK-passport upgrade path (NFC scan + on-device proof
+  generation) lands in Stage 3 of the light-node track.
 - **Contracts** — write a contract in plain language (or start from a template), deploy it, fund its
   escrow, and invoke it; watch the AI quorum commit or abort the effect.
 
@@ -65,19 +76,47 @@ Unconfigured, proof-of-humanity verdicts and contract interpretation use the det
 ## Architecture
 
 ```
-crates/runtime   Deterministic state: accounts, 1-UBI/hr emission, streams, the proof-of-humanity
-                 lifecycle, prompt-contract execution, and the shared AI-quorum tally. No floats in
-                 any consensus path; balances are pure integer functions of (state, timestamp).
-crates/rpc       EVM-compatible JSON-RPC (jsonrpsee, HTTP+WS) + the ubi_* read surface + the EXPL
-                 indexer + the loopback-only oracle-admin RPC. Decodes the three system hubs.
-crates/oracle    The AI layer: HumanityOracle + ContractInterpreter, with a configurable backend
-                 (Anthropic / Ollama / OpenAI-compatible) producing canonical structured outputs at
-                 temperature 0, behind injection-fenced prompts. A deterministic MockOracle for tests.
-crates/node      The devnet node binary: genesis, block production (2s tick), seeded jurors.
-packages/sdk     TypeScript client: EVM JSON-RPC + ubi_* readers + viem encoders for stream / vouch /
-                 contract operations.
-apps/wallet      The Next.js app (wallet + explorer + identity + contracts + settings).
-docs/            WHITEPAPER, the roadmap, the dev loop, the task board, specs (+ ADRs), gate reports.
+crates/runtime      Deterministic state: accounts, 1-UBI/hr emission, streams, the proof-of-humanity
+                    lifecycle (social-vouching + AI-jury AND ZK-passport paths), prompt-contract
+                    execution, and the shared AI-quorum tally. No floats in any consensus path;
+                    balances are pure integer functions of (state, timestamp). Defines the
+                    ZkPassportVerifier trait (no crypto deps in runtime itself).
+
+crates/zkpoh        Pure, deterministic Groth16/BN254 SNARK verifier (Stage 1 shipped). Isolated
+                    from runtime so the consensus core stays dependency-free. Implements the
+                    ZkPassportVerifier trait with arkworks (ark-bn254 + ark-groth16, pinned);
+                    compiles to WASM. Also holds the Pedersen attribute verifier, the MockZkVerifier
+                    for CI, and a real-curve test-passport fixture path.
+
+crates/runtime-wasm Thin wasm-bindgen wrapper over the untouched crates/runtime (Stage 1 shipped).
+                    The only crate that may depend on wasm-bindgen. Exposes applyBlock / stateRoot /
+                    balanceOf / serialize as a bytes/JSON API. Used by packages/light-client to run
+                    the same deterministic kernel in a browser tab that full nodes run in Rust.
+
+crates/rpc          EVM-compatible JSON-RPC (jsonrpsee, HTTP+WS) + the ubi_* read surface + the EXPL
+                    indexer + the loopback-only oracle-admin RPC. Decodes the three system hubs.
+                    Hosts the WebSocket sync gateway that serves blocks to light clients.
+
+crates/oracle       The AI layer: HumanityOracle + ContractInterpreter, with a configurable backend
+                    (Anthropic / Ollama / OpenAI-compatible) producing canonical structured outputs at
+                    temperature 0, behind injection-fenced prompts. A deterministic MockOracle for tests.
+
+crates/network      P2P networking (M5): libp2p transport, block gossip, the ubi2/sync/1 wire protocol.
+                    The WireBlock format the light client re-executes is defined here.
+
+crates/node         The devnet node binary: genesis, block production (2s tick), seeded jurors, wires
+                    the real ZkPassportVerifier from crates/zkpoh.
+
+packages/sdk        TypeScript client: EVM JSON-RPC + ubi_* readers + viem encoders for stream / vouch /
+                    contract operations. No WASM dependency.
+
+packages/light-client  TypeScript light-client (Stage 1 shipped): WebSocket sync driver, WASM glue for
+                    crates/runtime-wasm, IndexedDB store, EIP-1193 signer, verifyMode control. Separate
+                    from packages/sdk so non-light-node consumers do not pull the WASM artifact.
+
+apps/wallet         The Next.js app (wallet + explorer + identity + contracts + settings).
+
+docs/               WHITEPAPER, the roadmap, the dev loop, the task board, specs (+ ADRs), gate reports.
 ```
 
 **System hubs** (reserved addresses; operations are EIP-155 txs to them, so MetaMask signs them):
@@ -85,7 +124,7 @@ docs/            WHITEPAPER, the roadmap, the dev loop, the task board, specs (+
 | Hub | Address | Operations |
 |---|---|---|
 | StreamHub | `0x…5742` | `openStream` / `stopStream` (+ ERC-721 stream NFTs) |
-| HumanityHub | `0x…5048` | `requestVerification` / `vouch` / `challenge` / `submitVerdict` |
+| HumanityHub | `0x…5048` | `requestVerification` / `vouch` / `challenge` / `submitVerdict` / `submitZkPassportProof` |
 | ContractHub | `0x…5043` | `deployContract` / `fundContract` / `invokeContract` / `submitEffect` |
 | Treasury | `0x…5542` | collects UBI gas fees (the basis for fee-recycling) |
 
@@ -93,10 +132,37 @@ docs/            WHITEPAPER, the roadmap, the dev loop, the task board, specs (+
 (`requestVerification`) is fee-exempt. A tx whose op fails is mined with a `status 0` receipt + reason
 (it never silently hangs).
 
-**The hard invariant:** AI is non-deterministic, but consensus must be reproducible. So every AI verdict
-or contract effect in the consensus path is produced by an **independent quorum** running a pinned model
-at temperature 0 with a **canonical structured output**, and is committed only when a supermajority
-agree — otherwise it **aborts deterministically**. See [`docs/specs/00-overview.md`](docs/specs/00-overview.md).
+**The AI-quorum invariant:** AI is non-deterministic, but consensus must be reproducible. So every AI
+verdict or contract effect in the consensus path is produced by an **independent quorum** running a
+pinned model at temperature 0 with a **canonical structured output**, and is committed only when a
+supermajority agree — otherwise it **aborts deterministically**.
+
+**The ZK-PoH invariant:** ZK verification is pure deterministic cryptography — no AI in the verify
+path at all. Every honest node re-runs the Groth16 pairing check and gets the same boolean. A tampered
+or patched verifier produces a different `state_root` and is out-voted by the honest majority; the chain
+advances only on the value the honest nodes agree on. See [`docs/specs/00-overview.md`](docs/specs/00-overview.md).
+
+**The light-node trust model:** the WASM light client re-executes every block and checks the
+`state_root` byte-for-byte before updating any balance. A gateway that serves a forged block is caught
+immediately; it cannot make the light node display a wrong balance. See
+[`docs/specs/07-browser-light-node.md`](docs/specs/07-browser-light-node.md).
+
+---
+
+## Light-node quick check
+
+The `crates/runtime-wasm` crate and `packages/light-client` are in tree. To verify the WASM kernel
+produces byte-identical state roots to the server follower (the AC-WB parity gate):
+
+```bash
+cargo test -p ubi2-runtime-wasm --test parity --no-default-features
+```
+
+The ZK-passport verifier (real Groth16 curve, test-passport fixture):
+
+```bash
+cargo test -p ubi2-zkpoh
+```
 
 ---
 
