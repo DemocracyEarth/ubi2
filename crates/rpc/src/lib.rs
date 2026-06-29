@@ -49,19 +49,13 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    apply_transfer, challenge as lc_challenge, charge_fee, csca_registry_root,
-    deploy_contract as lc_deploy_contract, fee_for_gas, finalize_registration,
-    fund_contract as lc_fund_contract, gas_for_deploy, invoke_contract as lc_invoke_contract,
-    open_stream, register_csca as lc_register_csca, request_verification,
-    revoke_csca as lc_revoke_csca, stop_stream, submit_effect as lc_submit_effect, submit_verdict,
-    submit_zk_passport_proof as lc_submit_zk_passport_proof,
-    system_challenge as lc_system_challenge, vouch as lc_vouch, Account, Address, Assurance,
-    CanonicalEffect, Case, CaseKind, CaseStatus, Confidence, ContractInterpreter, ContractStatus,
-    CscaEntry, CscaStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle, Juror,
-    LivenessEvidence, MemState, MockZkVerifier, Op, PromptContract, State, Stream, StreamStatus,
-    Verdict, ZkAttrType, ZkPassportVerifier, ZkProofSubmission, GAS_CONTRACT, GAS_CSCA_GOV,
-    GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM, GAS_TRANSFER,
-    GAS_ZKPOH,
+    csca_registry_root, fee_for_gas, finalize_registration, gas_for_deploy,
+    system_challenge as lc_system_challenge, Account, Address, Assurance, CanonicalEffect, Case,
+    CaseKind, CaseStatus, Confidence, ContractInterpreter, ContractStatus, CscaEntry, CscaStatus,
+    ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle, Juror, MemState, MockZkVerifier, Op,
+    PromptContract, State, Stream, StreamStatus, Verdict, ZkAttrType, ZkPassportVerifier,
+    GAS_CONTRACT, GAS_CSCA_GOV, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI,
+    GAS_STREAM, GAS_TRANSFER, GAS_ZKPOH,
 };
 
 pub mod persist;
@@ -76,9 +70,8 @@ use streams::{
 
 pub mod humanity;
 use humanity::{
-    addr_topic as h_addr_topic, derive_liveness, over18_attribute_type,
-    parse_calldata as parse_humanity_calldata, u64_topic as h_u64_topic,
-    CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
+    addr_topic as h_addr_topic, over18_attribute_type, parse_calldata as parse_humanity_calldata,
+    u64_topic as h_u64_topic, HumanityOp, HUMANITY_HUB,
 };
 
 pub mod poh_nft;
@@ -89,9 +82,8 @@ use poh_nft::{
 
 pub mod contracts;
 use contracts::{
-    addr_topic as c_addr_topic, derive_trigger, parse_calldata as parse_contract_calldata,
-    text_commitment, u64_topic as c_u64_topic, CalldataError as ContractCalldataError, ContractOp,
-    CONTRACT_HUB,
+    addr_topic as c_addr_topic, parse_calldata as parse_contract_calldata, text_commitment,
+    u64_topic as c_u64_topic, ContractOp, CONTRACT_HUB,
 };
 
 pub mod oracle_admin;
@@ -590,34 +582,15 @@ fn spendable_debit(value: u128, kind: &PendingKind) -> u128 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stream-op nonce handling + event logs
+// Event logs
+//
+// NOTE (ADR-0006 Decision 3): the per-op state transition — fee charge, the runtime op, the
+// non-transfer nonce consume/bump, the EVM-style failed-tx post-state, and the M3 sweeps — now lives in
+// the SHARED kernel `crates/exec` (`ubi2_exec::apply_tx`), which BOTH this server follower
+// (`execute_block`) and the browser follower (`crates/runtime-wasm`) call, so there is one
+// re-execution implementation. The helpers below build only the receipt LOGS, which are presentation
+// (not in `state_root`) and a server-only concern.
 // ---------------------------------------------------------------------------------------------
-
-/// Validate and bump the sender's nonce for a stream-op tx, mirroring `apply_transfer`'s replay
-/// protection (stream ops bypass `apply_transfer`, so they enforce the nonce here). Settles the
-/// sender's emission first so `last_settled_at` advances consistently. On a nonce mismatch the state
-/// is left untouched (the runtime op is never reached). Returns `Err(reason)` on mismatch.
-fn consume_nonce(
-    state: &mut dyn State,
-    from: &AlloyAddr,
-    nonce: u64,
-    now: u64,
-) -> Result<(), String> {
-    let mut acct = state.get(&from.into_array()).unwrap_or(Account {
-        address: from.into_array(),
-        ..Default::default()
-    });
-    acct.settle(now);
-    if nonce != acct.nonce {
-        return Err(format!(
-            "invalid nonce: expected {}, got {nonce}",
-            acct.nonce
-        ));
-    }
-    acct.nonce += 1;
-    state.put(acct);
-    Ok(())
-}
 
 /// The `keccak256` event-signature topic for `StreamOpened(uint256,address,address)`. Indexed id in
 /// `topics[1]` so `eth_getTransactionReceipt` carries the assigned stream id (spec §"RPC surface").
@@ -970,6 +943,135 @@ fn block_entropy(hash: B256, number: u64) -> u64 {
     let mut word = [0u8; 8];
     word.copy_from_slice(&b[..8]);
     u64::from_be_bytes(word) ^ number
+}
+
+/// Build the receipt logs for a SUCCESSFULLY-applied op, reading the post-op state + the shared
+/// kernel's [`OpResult`] — the presentation layer that the shared apply path (`ubi2_exec::apply_tx`)
+/// does NOT compute (logs are not in `state_root`). This reproduces, byte-for-byte, the logs the old
+/// inline op match emitted, at the SAME post-op read timing. `pre_status` is the subject's status
+/// snapshot captured BEFORE the op (for the ops that log a status transition). A FAILED op carries no
+/// logs (the caller short-circuits), so this is only called on success.
+fn build_op_logs(
+    state: &MemState,
+    p: &PendingTx,
+    result: &ubi2_exec::OpResult,
+    pre_status: Option<(Address, Option<HumanStatus>)>,
+) -> Vec<TxLog> {
+    use ubi2_exec::OpResult;
+    match &p.kind {
+        PendingKind::Transfer { .. } => Vec::new(),
+        PendingKind::OpenStream { to, .. } => match result {
+            OpResult::StreamId(id) => stream_open_logs(*id, p.from, *to),
+            _ => Vec::new(),
+        },
+        PendingKind::StopStream { id } => stream_stop_logs(*id, p.from),
+        PendingKind::RequestVerification { .. } => {
+            let mut logs = vec![status_changed_log(
+                &p.from.into_array(),
+                HumanStatus::Pending,
+            )];
+            if let OpResult::CaseId(case_id) = result {
+                if let Some(case) = state.get_case(*case_id) {
+                    logs.insert(0, case_opened_log(&case));
+                }
+            }
+            logs
+        }
+        PendingKind::Vouch { .. } => Vec::new(),
+        PendingKind::Challenge { subject, .. } => {
+            let mut logs = Vec::new();
+            if let OpResult::CaseId(case_id) = result {
+                if let Some(case) = state.get_case(*case_id) {
+                    logs.push(case_opened_log(&case));
+                }
+            }
+            // A Verified subject flips to Challenged when a challenge opens — emit StatusChanged + burn.
+            let subj = subject.into_array();
+            if let Some(h) = state.get_human(&subj) {
+                if h.status == HumanStatus::Challenged {
+                    logs.extend(humanity_status_logs(
+                        &subj,
+                        Some(HumanStatus::Verified),
+                        h.status,
+                    ));
+                }
+            }
+            logs
+        }
+        PendingKind::SubmitVerdict { case_id, verdict } => {
+            let mut logs = vec![verdict_submitted_log(*case_id, &p.from, verdict.verdict)];
+            if let Some((subj, pre)) = pre_status {
+                if let Some(h) = state.get_human(&subj) {
+                    if Some(h.status) != pre {
+                        logs.extend(humanity_status_logs(&subj, pre, h.status));
+                    }
+                }
+            }
+            logs
+        }
+        PendingKind::SubmitZkPassportProof { .. } => {
+            let subject = p.from.into_array();
+            let mut logs = match result {
+                OpResult::Assurance(a) => vec![zk_verified_log(&subject, *a)],
+                _ => Vec::new(),
+            };
+            let pre = pre_status.and_then(|(_, s)| s);
+            if pre != Some(HumanStatus::Verified) {
+                logs.extend(humanity_status_logs(&subject, pre, HumanStatus::Verified));
+            }
+            logs
+        }
+        PendingKind::RegisterCsca {
+            country_code,
+            key_id,
+            ..
+        } => vec![TxLog {
+            address: HUMANITY_HUB,
+            topics: vec![csca_registered_topic(), B256::from(*key_id)],
+            data: {
+                let mut d = [0u8; 32];
+                d[..3].copy_from_slice(country_code);
+                d.to_vec()
+            },
+        }],
+        PendingKind::RevokeCsca { key_id } => vec![TxLog {
+            address: HUMANITY_HUB,
+            topics: vec![csca_revoked_topic(), B256::from(*key_id)],
+            data: Vec::new(),
+        }],
+        PendingKind::DeployContract { .. } => match result {
+            // The contract record's deploy_block/deploy_tx stamping is now done by the shared kernel
+            // (it is consensus state); here we only emit the receipt log.
+            OpResult::CaseId(id) => {
+                let text_ref = match &p.kind {
+                    PendingKind::DeployContract { text, .. } => contracts::text_commitment(text),
+                    _ => [0u8; 32],
+                };
+                vec![contract_deployed_log(*id, &p.from, &text_ref)]
+            }
+            _ => Vec::new(),
+        },
+        PendingKind::FundContract { .. } => Vec::new(),
+        PendingKind::InvokeContract { id, .. } => {
+            let mut logs = Vec::new();
+            if let OpResult::CaseId(case_id) = result {
+                logs.push(contract_case_opened_log(*case_id, *id, &p.from));
+                if let Some(case) = state.get_exec_case(*case_id) {
+                    if let Some(log) = exec_case_outcome_log(&case) {
+                        logs.push(log);
+                    }
+                }
+            }
+            logs
+        }
+        PendingKind::SubmitEffect { case_id, .. } => {
+            if let Some(case) = state.get_exec_case(*case_id) {
+                exec_case_outcome_log(&case).into_iter().collect()
+            } else {
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// Auto-finalize every `Pending` registration whose challenge window has cleared and which satisfies
@@ -1789,411 +1891,74 @@ impl Chain {
             // this `continue` means state raced after submit (rare). `charge_fee` settles the sender
             // first, so its insufficient-balance check runs on the materialized balance (I2).
             let gas_used = gas_for_kind(&p.kind);
-            let from_addr = p.from.into_array();
-            if let Err(e) = charge_fee(&mut g.state, &from_addr, gas_used, timestamp) {
-                tracing::warn!(tx = %p.hash, error = %e, "dropping tx: cannot pay gas fee");
-                continue;
-            }
 
-            // Apply against current state. Validation already happened at submit time. On an op error
-            // we do NOT drop the tx — we mine it as a FAILED (`status: 0x0`) transaction (see below).
-            let applied: Result<Vec<TxLog>, String> = match &p.kind {
-                PendingKind::Transfer { to, value } => apply_transfer(
-                    &mut g.state,
-                    &p.from.into_array(),
-                    &to.into_array(),
-                    *value,
-                    p.nonce,
-                    timestamp,
-                )
-                .map(|()| Vec::new())
-                .map_err(|e| e.to_string()),
-
-                PendingKind::OpenStream { to, rate, deposit } => {
-                    // Stream ops are signed txs too: enforce + bump the sender nonce, then run the op.
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            open_stream(
-                                &mut g.state,
-                                &p.from.into_array(),
-                                &to.into_array(),
-                                *rate,
-                                *deposit,
-                                timestamp,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|id| stream_open_logs(id, p.from, *to))
+            // ---- Apply via the SHARED kernel (ADR-0006 Decision 3 — one re-execution path) ----
+            // `ubi2_exec::apply_tx` performs the fee charge → the runtime op → the EVM-style failed-tx
+            // nonce post-state, EXACTLY as the browser follower (`crates/runtime-wasm`) does, so the two
+            // followers mutate state byte-identically. It returns `None` only when the sender cannot
+            // afford even the gas fee (the tx is dropped — the same `continue` the old inline loop had).
+            // We then build this tx's receipt LOGS from the post-op state + the op's primary result
+            // (stream id / case id / assurance) at the SAME read-timing the old code used (immediately
+            // after the op, before the next tx), so receipts are unchanged. Pre-op status snapshots that
+            // the logs need are captured BEFORE `apply_tx` runs.
+            let pre_status_for_subject: Option<(Address, Option<HumanStatus>)> = match &p.kind {
+                PendingKind::Challenge { subject, .. } => {
+                    let s = subject.into_array();
+                    Some((s, g.state.get_human(&s).map(|h| h.status)))
                 }
-
-                PendingKind::StopStream { id } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            stop_stream(&mut g.state, *id, &p.from.into_array(), timestamp)
-                                .map_err(|e| e.to_string())
-                        })
-                        .map(|_refund| stream_stop_logs(*id, p.from))
+                PendingKind::SubmitVerdict { case_id, .. } => {
+                    let subj = g.state.get_case(*case_id).map(|c| c.subject);
+                    subj.map(|s| (s, g.state.get_human(&s).map(|h| h.status)))
                 }
-
-                // ---- M3: proof-of-humanity ops ----
-                PendingKind::RequestVerification { liveness_ref } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            // Derive the off-chain liveness bytes from the committed ref (devnet seam — the
-                            // applicant has no off-chain channel to a single-node devnet); the oracle grades
-                            // them deterministically. Window clock = block HEIGHT (`number`); the emission
-                            // epoch is unix SECONDS (`timestamp`), stamped later at finalize.
-                            let (challenge_bytes, response_bytes) = derive_liveness(liveness_ref);
-                            let evidence = LivenessEvidence {
-                                liveness_ref: *liveness_ref,
-                                challenge: &challenge_bytes,
-                                response: &response_bytes,
-                            };
-                            let entropy = block_entropy(hash, number);
-                            request_verification(
-                                &mut g.state,
-                                &*oracle,
-                                &p.from.into_array(),
-                                &evidence,
-                                entropy,
-                                number,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|case_id| {
-                            let mut logs = vec![status_changed_log(
-                                &p.from.into_array(),
-                                HumanStatus::Pending,
-                            )];
-                            if let Some(case) = g.state.get_case(case_id) {
-                                logs.insert(0, case_opened_log(&case));
-                            }
-                            logs
-                        })
+                PendingKind::SubmitZkPassportProof { .. } => {
+                    let s = p.from.into_array();
+                    Some((s, g.state.get_human(&s).map(|h| h.status)))
                 }
+                _ => None,
+            };
 
-                PendingKind::Vouch { vouchee } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            // Vouch is recorded at block HEIGHT (`number`) — the vouch `at` clock.
-                            lc_vouch(
-                                &mut g.state,
-                                &p.from.into_array(),
-                                &vouchee.into_array(),
-                                number,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|()| Vec::new())
-                }
-
-                PendingKind::Challenge {
-                    subject,
-                    evidence_ref,
-                } => consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                    .and_then(|()| {
-                        let entropy = block_entropy(hash, number);
-                        lc_challenge(
-                            &mut g.state,
-                            &p.from.into_array(),
-                            &subject.into_array(),
-                            *evidence_ref,
-                            entropy,
-                            number,
-                        )
-                        .map_err(|e| e.to_string())
-                    })
-                    .map(|case_id| {
-                        let mut logs = Vec::new();
-                        if let Some(case) = g.state.get_case(case_id) {
-                            logs.push(case_opened_log(&case));
-                        }
-                        // A Verified subject flips to Challenged when a challenge opens — its PoH token
-                        // leaves existence (status no longer Verified), so emit StatusChanged + a burn.
-                        if let Some(h) = g.state.get_human(&subject.into_array()) {
-                            if h.status == HumanStatus::Challenged {
-                                logs.extend(humanity_status_logs(
-                                    &subject.into_array(),
-                                    Some(HumanStatus::Verified),
-                                    h.status,
-                                ));
-                            }
-                        }
-                        logs
-                    }),
-
-                PendingKind::SubmitVerdict { case_id, verdict } => {
-                    // Snapshot the subject's pre-verdict status so a status change can be logged.
-                    let subject = g.state.get_case(*case_id).map(|c| c.subject);
-                    let pre_status = subject
-                        .and_then(|s| g.state.get_human(&s))
-                        .map(|h| h.status);
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            submit_verdict(
-                                &mut g.state,
-                                *case_id,
-                                &p.from.into_array(),
-                                *verdict,
-                                number,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|_status| {
-                            let mut logs =
-                                vec![verdict_submitted_log(*case_id, &p.from, verdict.verdict)];
-                            // If the committed effect changed the subject's status, log it — plus the
-                            // PoH ERC-721 mint/burn when the transition crosses the token boundary
-                            // (Challenged→Verified clears a challenge ⇒ no mint; *→Revoked burns a
-                            // previously-Verified token).
-                            if let Some(subj) = subject {
-                                if let Some(h) = g.state.get_human(&subj) {
-                                    if Some(h.status) != pre_status {
-                                        logs.extend(humanity_status_logs(
-                                            &subj, pre_status, h.status,
-                                        ));
-                                    }
-                                }
-                            }
-                            logs
-                        })
-                }
-
-                // ---- M6: ZK-passport ops ----
-                PendingKind::SubmitZkPassportProof {
-                    proof,
-                    nullifier,
-                    attribute_commitments,
-                    csca_registry_root,
-                    scheme_tag,
-                    now_epoch,
-                } => {
-                    // Snapshot the subject's pre-state status so the PoH mint / StatusChanged log fires
-                    // only when the proof actually crosses Pending/Unverified → Verified.
-                    let subject = p.from.into_array();
-                    let pre_status = g.state.get_human(&subject).map(|h| h.status);
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            // The submitter address is the tx sender (NOT calldata) — bound into the
-                            // public-input vector the proof commits to (§4.3). `now_epoch` must equal the
-                            // block timestamp (I2). The runtime verifies via the per-block `verifier`
-                            // (the deterministic mock on the consensus path; the real Groth16 verifier
-                            // when wired) and re-derives + binds the CSCA root (§4.2). Every follower
-                            // re-runs this same verifier ⇒ byte-identical state_root (re-execution
-                            // consensus, §5.4).
-                            let submission = ZkProofSubmission {
-                                proof: proof.clone(),
-                                nullifier: *nullifier,
-                                attribute_commitments: *attribute_commitments,
-                                csca_registry_root: *csca_registry_root,
-                                scheme_tag: *scheme_tag,
-                                now_epoch: *now_epoch,
-                            };
-                            lc_submit_zk_passport_proof(
-                                &mut g.state,
-                                &*verifier,
-                                &subject,
-                                &submission,
-                                timestamp,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|assurance| {
-                            // Emit the assurance-level receipt (no PII) + a StatusChanged/PoH-mint when
-                            // the human became Verified (a new ENH user, or a Pending one finalized). An
-                            // STD→DUAL upgrade does NOT cross the token boundary (already Verified), so it
-                            // mints nothing — only the ZkPassportVerified level log fires.
-                            let mut logs = vec![zk_verified_log(&subject, assurance)];
-                            if pre_status != Some(HumanStatus::Verified) {
-                                logs.extend(humanity_status_logs(
-                                    &subject,
-                                    pre_status,
-                                    HumanStatus::Verified,
-                                ));
-                            }
-                            logs
-                        })
-                }
-
-                PendingKind::RegisterCsca {
-                    country_code,
-                    key_id,
-                    pubkey,
-                } => consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                    .and_then(|()| {
-                        lc_register_csca(
-                            &mut g.state,
-                            &p.from.into_array(),
-                            *country_code,
-                            *key_id,
-                            pubkey.clone(),
-                            number,
-                        )
-                        .map_err(|e| e.to_string())
-                    })
-                    .map(|()| {
-                        vec![TxLog {
-                            address: HUMANITY_HUB,
-                            topics: vec![csca_registered_topic(), B256::from(*key_id)],
-                            data: {
-                                let mut d = [0u8; 32];
-                                d[..3].copy_from_slice(country_code);
-                                d.to_vec()
-                            },
-                        }]
-                    }),
-
-                PendingKind::RevokeCsca { key_id } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            lc_revoke_csca(&mut g.state, &p.from.into_array(), key_id)
-                                .map_err(|e| e.to_string())
-                        })
-                        .map(|()| {
-                            vec![TxLog {
-                                address: HUMANITY_HUB,
-                                topics: vec![csca_revoked_topic(), B256::from(*key_id)],
-                                data: Vec::new(),
-                            }]
-                        })
-                }
-
-                // ---- M4: prompt-contract ops ----
-                PendingKind::DeployContract { text, parties } => {
-                    // The full NL text now lives on-chain; the node derives the content commitment
-                    // `text_ref = keccak256(utf8(text))` and stamps the deploy block/tx onto the record
-                    // (so the contract detail view can show where it was deployed).
-                    let text_ref = text_commitment(text);
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            let parties: Vec<Address> =
-                                parties.iter().map(|a| a.into_array()).collect();
-                            lc_deploy_contract(&mut g.state, text.clone(), text_ref, parties)
-                                .map_err(|e| e.to_string())
-                        })
-                        .map(|id| {
-                            // Stamp the deploy block height + tx hash onto the stored contract.
-                            if let Some(mut c) = g.state.get_contract(id) {
-                                c.deploy_block = number;
-                                c.deploy_tx = p.hash.0;
-                                g.state.put_contract(c);
-                            }
-                            vec![contract_deployed_log(id, &p.from, &text_ref)]
-                        })
-                }
-
-                PendingKind::FundContract { id } => {
-                    // `fund_contract` moves the tx's value (`p.value`) from the funder into the escrow
-                    // account via the normal transfer path (settles + nonce + balance); it consumes the
-                    // funder nonce itself, so we do NOT call `consume_nonce` here (that would double-
-                    // count). Fail-closed: an unknown/terminated contract or insufficient balance leaves
-                    // no state change.
-                    lc_fund_contract(
-                        &mut g.state,
-                        &p.from.into_array(),
-                        *id,
-                        p.value,
-                        p.nonce,
-                        timestamp,
-                    )
-                    .map(|()| Vec::new())
-                    .map_err(|e| e.to_string())
-                }
-
-                PendingKind::InvokeContract { id, trigger_ref } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            // The interpreter reads the contract's stored on-chain text (so
-                            // interpretation is reproducible from chain state); we only derive the
-                            // off-chain trigger bytes from the committed `triggerRef` (the devnet seam).
-                            // The deterministic interpreter computes the same canonical effect for every
-                            // juror so the quorum forms reproducibly (I1/I5). `entropy` folds chain
-                            // entropy into interpreter selection; `number` is the resolving block.
-                            let trigger = derive_trigger(trigger_ref);
-                            let entropy = block_entropy(hash, number);
-                            lc_invoke_contract(
-                                &mut g.state,
-                                &*interpreter,
-                                *id,
-                                *trigger_ref,
-                                &trigger,
-                                p.from.into_array(),
-                                entropy,
-                                number,
-                                timestamp,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|case_id| {
-                            let mut logs = vec![contract_case_opened_log(case_id, *id, &p.from)];
-                            // The interpreter quorum may already have committed/aborted the effect in
-                            // this call (the common case with the deterministic MockInterpreter); emit
-                            // the terminal EffectCommitted/EffectAborted log if so.
-                            if let Some(case) = g.state.get_exec_case(case_id) {
-                                if let Some(log) = exec_case_outcome_log(&case) {
-                                    logs.push(log);
-                                }
-                            }
-                            logs
-                        })
-                }
-
-                PendingKind::SubmitEffect { case_id, effect } => {
-                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
-                        .and_then(|()| {
-                            lc_submit_effect(
-                                &mut g.state,
-                                *case_id,
-                                &p.from.into_array(),
-                                effect.clone(),
-                                number,
-                                timestamp,
-                            )
-                            .map_err(|e| e.to_string())
-                        })
-                        .map(|_status| {
-                            // The case may have transitioned to Committed/Aborted with this submission;
-                            // emit the terminal log if so (it stays Open while gathering more votes).
-                            if let Some(case) = g.state.get_exec_case(*case_id) {
-                                exec_case_outcome_log(&case).into_iter().collect()
-                            } else {
-                                Vec::new()
-                            }
-                        })
+            let kernel_tx = kernel_tx_from_pending(&p);
+            let outcome = match ubi2_exec::apply_tx(
+                &mut g.state,
+                &kernel_tx,
+                timestamp,
+                number,
+                hash.0,
+                &*oracle,
+                &*interpreter,
+                &*verifier,
+            ) {
+                Some(o) => o,
+                None => {
+                    tracing::warn!(tx = %p.hash, "dropping tx: cannot pay gas fee");
+                    continue;
                 }
             };
 
+            // Build the receipt logs for THIS op from the post-op state + the kernel's op result. This
+            // is the presentation layer (logs are NOT in `state_root`); it reads exactly what the old
+            // inline match read. `_unused_applied` keeps the historical per-op apply arms below dead-
+            // code-free by routing through the shared kernel; the log construction is the live path.
+            let applied: Result<Vec<TxLog>, String> = if outcome.success {
+                Ok(build_op_logs(
+                    &g.state,
+                    &p,
+                    &outcome.result,
+                    pre_status_for_subject,
+                ))
+            } else {
+                Err(outcome.revert_reason.clone().unwrap_or_default())
+            };
+
+            // Unpack the shared kernel's outcome into the receipt fields. The kernel ALREADY performed
+            // the failed-tx post-state (fee kept, nonce set to `p.nonce + 1`, no op state change —
+            // cycle-6 / EVM-charges-gas-on-revert), so this is pure presentation: a FAILED tx carries no
+            // logs and its decoded revert reason. (`applied` was derived from the same `outcome`.)
             let (success, logs, revert_reason) = match applied {
                 Ok(logs) => (true, logs, None),
-                Err(e) => {
-                    // Cycle-6 fix: the op FAILED at block time (e.g. "vouchee has no open registration",
-                    // "no such contract", a transfer validation error). The OLD code rolled back the fee
-                    // AND the nonce and dropped the tx — leaving it perpetually "pending" (no receipt)
-                    // and opening a nonce gap (the next tx then failed "nonce too high"). Instead we MINE
-                    // the tx as a FAILED (`status: 0x0`) transaction, EVM-style:
-                    //   * KEEP the fee charged (the node did work — EVM charges gas on revert);
-                    //   * CONSUME the sender nonce exactly once (see below);
-                    //   * apply NO op state change (the op already aborted/fail-closed);
-                    //   * carry the decoded `reason` so the explorer can show why it failed.
-                    //
-                    // Nonce handling is subtle and must be IDEMPOTENT: the hub ops run as
-                    // `consume_nonce(..).and_then(|| op(..))`, so a failing hub op (vouch/challenge/…)
-                    // has ALREADY bumped the nonce 0→1 before the op erred; whereas `apply_transfer` /
-                    // `fund_contract` validate-before-mutate and leave it unbumped on `Err`. Rather than
-                    // `+= 1` (which would double-count the hub case → a NEW gap), we SET the nonce to its
-                    // correct post-tx value, `p.nonce + 1`. The FIFO mempool + submit gate guarantee
-                    // `p.nonce` is this sender's current nonce, so this is the one true post-state and is
-                    // deterministic across nodes (I2). `charge_fee` already settled at `timestamp`, so
-                    // re-settling here is a no-op.
-                    let mut acct = g.state.get(&from_addr).unwrap_or(Account {
-                        address: from_addr,
-                        ..Default::default()
-                    });
-                    acct.settle(timestamp);
-                    acct.nonce = p.nonce + 1;
-                    g.state.put(acct);
-                    tracing::warn!(tx = %p.hash, error = %e, "mining failed tx (status 0x0)");
-                    (false, Vec::new(), Some(e))
+                Err(_) => {
+                    tracing::warn!(tx = %p.hash, "mining failed tx (status 0x0)");
+                    (false, Vec::new(), outcome.revert_reason.clone())
                 }
             };
 
@@ -3093,50 +2858,29 @@ fn resolve_block_tag(chain: &Chain, tag: &str) -> Option<Block> {
 /// every node (the `chain_id`-bind, signer recovery, `to` requirement, and calldata-shape rules all run
 /// here). Returns the decoded `PendingTx`; the caller decides admission. Pure given `chain_id` + bytes.
 fn decode_pending_tx(chain_id: u64, raw: &[u8]) -> Result<PendingTx, ErrorObjectOwned> {
-    // alloy decode: TxEnvelope::decode_2718 handles both typed (EIP-2718) and untyped legacy txs.
+    // The op model + structural decode (chain-id bind, signer recovery, hub calldata shape) is the
+    // SHARED kernel decode (`ubi2_exec::decode_tx`) — the SAME decode the browser follower runs, so a
+    // block decodes byte-identically on both (ADR-0006 Decision 3, "no logic fork"). We re-derive only
+    // the RPC-presentation fields (`hash`, `input`, `tx_type`, 1559 caps) from the envelope here, which
+    // do not affect state. Map the kernel's `DecodeError` onto the precise JSON-RPC error the wallet
+    // expects.
+    let kernel_tx = ubi2_exec::decode_tx(chain_id, raw).map_err(decode_error_to_rpc)?;
+
+    // Re-decode the envelope for the presentation-only fields (hash / input / type / fee caps). This is
+    // the same `alloy` envelope `decode_tx` already parsed; we do not re-validate (the kernel decode
+    // already accepted it).
     let mut slice = raw;
     let env = TxEnvelope::decode_2718(&mut slice)
         .map_err(|e| invalid_params(format!("rlp decode failed: {e}")))?;
-
-    // EIP-155 chain-id binding: reject txs signed for another chain (replay protection — spec §M1-T1.4).
-    // Legacy pre-155 txs have `chain_id() == None`; we require explicit 155 binding to our chain.
-    match env.chain_id() {
-        Some(id) if id == chain_id => {}
-        Some(other) => {
-            return Err(invalid_params(format!(
-                "wrong chainId: tx is for {other}, devnet is {chain_id}"
-            )))
-        }
-        None => {
-            return Err(invalid_params(
-                "tx must be EIP-155 (chainId-bound) for replay safety",
-            ))
-        }
-    }
-
-    // Recover the signer (verifies the secp256k1 signature; alloy errors on a bad sig).
-    let from = env
-        .recover_signer()
-        .map_err(|e| invalid_params(format!("signature recovery failed: {e}")))?;
-
-    // Require a `to` (no contract creation on devnet).
     let to = env
         .to()
         .ok_or_else(|| invalid_params("contract creation not supported"))?;
-
-    let nonce = env.nonce();
     let hash = *env.tx_hash();
     let input = env.input().to_vec();
-    let value_u256 = env.value();
 
     // Capture the EIP-2718 type byte + EIP-1559 fee caps EXACTLY as the sender signed them, so the
     // mined tx/receipt echo the same `type` (and `maxFeePerGas`/`maxPriorityFeePerGas`) the wallet
-    // expects when it polls by hash. MetaMask signs a TYPE-2 (EIP-1559) tx on this chain — we advertise
-    // `baseFeePerGas` on blocks + `eth_feeHistory` — and treats a receipt whose `type` doesn't match as
-    // a non-match, showing the (correctly mined) tx as "Dropped". The tx HASH is the canonical 2718
-    // hash and is type-independent (it already matched the sender), so the only fault was the JSON shape
-    // hardcoding `type: 0x0` and omitting the 1559 fields (cycle-7). `ty()` returns the type byte; the
-    // 1559 caps are only meaningful for typed-fee txs (1/2), so we record them only there.
+    // expects when it polls by hash (MetaMask signs TYPE-2 on this chain — cycle-7).
     let tx_type: u8 = env.tx_type().into();
     let (max_fee_per_gas, max_priority_fee_per_gas) = if tx_type >= 1 {
         (Some(env.max_fee_per_gas()), env.max_priority_fee_per_gas())
@@ -3144,121 +2888,198 @@ fn decode_pending_tx(chain_id: u64, raw: &[u8]) -> Result<PendingTx, ErrorObject
         (None, None)
     };
 
-    // Calldata rule (spec D2): M1 rejects non-empty calldata, **relaxed for StreamHub and (M3) the
-    // HumanityHub**. A tx to any other address still must be a plain value transfer (empty calldata).
-    let kind = if to == STREAM_HUB {
-        // Parse the StreamHub selector + ABI args into a stream op (soulbound selectors revert here).
-        match parse_calldata(&input) {
-            Ok(StreamOp::Open { to, rate, deposit }) => {
-                PendingKind::OpenStream { to, rate, deposit }
-            }
-            Ok(StreamOp::Stop { id }) => PendingKind::StopStream { id },
-            Err(CalldataError::Soulbound) => {
-                return Err(execution_reverted("soulbound"));
-            }
-            Err(e) => return Err(invalid_params(format!("StreamHub call: {e}"))),
-        }
-    } else if to == HUMANITY_HUB {
-        // Parse the HumanityHub selector + ABI args into a proof-of-humanity op (M3).
-        match parse_humanity_calldata(&input) {
-            Ok(HumanityOp::RequestVerification { liveness_ref }) => {
-                PendingKind::RequestVerification { liveness_ref }
-            }
-            Ok(HumanityOp::Vouch { vouchee }) => PendingKind::Vouch { vouchee },
-            Ok(HumanityOp::Challenge {
-                subject,
-                evidence_ref,
-            }) => PendingKind::Challenge {
-                subject,
-                evidence_ref,
-            },
-            Ok(HumanityOp::SubmitVerdict { case_id, verdict }) => {
-                PendingKind::SubmitVerdict { case_id, verdict }
-            }
-            Ok(HumanityOp::SubmitZkPassportProof {
-                proof,
-                nullifier,
-                attribute_commitments,
-                csca_registry_root,
-                scheme_tag,
-                now_epoch,
-            }) => PendingKind::SubmitZkPassportProof {
-                proof,
-                nullifier,
-                attribute_commitments,
-                csca_registry_root,
-                scheme_tag,
-                now_epoch,
-            },
-            Ok(HumanityOp::RegisterCsca {
-                country_code,
-                key_id,
-                pubkey,
-            }) => PendingKind::RegisterCsca {
-                country_code,
-                key_id,
-                pubkey,
-            },
-            Ok(HumanityOp::RevokeCsca { key_id }) => PendingKind::RevokeCsca { key_id },
-            Err(HumanityCalldataError::UnknownSelector(_)) => {
-                return Err(execution_reverted("unknown HumanityHub selector"));
-            }
-            Err(e) => return Err(invalid_params(format!("HumanityHub call: {e}"))),
-        }
-    } else if to == CONTRACT_HUB {
-        // Parse the ContractHub selector + ABI args into a prompt-contract op (M4).
-        match parse_contract_calldata(&input) {
-            Ok(ContractOp::DeployContract { text, parties }) => {
-                PendingKind::DeployContract { text, parties }
-            }
-            Ok(ContractOp::FundContract { id }) => PendingKind::FundContract { id },
-            Ok(ContractOp::InvokeContract { id, trigger_ref }) => {
-                PendingKind::InvokeContract { id, trigger_ref }
-            }
-            Ok(ContractOp::SubmitEffect { case_id, effect }) => {
-                PendingKind::SubmitEffect { case_id, effect }
-            }
-            Err(ContractCalldataError::UnknownSelector(_)) => {
-                return Err(execution_reverted("unknown ContractHub selector"));
-            }
-            Err(e) => return Err(invalid_params(format!("ContractHub call: {e}"))),
-        }
-    } else {
-        if !input.is_empty() {
-            return Err(invalid_params(
-                "calldata only supported for StreamHub (value transfers otherwise)",
-            ));
-        }
-        // Balances are u128 base units; reject values that don't fit (unfundable on devnet anyway).
-        let value: u128 = value_u256
-            .try_into()
-            .map_err(|_| invalid_params("value exceeds u128 base-unit range"))?;
-        PendingKind::Transfer { to, value }
-    };
-
-    // The deposit for stream ops is a calldata arg, not msg.value (D2/Q1); the tx value is 0. A
-    // `fundContract` tx IS value-bearing: its `msg.value` is the escrow funding amount, threaded
-    // through as the `PendingTx.value` (the runtime moves it from the funder into the escrow account).
-    let value: u128 = match &kind {
-        PendingKind::Transfer { value, .. } => *value,
-        PendingKind::FundContract { .. } => value_u256
-            .try_into()
-            .map_err(|_| invalid_params("value exceeds u128 base-unit range"))?,
-        _ => 0,
-    };
-
+    let kind = pending_kind_from_kernel(kernel_tx.kind);
     Ok(PendingTx {
         hash,
-        from,
+        from: AlloyAddr::from(kernel_tx.from),
         tx_to: to,
-        value,
-        nonce,
+        value: kernel_tx.value,
+        nonce: kernel_tx.nonce,
         input,
         kind,
         tx_type,
         max_fee_per_gas,
         max_priority_fee_per_gas,
     })
+}
+
+/// Map the shared kernel's [`ubi2_exec::DecodeError`] onto the precise JSON-RPC error the wallet
+/// expects (so a soulbound transfer / unknown selector / bad chain-id each surface their familiar
+/// message). The `to == None` / unexpected-calldata cases keep the M1 wording.
+fn decode_error_to_rpc(e: ubi2_exec::DecodeError) -> ErrorObjectOwned {
+    use ubi2_exec::DecodeError;
+    match e {
+        DecodeError::Rlp(m) => invalid_params(format!("rlp decode failed: {m}")),
+        DecodeError::WrongChain { expected, got } => match got {
+            Some(g) => invalid_params(format!(
+                "wrong chainId: tx is for {g}, devnet is {expected}"
+            )),
+            None => invalid_params("tx must be EIP-155 (chainId-bound) for replay safety"),
+        },
+        DecodeError::BadSignature(m) => invalid_params(format!("signature recovery failed: {m}")),
+        DecodeError::ContractCreation => invalid_params("contract creation not supported"),
+        DecodeError::UnexpectedCalldata => {
+            invalid_params("calldata only supported for StreamHub (value transfers otherwise)")
+        }
+        DecodeError::ValueOverflow(which) => {
+            invalid_params(format!("{which} exceeds u128 base-unit range"))
+        }
+        DecodeError::Soulbound => execution_reverted("soulbound"),
+        DecodeError::BadCalldata(m) => {
+            // An unknown hub selector should revert (not be a params error) so a wallet preflight
+            // surfaces an execution revert, matching M2/M3 behaviour; a malformed-args blob is a params
+            // error.
+            if m.contains("unknown") && m.contains("selector") {
+                execution_reverted("unknown hub selector")
+            } else {
+                invalid_params(format!("hub call: {m}"))
+            }
+        }
+    }
+}
+
+/// Map a shared-kernel [`ubi2_exec::KernelKind`] onto the RPC's `PendingKind` (field-for-field — the
+/// two enums are intentionally identical so the mempool/gas/submit surface keeps its existing shape).
+fn pending_kind_from_kernel(k: ubi2_exec::KernelKind) -> PendingKind {
+    use ubi2_exec::KernelKind as K;
+    match k {
+        K::Transfer { to, value } => PendingKind::Transfer {
+            to: AlloyAddr::from(to),
+            value,
+        },
+        K::OpenStream { to, rate, deposit } => PendingKind::OpenStream {
+            to: AlloyAddr::from(to),
+            rate,
+            deposit,
+        },
+        K::StopStream { id } => PendingKind::StopStream { id },
+        K::RequestVerification { liveness_ref } => {
+            PendingKind::RequestVerification { liveness_ref }
+        }
+        K::Vouch { vouchee } => PendingKind::Vouch {
+            vouchee: AlloyAddr::from(vouchee),
+        },
+        K::Challenge {
+            subject,
+            evidence_ref,
+        } => PendingKind::Challenge {
+            subject: AlloyAddr::from(subject),
+            evidence_ref,
+        },
+        K::SubmitVerdict { case_id, verdict } => PendingKind::SubmitVerdict { case_id, verdict },
+        K::SubmitZkPassportProof {
+            proof,
+            nullifier,
+            attribute_commitments,
+            csca_registry_root,
+            scheme_tag,
+            now_epoch,
+        } => PendingKind::SubmitZkPassportProof {
+            proof,
+            nullifier,
+            attribute_commitments,
+            csca_registry_root,
+            scheme_tag,
+            now_epoch,
+        },
+        K::RegisterCsca {
+            country_code,
+            key_id,
+            pubkey,
+        } => PendingKind::RegisterCsca {
+            country_code,
+            key_id,
+            pubkey,
+        },
+        K::RevokeCsca { key_id } => PendingKind::RevokeCsca { key_id },
+        K::DeployContract { text, parties } => PendingKind::DeployContract {
+            text,
+            parties: parties.into_iter().map(AlloyAddr::from).collect(),
+        },
+        K::FundContract { id } => PendingKind::FundContract { id },
+        K::InvokeContract { id, trigger_ref } => PendingKind::InvokeContract { id, trigger_ref },
+        K::SubmitEffect { case_id, effect } => PendingKind::SubmitEffect { case_id, effect },
+    }
+}
+
+/// Map an RPC `PendingTx` onto the shared kernel's [`ubi2_exec::KernelTx`] (the inverse of
+/// [`pending_kind_from_kernel`]) so `execute_block` can apply each tx via the single shared kernel.
+fn kernel_tx_from_pending(p: &PendingTx) -> ubi2_exec::KernelTx {
+    use ubi2_exec::KernelKind as K;
+    let kind = match &p.kind {
+        PendingKind::Transfer { to, value } => K::Transfer {
+            to: to.into_array(),
+            value: *value,
+        },
+        PendingKind::OpenStream { to, rate, deposit } => K::OpenStream {
+            to: to.into_array(),
+            rate: *rate,
+            deposit: *deposit,
+        },
+        PendingKind::StopStream { id } => K::StopStream { id: *id },
+        PendingKind::RequestVerification { liveness_ref } => K::RequestVerification {
+            liveness_ref: *liveness_ref,
+        },
+        PendingKind::Vouch { vouchee } => K::Vouch {
+            vouchee: vouchee.into_array(),
+        },
+        PendingKind::Challenge {
+            subject,
+            evidence_ref,
+        } => K::Challenge {
+            subject: subject.into_array(),
+            evidence_ref: *evidence_ref,
+        },
+        PendingKind::SubmitVerdict { case_id, verdict } => K::SubmitVerdict {
+            case_id: *case_id,
+            verdict: *verdict,
+        },
+        PendingKind::SubmitZkPassportProof {
+            proof,
+            nullifier,
+            attribute_commitments,
+            csca_registry_root,
+            scheme_tag,
+            now_epoch,
+        } => K::SubmitZkPassportProof {
+            proof: proof.clone(),
+            nullifier: *nullifier,
+            attribute_commitments: *attribute_commitments,
+            csca_registry_root: *csca_registry_root,
+            scheme_tag: *scheme_tag,
+            now_epoch: *now_epoch,
+        },
+        PendingKind::RegisterCsca {
+            country_code,
+            key_id,
+            pubkey,
+        } => K::RegisterCsca {
+            country_code: *country_code,
+            key_id: *key_id,
+            pubkey: pubkey.clone(),
+        },
+        PendingKind::RevokeCsca { key_id } => K::RevokeCsca { key_id: *key_id },
+        PendingKind::DeployContract { text, parties } => K::DeployContract {
+            text: text.clone(),
+            parties: parties.iter().map(|a| a.into_array()).collect(),
+        },
+        PendingKind::FundContract { id } => K::FundContract { id: *id },
+        PendingKind::InvokeContract { id, trigger_ref } => K::InvokeContract {
+            id: *id,
+            trigger_ref: *trigger_ref,
+        },
+        PendingKind::SubmitEffect { case_id, effect } => K::SubmitEffect {
+            case_id: *case_id,
+            effect: effect.clone(),
+        },
+    };
+    ubi2_exec::KernelTx {
+        tx_hash: p.hash.0,
+        from: p.from.into_array(),
+        nonce: p.nonce,
+        value: p.value,
+        kind,
+    }
 }
 
 /// Decode + admit a raw tx submitted via `eth_sendRawTransaction` (or relayed from gossip). Runs the

@@ -35,6 +35,16 @@ wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:console_error_panic_h
 # Account::balance), so there is no second balance/state implementation to drift.
 ubi2-runtime = { path = "../runtime" }
 
+# The SHARED block re-execution kernel (spec 07 §2.3 / ADR-0006 Decision 3): the SINGLE ordered-op
+# decode + apply path that the full node (`crates/rpc`) ALSO uses. The light client re-executes EVERY
+# block kind (value transfers, streaming, PoH social-vouching, prompt contracts, AND ZK-passport proofs)
+# through this one kernel, so its state_root is byte-identical to the server follower's (AC-WB). No
+# async/networking — wasm32-compilable. The AI seam is parameterized: the light client passes the SAME
+# deterministic Mock impls the consensus path ships (`MockOracle`/`MockInterpreter`/`MockZkVerifier`),
+# so it never runs a model yet re-executes byte-identical (the AI verdicts/effects/proofs ride in as
+# txs that apply purely — ADR-0006 "no AI on re-execution").
+ubi2-exec = { path = "../exec" }
+
 # NOTE on the wire format (spec 07 §2.3 / ADR-0006 Decision 2): the canonical `WireBlock` lives in
 # `crates/network::wire`, but that crate depends on the FULL libp2p stack (yamux → rand → getrandom 0.3,
 # prost, snow, hickory-dns) which does NOT compile to wasm32 and has no business in a browser blob. The

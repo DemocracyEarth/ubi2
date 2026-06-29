@@ -6,62 +6,35 @@
 //! match the header **byte-for-byte**. It is the same trust guarantee a server follower
 //! (`crates/rpc::Chain::validate_and_apply_block`) has — a lying gateway is *caught*, not trusted.
 //!
-//! ## No logic fork (the load-bearing rule, ADR-0006 Decision 3)
-//! Every state transition here is the runtime's **own** function — `charge_fee`, `apply_transfer`,
-//! `open_stream`, `stop_stream`, `state_root` — called with `block.timestamp` as the only clock. The tx
-//! decode (`alloy` `TxEnvelope::decode_2718` + EIP-155 chain-id bind + signer recovery + StreamHub
-//! calldata shape) and the per-kind gas/fee are decoded **identically** to the server follower's
-//! `decode_pending_tx` / `execute_block`, so a block re-executes to the SAME post-state on both. The
-//! parity gate (`tests/parity.rs`, AC-WB) asserts byte-identical `state_root` at every height against
-//! the real `crates/rpc` follower, so the two kernels are *provably* the same.
+//! ## One shared kernel — no logic fork (ADR-0006 Decision 3)
+//! The decode + apply is the **shared** `crates/exec` kernel (`ubi2_exec::decode_tx` +
+//! `ubi2_exec::apply_ops`) that the full node's `crates/rpc::execute_block` ALSO calls. The browser
+//! follower and the server follower therefore run the SAME ordered-op state transition (charge_fee →
+//! the runtime op → the EVM-style failed-tx nonce post-state → the M3 sybil/finalize sweeps), so a
+//! block re-executes to a byte-identical `state_root` on both. The parity gate (`tests/parity.rs`,
+//! AC-WB) proves it for transfers, streaming, PoH vouching, prompt contracts, AND ZK-passport blocks.
 //!
-//! ## Phase 1 scope (de-risk the boundary first)
-//! Phase 1 verifies the **value-flow** tx kinds — plain transfers and the two StreamHub ops
-//! (`openStream` / `stopStream`) — plus empty blocks. These are the kinds whose re-execution is a pure
-//! function of `(state, timestamp)` with **no** AI seam: they need no `HumanityOracle` / `Contract-
-//! Interpreter` and trigger none of the M3/M4 sybil/finalize/effect sweeps. The HumanityHub /
-//! ContractHub kinds (which DO drive the AI quorum + sweeps) are handed off to the sync phase once the
-//! shared `crates/exec` kernel the spec calls for is factored out of `crates/rpc` — until then a block
-//! carrying one is reported as an unsupported-kind verification stop (fail-closed, never a wrong
-//! balance). The corpus the parity gate exercises is exactly these supported kinds.
+//! ## Full block-kind coverage — re-execution needs NO AI
+//! Stage 2 lifts the Stage-1 `UnsupportedKind` fail-close: the light node re-executes EVERY block kind.
+//! The key insight (ADR-0006): re-executing a block is deterministic and needs no AI. The AI (PoH jury
+//! verdicts, contract interpretation, ZK proving) happens when a juror/proposer/prover PRODUCES a tx
+//! (`submitVerdict` / `submitEffect` / `submitZkPassportProof`); APPLYING that tx to state is pure. The
+//! few apply-time seam calls that remain (`requestVerification` liveness grading, `invokeContract`'s
+//! in-call interpreter quorum, the sybil-scan sweep, and the `submitZkPassportProof` pairing check) are
+//! parameterized over the seam traits; the light client passes the SAME deterministic Mock impls the
+//! consensus/devnet path ships (`MockOracle`/`MockInterpreter`/`MockZkVerifier`, all pure, in
+//! `crates/runtime`), so it re-executes byte-identical without ever running a model.
+//!
+//! See `kernel.rs`'s module footer for the one documented fail-closed boundary (a chain wired with a
+//! *live* — non-Mock — AI backend on the consensus path; out of scope for the devnet / Stage 1–2 model).
 
 use ubi2_runtime::{
-    apply_transfer, charge_fee, fee_for_gas, open_stream, state_root as runtime_state_root,
-    stop_stream, Account, MemState, State, GAS_STREAM, GAS_TRANSFER,
+    state_root as runtime_state_root, MemState, MockInterpreter, MockOracle, MockZkVerifier, State,
 };
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
-use alloy_eips::eip2718::Decodable2718;
-use alloy_primitives::{keccak256, B256, U256};
-use alloy_sol_types::SolCall;
+use alloy_primitives::{keccak256, B256};
 
 use crate::wire::WireBlock;
-
-/// The reserved StreamHub system address (`0x…5742`, spec D2) — byte-identical to
-/// `crates/rpc::streams::STREAM_HUB`. Stream ops are EVM txs whose `to` is this address.
-pub const STREAM_HUB: [u8; 20] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x57, 0x42,
-];
-/// The reserved HumanityHub system address (`0x…5048`). A tx to it is an AI-seam op (M3) not yet
-/// re-executed by the Phase-1 browser kernel.
-pub const HUMANITY_HUB: [u8; 20] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x50, 0x48,
-];
-/// The reserved ContractHub system address (`0x…5043`). A tx to it is an AI-seam op (M4) not yet
-/// re-executed by the Phase-1 browser kernel.
-pub const CONTRACT_HUB: [u8; 20] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x50, 0x43,
-];
-
-// The StreamHub write selectors, declared exactly as `crates/rpc::streams` does so `abi_decode`
-// produces byte-identical args. `sol!` derives the 4-byte selectors from the canonical signatures.
-alloy_sol_types::sol! {
-    function openStream(address to, uint256 ratePerSec, uint256 deposit) external returns (uint256 id);
-    function stopStream(uint256 id) external;
-}
 
 /// Why a `WireBlock` failed verification. Every variant is **fail-closed**: the block is NOT applied to
 /// the verified state and the tip does not advance (I4 on the client; spec §3.2 step 3 / AC-F-LN1/3).
@@ -82,9 +55,6 @@ pub enum VerifyError {
     WrongProposer,
     /// A raw tx in the block did not decode (malformed/forged block).
     UndecodableTx(String),
-    /// The block carries a tx kind the Phase-1 browser kernel does not yet re-execute (a HumanityHub /
-    /// ContractHub AI-seam op). Fail-closed: surfaced as a verification stop, never a wrong balance.
-    UnsupportedKind(&'static str),
     /// Re-execution produced a different `state_root` than the header claims — the I1/I2 cross-node
     /// check failed (AC-LC2 / AC-F-LN1). The lying server is **caught**; the verified state is unchanged.
     StateRootMismatch { expected: [u8; 32], got: [u8; 32] },
@@ -105,9 +75,6 @@ impl core::fmt::Display for VerifyError {
             VerifyError::BadTimestamp => write!(f, "timestamp not greater than parent"),
             VerifyError::WrongProposer => write!(f, "proposer is not the expected proposer"),
             VerifyError::UndecodableTx(e) => write!(f, "undecodable tx: {e}"),
-            VerifyError::UnsupportedKind(k) => {
-                write!(f, "unsupported tx kind for the Phase-1 browser kernel: {k}")
-            }
             VerifyError::StateRootMismatch { expected, got } => write!(
                 f,
                 "state_root mismatch: header 0x{} re-executed 0x{}",
@@ -124,192 +91,8 @@ fn hex32(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// A decoded tx ready to re-execute. Mirrors the subset of `crates/rpc::PendingTx` the Phase-1 kernel
-/// handles, decoded by the SAME `alloy` path so a block decodes byte-identically on both followers.
-struct DecodedTx {
-    from: [u8; 20],
-    nonce: u64,
-    kind: DecodedKind,
-}
-
-enum DecodedKind {
-    Transfer {
-        to: [u8; 20],
-        value: u128,
-    },
-    OpenStream {
-        to: [u8; 20],
-        rate: u128,
-        deposit: u128,
-    },
-    StopStream {
-        id: u64,
-    },
-}
-
-impl DecodedKind {
-    /// Gas this kind charges — byte-identical to `crates/rpc::gas_for_kind` for the supported subset.
-    fn gas(&self) -> u64 {
-        match self {
-            DecodedKind::Transfer { .. } => GAS_TRANSFER,
-            DecodedKind::OpenStream { .. } | DecodedKind::StopStream { .. } => GAS_STREAM,
-        }
-    }
-}
-
-/// Decode + structurally-validate a raw EIP-155 tx into a [`DecodedTx`] for the supported subset.
-///
-/// This is the SAME structural decode `crates/rpc::decode_pending_tx` runs (alloy `decode_2718`,
-/// EIP-155 chain-id bind, signer recovery, `to` requirement, StreamHub calldata shape), so a tx the
-/// proposer included decodes byte-identically here. A HumanityHub/ContractHub op (or non-empty
-/// calldata to a plain address) is reported as an unsupported/undecodable kind — fail-closed.
-fn decode_tx(chain_id: u64, raw: &[u8]) -> Result<DecodedTx, VerifyError> {
-    let mut slice = raw;
-    let env = TxEnvelope::decode_2718(&mut slice)
-        .map_err(|e| VerifyError::UndecodableTx(format!("rlp decode failed: {e}")))?;
-
-    // EIP-155 chain-id binding (replay protection): require explicit binding to our chain.
-    match env.chain_id() {
-        Some(id) if id == chain_id => {}
-        Some(other) => {
-            return Err(VerifyError::UndecodableTx(format!(
-                "wrong chainId: tx is for {other}, chain is {chain_id}"
-            )))
-        }
-        None => {
-            return Err(VerifyError::UndecodableTx(
-                "tx must be EIP-155 (chainId-bound)".into(),
-            ))
-        }
-    }
-
-    let from = env
-        .recover_signer()
-        .map_err(|e| VerifyError::UndecodableTx(format!("signature recovery failed: {e}")))?
-        .into_array();
-    let to = env
-        .to()
-        .ok_or_else(|| VerifyError::UndecodableTx("contract creation not supported".into()))?;
-    let nonce = env.nonce();
-    let input = env.input().to_vec();
-    let value_u256 = env.value();
-
-    let to_bytes = to.into_array();
-    let kind = if to_bytes == STREAM_HUB {
-        match parse_stream_calldata(&input)? {
-            StreamOp::Open { to, rate, deposit } => DecodedKind::OpenStream { to, rate, deposit },
-            StreamOp::Stop { id } => DecodedKind::StopStream { id },
-        }
-    } else if to_bytes == HUMANITY_HUB {
-        return Err(VerifyError::UnsupportedKind(
-            "HumanityHub (AI proof-of-humanity)",
-        ));
-    } else if to_bytes == CONTRACT_HUB {
-        return Err(VerifyError::UnsupportedKind(
-            "ContractHub (AI prompt-contract)",
-        ));
-    } else {
-        if !input.is_empty() {
-            return Err(VerifyError::UndecodableTx(
-                "calldata only supported for StreamHub (value transfers otherwise)".into(),
-            ));
-        }
-        let value: u128 = value_u256
-            .try_into()
-            .map_err(|_| VerifyError::UndecodableTx("value exceeds u128 base-unit range".into()))?;
-        DecodedKind::Transfer {
-            to: to_bytes,
-            value,
-        }
-    };
-
-    Ok(DecodedTx { from, nonce, kind })
-}
-
-enum StreamOp {
-    Open {
-        to: [u8; 20],
-        rate: u128,
-        deposit: u128,
-    },
-    Stop {
-        id: u64,
-    },
-}
-
-/// Parse StreamHub calldata (selector + ABI args) into a [`StreamOp`] — byte-identical to
-/// `crates/rpc::streams::parse_calldata` for the two write ops. Any other selector (a soulbound
-/// transfer/approve, or an unknown one) is reported as undecodable so the block fails closed.
-fn parse_stream_calldata(data: &[u8]) -> Result<StreamOp, VerifyError> {
-    if data.len() < 4 {
-        return Err(VerifyError::UndecodableTx(
-            "StreamHub calldata too short".into(),
-        ));
-    }
-    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
-    match selector {
-        s if s == openStreamCall::SELECTOR => {
-            let call = openStreamCall::abi_decode(data, true)
-                .map_err(|e| VerifyError::UndecodableTx(format!("bad openStream args: {e}")))?;
-            let rate: u128 = call.ratePerSec.try_into().map_err(|_| {
-                VerifyError::UndecodableTx("ratePerSec exceeds u128 base-unit range".into())
-            })?;
-            let deposit: u128 = call.deposit.try_into().map_err(|_| {
-                VerifyError::UndecodableTx("deposit exceeds u128 base-unit range".into())
-            })?;
-            Ok(StreamOp::Open {
-                to: call.to.into_array(),
-                rate,
-                deposit,
-            })
-        }
-        s if s == stopStreamCall::SELECTOR => {
-            let call = stopStreamCall::abi_decode(data, true)
-                .map_err(|e| VerifyError::UndecodableTx(format!("bad stopStream args: {e}")))?;
-            if call.id > U256::from(u64::MAX) {
-                return Err(VerifyError::UndecodableTx("stream id exceeds u64".into()));
-            }
-            Ok(StreamOp::Stop {
-                id: call.id.to::<u64>(),
-            })
-        }
-        other => Err(VerifyError::UndecodableTx(format!(
-            "unknown StreamHub selector 0x{}",
-            other.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        ))),
-    }
-}
-
-/// Consume + bump a sender's nonce for a stream op, mirroring `crates/rpc::consume_nonce`: settle the
-/// sender first so `last_settled_at` advances consistently, require the tx nonce matches, then bump.
-/// On a mismatch the state is left untouched (the op is never reached). Returns the post-bump value on
-/// success so the caller can recover from an op error with the SAME idempotent nonce handling the
-/// server follower uses.
-fn consume_nonce(
-    state: &mut dyn State,
-    from: &[u8; 20],
-    nonce: u64,
-    now: u64,
-) -> Result<(), String> {
-    let mut acct = state.get(from).unwrap_or(Account {
-        address: *from,
-        ..Default::default()
-    });
-    acct.settle(now);
-    if nonce != acct.nonce {
-        return Err(format!(
-            "invalid nonce: expected {}, got {nonce}",
-            acct.nonce
-        ));
-    }
-    acct.nonce += 1;
-    state.put(acct);
-    Ok(())
-}
-
 /// Recompute the canonical `txs_root` over the carried raw user txs — byte-identical to
-/// `WireBlock::recompute_txs_root` and `crates/rpc::Block::compute_txs_root`. (We re-derive it here so
-/// the kernel does not depend on a mutable wire helper; the value matches the wire one bit-for-bit.)
+/// `WireBlock::recompute_txs_root` and `crates/rpc::Block::compute_txs_root`.
 fn compute_txs_root(raw_txs: &[Vec<u8>]) -> B256 {
     let mut buf = Vec::with_capacity(8 + raw_txs.len() * 32);
     buf.extend_from_slice(&(raw_txs.len() as u64).to_be_bytes());
@@ -331,6 +114,10 @@ pub struct BlockOutcome {
 /// The verified light-client state: the `MemState` plus the verified chain tip. This is the in-memory
 /// equivalent of what `crates/rpc::Chain` holds, minus the server's mempool/tx-index/networking — a
 /// light node only needs the verified state + tip to read balances and verify the next block.
+///
+/// The AI-seam impls are the deterministic Mocks the consensus/devnet path ships — held by value so the
+/// kernel is fully self-contained (no node config crosses the WASM boundary). Re-execution never runs a
+/// model: the Mocks reproduce the canonical verdict/effect/proof outcomes the consensus path commits.
 pub struct LightCore {
     chain_id: u64,
     state: MemState,
@@ -338,6 +125,9 @@ pub struct LightCore {
     tip_hash: [u8; 32],
     tip_state_root: [u8; 32],
     tip_timestamp: u64,
+    oracle: MockOracle,
+    interpreter: MockInterpreter,
+    verifier: MockZkVerifier,
 }
 
 impl LightCore {
@@ -365,6 +155,9 @@ impl LightCore {
             tip_hash: genesis_hash,
             tip_state_root: genesis_state_root,
             tip_timestamp: genesis_time,
+            oracle: MockOracle::default(),
+            interpreter: MockInterpreter::default(),
+            verifier: MockZkVerifier::default(),
         }
     }
 
@@ -453,68 +246,38 @@ impl LightCore {
             }
         }
 
-        // 3. Decode the ordered raw user txs (same structural decode the proposer/server follower ran).
+        // 3. Decode the ordered raw user txs via the SHARED kernel decode — the SAME structural decode
+        //    the proposer / server follower ran (chain-id bind, signer recovery, hub calldata shape), so
+        //    a tx decodes byte-identically here. An undecodable tx ⇒ the block is malformed/forged.
         let mut decoded = Vec::with_capacity(block.txs.len());
         for raw in &block.txs {
-            decoded.push(decode_tx(self.chain_id, raw)?);
+            decoded.push(
+                ubi2_exec::decode_tx(self.chain_id, raw)
+                    .map_err(|e| VerifyError::UndecodableTx(e.to_string()))?,
+            );
         }
 
-        // 4. Re-execute against a TRIAL copy of the verified state at block.timestamp. We commit it only
-        //    if the recomputed roots match the header byte-for-byte — a bad block applies no change.
+        // 4. Re-execute against a TRIAL copy of the verified state at block.timestamp via the SHARED
+        //    apply kernel (charge_fee → op → failed-tx nonce → the M3 sybil/finalize sweeps). The same
+        //    pre-execution entropy hash the proposer used feeds jury selection (never balances/roots).
+        //    We commit the trial only if the recomputed roots match the header byte-for-byte.
+        let entropy_hash = entropy_hash(block.number, block.parent_hash.0, block.timestamp);
         let mut trial = self.state.clone();
-        let timestamp = block.timestamp;
-        for tx in &decoded {
-            // Real UBI gas fee, charged to the sender BEFORE the op (crediting TREASURY) — exactly as
-            // `crates/rpc::execute_block`. A sender who cannot afford even the fee has its tx dropped
-            // (the server drops it too; a follower never reaches this for a well-formed block).
-            let gas = tx.kind.gas();
-            if charge_fee(&mut trial, &tx.from, gas, timestamp).is_err() {
-                continue;
-            }
-
-            // Apply the op. On an op error we MINE A FAILED tx EVM-style — keep the fee, consume the
-            // sender nonce exactly once (set to `nonce + 1`, the one idempotent post-state the server
-            // also writes), apply no op state change — so the post-state matches the server byte-for-byte.
-            let applied: Result<(), String> = match &tx.kind {
-                DecodedKind::Transfer { to, value } => {
-                    apply_transfer(&mut trial, &tx.from, to, *value, tx.nonce, timestamp)
-                        .map_err(|e| e.to_string())
-                }
-                DecodedKind::OpenStream { to, rate, deposit } => {
-                    consume_nonce(&mut trial, &tx.from, tx.nonce, timestamp).and_then(|()| {
-                        open_stream(&mut trial, &tx.from, to, *rate, *deposit, timestamp)
-                            .map(|_id| ())
-                            .map_err(|e| e.to_string())
-                    })
-                }
-                DecodedKind::StopStream { id } => {
-                    consume_nonce(&mut trial, &tx.from, tx.nonce, timestamp).and_then(|()| {
-                        stop_stream(&mut trial, *id, &tx.from, timestamp)
-                            .map(|_refund| ())
-                            .map_err(|e| e.to_string())
-                    })
-                }
-            };
-
-            if applied.is_err() {
-                // Failed tx: keep the charged fee, set the nonce to its correct post-tx value. The FIFO
-                // mempool + submit gate guarantee `tx.nonce` is the sender's current nonce, so this is
-                // the one true deterministic post-state (matches `execute_block`'s failed-tx branch).
-                let mut acct = trial.get(&tx.from).unwrap_or(Account {
-                    address: tx.from,
-                    ..Default::default()
-                });
-                acct.settle(timestamp);
-                acct.nonce = tx.nonce + 1;
-                trial.put(acct);
-            }
-        }
+        ubi2_exec::apply_ops(
+            &mut trial,
+            &decoded,
+            block.timestamp,
+            block.number,
+            entropy_hash,
+            &self.oracle,
+            &self.interpreter,
+            &self.verifier,
+        );
 
         // 5. Recompute the consensus roots over the FINAL trial state and assert byte-identical to the
         //    header (the I1/I2 cross-node check — AC-LC2 / AC-F-LN1). A mismatch ⇒ reject, state unchanged.
         let got_txs_root = compute_txs_root(&block.txs);
         if got_txs_root != block.txs_root {
-            // (shallow_verify already checked this, but assert it on the re-derived value too.)
             return Err(VerifyError::StateRootMismatch {
                 expected: block.state_root.0,
                 got: runtime_state_root(&trial),
@@ -533,7 +296,7 @@ impl LightCore {
         self.tip_number = block.number;
         self.tip_hash = block.hash().0;
         self.tip_state_root = got_state_root;
-        self.tip_timestamp = timestamp;
+        self.tip_timestamp = block.timestamp;
 
         Ok(self.tip())
     }
@@ -567,6 +330,9 @@ impl LightCore {
             tip_hash,
             tip_state_root,
             tip_timestamp,
+            oracle: MockOracle::default(),
+            interpreter: MockInterpreter::default(),
+            verifier: MockZkVerifier::default(),
         }
     }
 
@@ -584,15 +350,42 @@ impl LightCore {
     }
 }
 
-/// The fee a kind of `gas` costs, re-exported for the wasm layer's tx-composition helpers.
-pub fn fee_for_kind_gas(gas: u64) -> u128 {
-    fee_for_gas(gas)
+/// The PRE-execution entropy hash — `keccak256(number ‖ parent_hash ‖ timestamp ‖ 0 ‖ 0 ‖ 0)` — the
+/// same value `crates/rpc::execute_block` derives (block hash over zeroed roots + zero proposer) and
+/// feeds to the shared kernel's jury selection (it folds ONLY into the seeded PRNG, never balances or
+/// roots, so the swap does not change any state). Byte-identical to `Block::compute_hash(number,
+/// parent_hash, timestamp, ZERO, ZERO, ZERO)`.
+fn entropy_hash(number: u64, parent_hash: [u8; 32], timestamp: u64) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(8 + 32 + 8 + 32 + 32 + 20);
+    buf.extend_from_slice(&number.to_be_bytes());
+    buf.extend_from_slice(&parent_hash);
+    buf.extend_from_slice(&timestamp.to_be_bytes());
+    buf.extend_from_slice(&[0u8; 32]); // txs_root placeholder
+    buf.extend_from_slice(&[0u8; 32]); // state_root placeholder
+    buf.extend_from_slice(&[0u8; 20]); // proposer placeholder
+    keccak256(&buf).0
 }
 
-// Reference the hub addresses in a const-eval so an accidental edit that desyncs them from the runtime
-// fails the build (they must equal the runtime's reserved addresses byte-for-byte).
-const _: () = {
-    assert!(STREAM_HUB[18] == 0x57 && STREAM_HUB[19] == 0x42);
-    assert!(HUMANITY_HUB[18] == 0x50 && HUMANITY_HUB[19] == 0x48);
-    assert!(CONTRACT_HUB[18] == 0x50 && CONTRACT_HUB[19] == 0x43);
-};
+// ---------------------------------------------------------------------------------------------
+// The ONE documented fail-closed boundary (least authority — I6).
+//
+// The light client re-executes EVERY block kind — value transfers, streaming, PoH social-vouching,
+// prompt contracts, AND ZK-passport proofs — because re-execution is deterministic and needs no AI
+// (the AI verdict/effect/proof rides in as a tx that applies purely; the few apply-time seam calls run
+// the deterministic Mocks the consensus path ships). There is exactly one case the light client cannot
+// reproduce client-side:
+//
+//   * A chain wired with a *live* (non-Mock) AI backend on its CONSENSUS path — i.e. a node whose
+//     `requestVerification` liveness grade / `invokeContract` interpretation depends on a live LLM's
+//     output that is NOT carried in the tx. The light client has no model and cannot reproduce that
+//     output, so the re-executed `state_root` would diverge from the header and `apply_block` would
+//     return `StateRootMismatch` (fail-closed — a visible verification error, never a wrong balance).
+//
+// This is OUT OF SCOPE for the devnet / Stage 1–2 trust model by construction: the consensus path
+// ships the deterministic Mock impls (I5 — tests replay fixtures; the live oracle/interpreter are gated
+// and never on the consensus path), and the ZK verifier is a pure deterministic function (the Mock here,
+// or `crates/zkpoh`'s Groth16 verifier when a node wires one — that path would have the light client
+// link `crates/zkpoh`, which is itself wasm32-compilable). So for every block a devnet/consensus node
+// produces, the light client re-executes to a byte-identical `state_root` (proved by the AC-WB parity
+// gate over transfers, streaming, PoH-vouching, prompt-contract, and ZK-passport blocks).
+// ---------------------------------------------------------------------------------------------

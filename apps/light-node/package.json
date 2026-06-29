@@ -1,0 +1,25 @@
+{
+  "name": "@ubi2/light-node",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ubi2 browser light node — syncs + re-executes the chain in WASM, verifies state_root, shows live balance.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:wasm": "bash ../../packages/light-client/build-wasm/build.sh"
+  },
+  "dependencies": {
+    "@ubi2/light-client": "workspace:*",
+    "@ubi2/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.5.0",
+    "vite": "^6.3.5",
+    "vite-plugin-pwa": "^0.21.1",
+    "workbox-window": "^7.3.0"
+  }
+}

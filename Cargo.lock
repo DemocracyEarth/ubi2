@@ -4643,6 +4643,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "ubi2-exec"
+version = "0.0.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "derive_more 1.0.0",
+ "getrandom 0.2.17",
+ "k256",
+ "ubi2-runtime",
+]
+
+[[package]]
 name = "ubi2-network"
 version = "0.0.0"
 dependencies = [
@@ -4715,6 +4729,7 @@ dependencies = [
  "tower 0.4.13",
  "tower-http",
  "tracing",
+ "ubi2-exec",
  "ubi2-network",
  "ubi2-oracle",
  "ubi2-runtime",
@@ -4739,6 +4754,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "ubi2-exec",
  "ubi2-network",
  "ubi2-rpc",
  "ubi2-runtime",

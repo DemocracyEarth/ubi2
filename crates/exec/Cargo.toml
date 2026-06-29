@@ -1,0 +1,50 @@
+[package]
+name = "ubi2-exec"
+description = "ubi2 shared block re-execution kernel: the SINGLE deterministic ordered-op apply path used by BOTH the full node (crates/rpc) and the WASM light client (crates/runtime-wasm). No tokio/jsonrpsee/libp2p — wasm32-compilable (spec 07 §2.3; ADR-0006 Decision 3)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# -------------------------------------------------------------------------------------------------
+# Dependency discipline (ADR-0006 Decision 3 — "one re-execution kernel", spec 07 §2.3):
+#
+#   * This crate is the SINGLE implementation of block re-execution: take an ordered, decoded op list +
+#     a `&mut dyn State` + `block.timestamp`/`number`/`entropy`, apply every op via the `crates/runtime`
+#     lifecycle fns (charge_fee → op → failed-tx nonce → the M3 sybil/finalize sweeps), exactly as the
+#     full node's `crates/rpc::Chain::execute_block` does. Both `crates/rpc` (server follower) and
+#     `crates/runtime-wasm` (browser follower) call it, so there is NO logic fork.
+#
+#   * It depends ONLY on `crates/runtime` (the deterministic core, untouched + dependency-free) plus the
+#     pure `alloy`/`k256` tx-decode + ecrecover primitives the browser needs. NO async, NO networking,
+#     NO jsonrpsee/tokio/libp2p — so it compiles to `wasm32-unknown-unknown` and rides into the browser
+#     light-node blob. The state mutations it performs are a pure function of `(state, block inputs)`
+#     (I1/I2): two honest nodes re-executing the same ordered ops against the same parent state compute
+#     a byte-identical `state_root`.
+#
+#   * The AI seam (`HumanityOracle` / `ContractInterpreter` / `ZkPassportVerifier`) is taken as trait
+#     parameters — the kernel never embeds a model. The full node passes its configured impls (the
+#     deterministic Mocks on the consensus/devnet path; a live backend when wired); the light client
+#     passes the SAME deterministic Mocks the consensus path ships (I5), so it re-executes byte-identical.
+# -------------------------------------------------------------------------------------------------
+[dependencies]
+ubi2-runtime = { path = "../runtime" }
+
+# The tx-decode + ecrecover primitives — the SAME alloy/k256 decode `crates/rpc::decode_pending_tx`
+# uses, so a tx decodes byte-identically on the server follower and the browser follower.
+alloy-primitives = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-sol-types = { workspace = true }
+k256 = { version = "0.13", features = ["ecdsa"] }
+
+# Force the `display` feature on derive_more 1.x for feature unification (alloy-eip7702 uses it but does
+# not enable it) — mirrors every other alloy-consuming crate's pin. Harmless otherwise.
+derive_more = { workspace = true }
+
+# wasm32: pin getrandom to its `js` backend so any transitive RNG (rand_core via crypto-bigint via
+# k256/elliptic-curve) resolves in the browser. The deterministic kernel never calls it (no randomness
+# on any consensus path); this only satisfies the wasm32 link — identical to the pin in runtime-wasm.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
