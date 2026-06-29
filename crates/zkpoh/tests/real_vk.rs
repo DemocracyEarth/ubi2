@@ -12,15 +12,22 @@
 //!   2. **On-curve validation + canonical round-trip.** Every VK point loads through arkworks'
 //!      validating constructors, and the loaded VK re-serializes to canonical bytes and re-parses
 //!      identically (the `state_root`-commit form, §5.3) — the cross-node trust-anchor agreement.
-//!   3. **The arity pin holds against a real foreign VK.** The disclose circuit emits `nPublic = 20`
-//!      public inputs, NOT our pinned §3.5 layout of 8. [`Groth16Verifier::from_vk_bytes`] therefore
-//!      *rejects* it — exactly the fail-closed behavior we want until the circuit's public outputs are
-//!      adapted to emit our 8-field vector (nullifier, 3 attr commitments, CSCA root, submitter, now,
-//!      scheme tag). That adaptation + a re-run Phase-2 ceremony is the documented next step; it changes
-//!      the VK bytes + the circuit, never this crate's verifier code.
+//!   3. **The real arity now LOADS (Stage 2).** The disclose circuit emits `nPublic = 20` public inputs.
+//!      In Stage 1 our verifier pinned only the 8-field domain arity, so the real VK was rejected
+//!      fail-closed. Stage 2 implements the real **20-signal** Self layout (`crate::self_layout`):
+//!      [`Groth16Verifier::from_vk_bytes`] now recognizes the 20-arity and loads the real VK as a
+//!      `SelfDisclose`-layout passport verifier, with the runtime's domain inputs (spec §3.5) mapped onto
+//!      the real 20-signal vector by the documented adapter. A VK of any *other* arity (neither 8 nor 20)
+//!      is still rejected fail-closed. The remaining gap to a fully production binding is Self's
+//!      ceremony `.zkey` (needed to generate a proof under their *production* VK), which is not committed
+//!      to the open repo — see `real_curve_self_layout.rs`, which proves a genuine proof at the real
+//!      arity through a self-generated setup (the spec §6.3 real-curve fixture path).
 
 use serde_json::Value;
-use ubi2_zkpoh::{Groth16Verifier, PinnedVerifyingKey, SnarkjsVk};
+use ubi2_zkpoh::{
+    Groth16Verifier, PassportLayout, PinnedVerifyingKey, SnarkjsVk, ZkPassportVerifier,
+    SELF_NPUBLIC,
+};
 
 const REAL_VK_JSON: &str = include_str!("fixtures/self_vc_and_disclose_vkey.json");
 
@@ -101,15 +108,69 @@ fn real_self_disclose_vk_loads_validates_and_round_trips() {
 }
 
 #[test]
-fn real_foreign_arity_vk_is_rejected_by_the_passport_arity_pin() {
+fn real_self_disclose_vk_loads_as_self_layout_passport_verifier() {
+    // Stage 2: the real 20-input Self disclose VK now LOADS as a `SelfDisclose`-layout passport verifier
+    // (the Stage-1 8-arity rejection is replaced by the real-arity binding, `crate::self_layout`).
     let snark_vk = parse_real_vk();
+    assert_eq!(snark_vk.ic.len() - 1, SELF_NPUBLIC);
     let pinned = snark_vk.to_pinned().unwrap();
     let vk_bytes = pinned.to_canonical_bytes().unwrap();
 
-    // The disclose VK is a perfectly valid Groth16/BN254 VK — but for arity 20, not our pinned 8 (§3.5).
-    // The passport verifier loader rejects it, fail-closed, rather than mis-applying a foreign circuit.
+    let verifier = Groth16Verifier::from_vk_bytes(&vk_bytes)
+        .expect("the real 20-input Self VK loads as a Self-layout passport verifier (Stage 2)");
+    assert_eq!(verifier.layout(), PassportLayout::SelfDisclose);
+    assert_eq!(verifier.passport_arity(), SELF_NPUBLIC);
+
+    // A garbage proof against the real VK still fails closed (no proof ⇒ no accept; we have no production
+    // ceremony zkey to generate a real proof under this exact VK — see real_curve_self_layout.rs).
+    let dummy_pi = ubi2_zkpoh::ZkPublicInputs::new(
+        [1u8; 32],
+        [[0u8; 32]; 3],
+        [0u8; 32],
+        [0u8; 20],
+        1_700_000_000,
+        0,
+    );
+    assert!(
+        !verifier.verify_passport(&[0xFFu8; 256], &dummy_pi),
+        "a non-canonical proof against the real VK fails closed"
+    );
+}
+
+#[test]
+fn a_foreign_arity_vk_is_still_rejected() {
+    // A VK whose arity is neither the 8-field domain layout nor the 20-signal Self layout is rejected
+    // fail-closed (the arity guard still protects against an unrecognized circuit). We synthesize a
+    // 1-input VK to exercise this.
+    use ark_bn254::{Bn254, Fr};
+    use ark_groth16::Groth16;
+    use ark_relations::lc;
+    use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
+    use ark_serialize::{CanonicalSerialize, Compress};
+    use ark_snark::SNARK;
+    use ark_std::rand::{rngs::StdRng, SeedableRng};
+
+    struct OneInput {
+        x: Fr,
+        w: Fr,
+    }
+    impl ConstraintSynthesizer<Fr> for OneInput {
+        fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
+            let x = cs.new_input_variable(|| Ok(self.x))?;
+            let w = cs.new_witness_variable(|| Ok(self.w))?;
+            cs.enforce_constraint(lc!() + w, lc!() + w, lc!() + x)?;
+            Ok(())
+        }
+    }
+    let mut rng = StdRng::seed_from_u64(7);
+    let w = Fr::from(9u64);
+    let (_, vk) =
+        Groth16::<Bn254>::circuit_specific_setup(OneInput { x: w * w, w }, &mut rng).unwrap();
+    let mut vk_bytes = Vec::new();
+    vk.serialize_with_mode(&mut vk_bytes, Compress::Yes)
+        .unwrap();
     assert!(
         Groth16Verifier::from_vk_bytes(&vk_bytes).is_none(),
-        "a real 20-input Self VK must be rejected by the 8-input passport arity pin (§3.5)"
+        "a 1-input VK is neither the 8 nor 20 arity ⇒ rejected fail-closed"
     );
 }
