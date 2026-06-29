@@ -1,0 +1,24 @@
+{
+  "name": "ubi2-runtime-wasm",
+  "type": "module",
+  "collaborators": [
+    "Democracy Earth Foundation"
+  ],
+  "description": "ubi2 browser light-node WASM wrapper: a thin, bytes/JSON API over the deterministic crates/runtime (spec 07 §2.2; ADR-0006 Decision 1).",
+  "version": "0.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/democracyearth/ubi2"
+  },
+  "files": [
+    "ubi2_runtime_wasm_bg.wasm",
+    "ubi2_runtime_wasm.js",
+    "ubi2_runtime_wasm.d.ts"
+  ],
+  "main": "ubi2_runtime_wasm.js",
+  "types": "ubi2_runtime_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
