@@ -65,6 +65,8 @@ use ubi2_runtime::{
 };
 
 pub mod persist;
+pub mod sync_gateway;
+pub use sync_gateway::{serve_sync_gateway, SyncGatewayHandle};
 
 pub mod streams;
 use streams::{
@@ -2375,6 +2377,13 @@ impl Chain {
         let g = self.inner.lock().unwrap();
         let b = g.blocks.last().expect("genesis present");
         (b.number, b.hash)
+    }
+
+    /// Subscribe to new-block notifications (the broadcast channel the sync gateway uses to push live
+    /// blocks to connected light clients). Each produced/applied block is broadcast; receivers that
+    /// lag more than the channel capacity (256) get a `Lagged` error and must re-sync.
+    pub fn subscribe_heads(&self) -> broadcast::Receiver<Block> {
+        self.heads_tx.subscribe()
     }
 
     /// The current head's committed `state_root` (the tip block's header field). Backs `ubi_stateRoot`

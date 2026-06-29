@@ -6,7 +6,11 @@ members = [
     "crates/node",
     "crates/oracle",
     "crates/network",
+    # ZK-Passport PoH verifier (spec 06 / ADR-0005). Deterministic Groth16/BN254, isolated from runtime.
     "crates/zkpoh",
+    # Browser light-node WASM wrapper (spec 07 / ADR-0006). The ONLY crate that pulls `wasm-bindgen`;
+    # a thin bytes/JSON API over the UNTOUCHED, dependency-free `crates/runtime`.
+    "crates/runtime-wasm",
 ]
 
 [workspace.package]
