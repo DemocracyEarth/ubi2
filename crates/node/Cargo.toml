@@ -41,3 +41,11 @@ alloy-consensus.workspace = true
 alloy-eips.workspace = true
 # k256 is pulled transitively by alloy-primitives (features = ["k256"]) — no new tree weight.
 k256 = { version = "0.13", features = ["ecdsa"] }
+# Sync gateway integration test (sync_gateway.rs): the WS light client drives the native
+# LightCore kernel (the WASM wrapper's pure-Rust inner kernel) and verifies state_root parity.
+# tokio-tungstenite: async WS client; futures-util: SinkExt/StreamExt for the split session.
+# ubi2-runtime-wasm: the LightCore kernel (no wasm feature — native host).
+# ubi2-network: wire types (SyncRequest/SyncResponse/WireBlock) for the binary round-trip.
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+ubi2-runtime-wasm = { path = "../runtime-wasm", default-features = false }

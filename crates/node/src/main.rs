@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 
 use alloy_primitives::address;
-use ubi2_rpc::{serve, AdminAccess, Chain, ProposerKey, DEVNET_CHAIN_ID};
+use ubi2_rpc::{serve, serve_sync_gateway, AdminAccess, Chain, ProposerKey, DEVNET_CHAIN_ID};
 use ubi2_runtime::Account;
 
 /// Env var: comma-separated list of browser origins allowed to call the loopback admin RPC
@@ -230,6 +230,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let handle = serve(addr, chain.clone()).await?;
+
+    // Sync gateway (spec 07 §3.1 / ADR-0006 Decision 2): a separate WebSocket endpoint that serves
+    // the M5 `ubi2/sync/1` `SyncRequest`/`SyncResponse` payloads so browser light clients can sync
+    // without libp2p. Enabled when `UBI2_SYNC_ADDR` is set (default off; integration tests enable it).
+    let sync_addr_str = std::env::var("UBI2_SYNC_ADDR").unwrap_or_default();
+    let _sync_handle = if !sync_addr_str.is_empty() {
+        let sync_addr: SocketAddr = sync_addr_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("bad UBI2_SYNC_ADDR: {e}"))?;
+        let gw = serve_sync_gateway(sync_addr, chain.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("sync gateway bind failed: {e}"))?;
+        tracing::info!("  sync gateway      : ws://{sync_addr}/sync");
+        Some(gw)
+    } else {
+        None
+    };
 
     tracing::info!("ubi2-node (M1 devnet) up");
     tracing::info!("  JSON-RPC (HTTP+WS): http://{addr}");

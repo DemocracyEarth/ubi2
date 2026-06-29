@@ -37,6 +37,12 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 # network crate does NOT depend on rpc, so this edge stays acyclic; only `consts` (plain values) is used.
 ubi2-network = { path = "../network" }
 
+# WebSocket sync gateway (spec 07 §3.1): serves SyncRequest/SyncResponse over a ws:// endpoint so
+# browser light clients can sync blocks without libp2p. tokio-tungstenite is the async WS library;
+# futures-util provides the SinkExt/StreamExt combinators for the split sink/stream session loop.
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
 [dev-dependencies]
 # Security PoC (C5-SEC-3): drive a STUBBED live-style backend (a blocking reqwest client, no network)
 # through `produce_block` to prove the block-production task never panics dropping a blocking runtime.

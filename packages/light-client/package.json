@@ -1,0 +1,19 @@
+{
+  "name": "@ubi2/light-client",
+  "version": "0.0.0",
+  "description": "ubi2 browser light-node TypeScript client: WS sync gateway driver, WASM re-execution kernel, verified state reads.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@ubi2/sdk": "workspace:*"
+  }
+}
