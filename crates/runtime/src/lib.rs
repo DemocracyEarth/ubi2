@@ -30,8 +30,17 @@ pub use humanity::{
 
 pub mod lifecycle;
 pub use lifecycle::{
-    challenge, finalize_registration, register_juror, request_verification, revoke,
-    seed_verified_human, submit_verdict, system_challenge, vouch, LifecycleError, LivenessEvidence,
+    challenge, finalize_registration, register_csca, register_juror, request_verification, revoke,
+    revoke_csca, seed_csca, seed_verified_human, submit_verdict, submit_zk_passport_proof,
+    system_challenge, vouch, CscaGovError, LifecycleError, LivenessEvidence, ZkPohError,
+    ZkProofSubmission,
+};
+
+pub mod zkpoh;
+pub use zkpoh::{
+    csca_registry_root, Assurance, CscaEntry, CscaStatus, MockZkVerifier, ZkAttrType,
+    ZkPassportVerifier, ZkPublicInputs, NUM_ATTRIBUTE_COMMITMENTS, NUM_PUBLIC_INPUTS,
+    SCHEME_TAG_PASSPORT,
 };
 
 pub mod state_root;
@@ -80,6 +89,18 @@ pub const GAS_STREAM: u64 = 60_000;
 
 /// Gas a HumanityHub op (vouch / challenge / submitVerdict) costs.
 pub const GAS_HUMANITY: u64 = 80_000;
+
+/// Gas a `submitZkPassportProof` op costs — the **heaviest** HumanityHub op (it runs a pairing check),
+/// sized above [`GAS_HUMANITY`] (spec §4.1). It is **not** fee-exempt: a ZK upgrade is taken by an
+/// account that already earns UBI, and a new ZK-only user must hold a minimal balance — onboarding
+/// fee-exemption stays the M3 `requestVerification` path only. The higher gas + the cheap
+/// nullifier-pre-check before the pairing (§4.2 step 3) bound the DoS surface (§11). Devnet starting
+/// value (spec §13 O-3, tuned at the gate).
+pub const GAS_ZKPOH: u64 = 250_000;
+
+/// Gas a CSCA-governance op (`registerCsca` / `revokeCsca`) costs (spec §7.3). Governance-gated, so the
+/// surface is small; priced at the humanity tier.
+pub const GAS_CSCA_GOV: u64 = 80_000;
 
 /// Gas a `requestVerification` (onboarding) op costs — **0, fee-exempt**. This is the network's
 /// bootstrap gate: an account requesting verification is by construction not yet `Verified`, so it has
@@ -580,6 +601,49 @@ pub trait State: Send + Sync {
     /// Snapshot of all exec cases, sorted by id (deterministic order — I1).
     fn exec_cases(&self) -> Vec<ExecCase>;
 
+    // ---- M6: ZK-passport registries (spec 06 §5.1/§5.3, ADR-0005). ----
+    //
+    // All reads return owned snapshots and sorted vectors, so no consensus-affecting path ever depends
+    // on hash-iteration order (I1). Default impls keep non-`MemState` stores compiling; `MemState`
+    // overrides them.
+
+    /// Is `nullifier` already spent? (One-passport-one-human — the cheap pre-check before the pairing
+    /// verify, §4.2 step 3.) Pure read.
+    fn nullifier_used(&self, nullifier: &Hash) -> bool;
+    /// Insert a now-permanently-spent `nullifier` into the registry (idempotent). Called atomically on a
+    /// successful `submitZkPassportProof` (§4.2 step 5).
+    fn put_nullifier(&mut self, nullifier: Hash);
+    /// All spent nullifiers, **sorted ascending** by the 32-byte value (the canonical order the
+    /// `state_root` folds — §5.3). Pure read.
+    fn nullifiers(&self) -> Vec<Hash>;
+
+    /// The three Pedersen attribute commitments stored for `addr` (`[age, nationality, expiry]`), or
+    /// `None` for an `Std`-only / unverified human (§3.4). Opaque (I6 — no preimage). Pure read.
+    fn attribute_commitments(&self, addr: &Address) -> Option<[Hash; NUM_ATTRIBUTE_COMMITMENTS]>;
+    /// Store the three Pedersen commitments for `addr` (the ENH/DUAL human's opaque attributes, I6).
+    fn put_attribute_commitments(
+        &mut self,
+        addr: &Address,
+        commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
+    );
+    /// All attribute-store entries, **sorted by address** (the canonical order `state_root` folds —
+    /// §5.3). Each is `(address, [3×32-byte commitments])`. Pure read.
+    fn attribute_store(&self) -> Vec<(Address, [Hash; NUM_ATTRIBUTE_COMMITMENTS])>;
+
+    /// Read a CSCA trust anchor by `key_id`, if present. Pure read.
+    fn get_csca(&self, key_id: &Hash) -> Option<CscaEntry>;
+    /// Insert or replace a CSCA entry (keyed by `key_id`). Called by `register_csca`/`revoke_csca`.
+    fn put_csca(&mut self, entry: CscaEntry);
+    /// All CSCA entries (Active **and** Revoked), **sorted by `key_id`** (the canonical order
+    /// `state_root` folds and [`csca_registry_root`] filters/commits — §7.2). Pure read.
+    fn csca_entries(&self) -> Vec<CscaEntry>;
+    /// Is `addr` the CSCA governance authority (spec §7.3, AC-10)? Gates `register_csca`/`revoke_csca`.
+    /// Default: no governance authority is set ⇒ every gated op is rejected (fail-closed). `MemState`
+    /// overrides with the configured authority (the node seeds it at genesis).
+    fn is_csca_governance(&self, _addr: &Address) -> bool {
+        false
+    }
+
     // ---- M5: id-counter peeks (read-only; for the deterministic state root) ----
     //
     // The next-id counters are part of consensus state: a rolled-back op can advance a counter without
@@ -646,6 +710,19 @@ pub struct MemState {
     exec_cases: HashMap<ExecCaseId, ExecCase>,
     /// Sequential exec-case-id counter.
     next_exec_case_id: ExecCaseId,
+
+    // ---- M6: ZK-passport registries (spec 06 §5.1) ----
+    /// Spent-nullifier set (one-passport-one-human). A `HashSet` for O(1) membership; iterated sorted
+    /// for the `state_root` (§5.3).
+    nullifiers: std::collections::HashSet<Hash>,
+    /// Per-human Pedersen attribute commitments `[age, nationality, expiry]` (opaque — I6), keyed by
+    /// address. Present only for ENH/DUAL humans.
+    attribute_commitments: HashMap<Address, [Hash; NUM_ATTRIBUTE_COMMITMENTS]>,
+    /// CSCA trust-anchor registry, keyed by `key_id` (Active + Revoked entries — §7.2).
+    csca: HashMap<Hash, CscaEntry>,
+    /// The CSCA governance authority (spec §7.3). `None` ⇒ no authority ⇒ every gated op fails-closed
+    /// (the devnet/node seeds a reserved governance address at genesis).
+    csca_governance: Option<Address>,
 }
 
 impl MemState {
@@ -855,6 +932,55 @@ impl State for MemState {
         v
     }
 
+    // ---- M6: ZK-passport registries ----
+
+    fn nullifier_used(&self, nullifier: &Hash) -> bool {
+        self.nullifiers.contains(nullifier)
+    }
+    fn put_nullifier(&mut self, nullifier: Hash) {
+        self.nullifiers.insert(nullifier);
+    }
+    fn nullifiers(&self) -> Vec<Hash> {
+        let mut v: Vec<Hash> = self.nullifiers.iter().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn attribute_commitments(&self, addr: &Address) -> Option<[Hash; NUM_ATTRIBUTE_COMMITMENTS]> {
+        self.attribute_commitments.get(addr).copied()
+    }
+    fn put_attribute_commitments(
+        &mut self,
+        addr: &Address,
+        commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
+    ) {
+        self.attribute_commitments.insert(*addr, commitments);
+    }
+    fn attribute_store(&self) -> Vec<(Address, [Hash; NUM_ATTRIBUTE_COMMITMENTS])> {
+        let mut v: Vec<(Address, [Hash; NUM_ATTRIBUTE_COMMITMENTS])> = self
+            .attribute_commitments
+            .iter()
+            .map(|(a, c)| (*a, *c))
+            .collect();
+        v.sort_by_key(|(a, _)| *a);
+        v
+    }
+
+    fn get_csca(&self, key_id: &Hash) -> Option<CscaEntry> {
+        self.csca.get(key_id).cloned()
+    }
+    fn put_csca(&mut self, entry: CscaEntry) {
+        self.csca.insert(entry.key_id, entry);
+    }
+    fn csca_entries(&self) -> Vec<CscaEntry> {
+        let mut v: Vec<CscaEntry> = self.csca.values().cloned().collect();
+        v.sort_by_key(|a| a.key_id);
+        v
+    }
+    fn is_csca_governance(&self, addr: &Address) -> bool {
+        self.csca_governance == Some(*addr)
+    }
+
     fn peek_next_stream_id(&self) -> StreamId {
         self.next_id
     }
@@ -902,6 +1028,17 @@ impl MemState {
     /// Restore the next-exec-case-id counter (FU-3 load path).
     pub fn set_next_exec_case_id(&mut self, id: ExecCaseId) {
         self.next_exec_case_id = id;
+    }
+
+    /// Set the CSCA governance authority (spec §7.3). The node/devnet wires a reserved governance
+    /// address at genesis so `register_csca`/`revoke_csca` are gated (AC-10). Concrete-type only (not
+    /// on the `State` trait) — only genesis wiring + the persistence load path reach for it.
+    pub fn set_csca_governance(&mut self, authority: Address) {
+        self.csca_governance = Some(authority);
+    }
+    /// The configured CSCA governance authority, if any (persistence capture / RPC read).
+    pub fn csca_governance(&self) -> Option<Address> {
+        self.csca_governance
     }
 }
 

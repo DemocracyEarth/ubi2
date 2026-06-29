@@ -32,9 +32,9 @@ use alloy_primitives::{Address as AlloyAddr, B256, U256};
 use serde::{Deserialize, Serialize};
 
 use ubi2_runtime::{
-    Account, CanonicalEffect, CanonicalVerdict, Case, CaseKind, CaseStatus, Confidence,
-    ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, Juror, MemState, Op, PromptContract,
-    State, Stream, StreamStatus, Verdict,
+    Account, Assurance, CanonicalEffect, CanonicalVerdict, Case, CaseKind, CaseStatus, Confidence,
+    ContractStatus, CscaEntry, CscaStatus, ExecCase, ExecStatus, Human, HumanStatus, Juror,
+    MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict,
 };
 
 use crate::{Block, Chain, StoredTx, TxLog};
@@ -139,6 +139,21 @@ struct HumanDto {
     liveness_ref: String,
     vouches_in: Vec<String>,
     reputation: i64,
+    /// M6: 0 STD, 1 ENH, 2 DUAL. `#[serde(default)]` keeps pre-M6 snapshots loadable — they default to
+    /// STD (the additive-field migration, spec §5.6).
+    #[serde(default)]
+    assurance: u8,
+}
+
+/// M6: a CSCA trust-anchor entry on disk (spec §7.2).
+#[derive(Serialize, Deserialize)]
+struct CscaDto {
+    country_code: String,
+    key_id: String,
+    pubkey: String,
+    added_at: u64,
+    /// 0 Active, 1 Revoked.
+    status: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -272,6 +287,16 @@ struct StateDto {
     next_case_id: u64,
     next_contract_id: u64,
     next_exec_case_id: u64,
+    // ---- M6: ZK-passport registries (spec §5.1/§5.3). `#[serde(default)]` keeps pre-M6 snapshots
+    //         loadable — they restore empty registries + no governance authority. ----
+    #[serde(default)]
+    nullifiers: Vec<String>,
+    #[serde(default)]
+    attribute_store: Vec<(String, [String; 3])>,
+    #[serde(default)]
+    csca: Vec<CscaDto>,
+    #[serde(default)]
+    csca_governance: Option<String>,
 }
 
 /// The full on-disk chain snapshot.
@@ -462,6 +487,7 @@ fn export_state(state: &MemState) -> StateDto {
                 liveness_ref: hex32(&h.liveness_ref),
                 vouches_in: h.vouches_in.iter().map(hex20).collect(),
                 reputation: h.reputation,
+                assurance: h.assurance.tag(),
             })
             .collect(),
         vouch_edges: state
@@ -573,6 +599,34 @@ fn export_state(state: &MemState) -> StateDto {
         next_case_id: state.peek_next_case_id(),
         next_contract_id: state.peek_next_contract_id(),
         next_exec_case_id: state.peek_next_exec_case_id(),
+        // ---- M6: ZK-passport registries (sorted by the State accessors — deterministic order). ----
+        nullifiers: state.nullifiers().iter().map(hex32).collect(),
+        attribute_store: state
+            .attribute_store()
+            .iter()
+            .map(|(addr, commitments)| {
+                (
+                    hex20(addr),
+                    [
+                        hex32(&commitments[0]),
+                        hex32(&commitments[1]),
+                        hex32(&commitments[2]),
+                    ],
+                )
+            })
+            .collect(),
+        csca: state
+            .csca_entries()
+            .iter()
+            .map(|e| CscaDto {
+                country_code: hex_encode(&e.country_code),
+                key_id: hex32(&e.key_id),
+                pubkey: hex_encode(&e.pubkey),
+                added_at: e.added_at,
+                status: e.status.tag(),
+            })
+            .collect(),
+        csca_governance: state.csca_governance().map(|a| hex20(&a)),
     }
 }
 
@@ -665,6 +719,11 @@ fn import_state(dto: &StateDto) -> MemState {
             liveness_ref: unhex32(&h.liveness_ref),
             vouches_in: h.vouches_in.iter().map(|a| unhex20(a)).collect(),
             reputation: h.reputation,
+            assurance: match h.assurance {
+                1 => Assurance::Enh,
+                2 => Assurance::Dual,
+                _ => Assurance::Std,
+            },
         });
     }
     for (voucher, vouchee) in &dto.vouch_edges {
@@ -753,6 +812,39 @@ fn import_state(dto: &StateDto) -> MemState {
     s.set_next_case_id(dto.next_case_id);
     s.set_next_contract_id(dto.next_contract_id);
     s.set_next_exec_case_id(dto.next_exec_case_id);
+    // ---- M6: ZK-passport registries ----
+    for n in &dto.nullifiers {
+        s.put_nullifier(unhex32(n));
+    }
+    for (addr, commitments) in &dto.attribute_store {
+        s.put_attribute_commitments(
+            &unhex20(addr),
+            [
+                unhex32(&commitments[0]),
+                unhex32(&commitments[1]),
+                unhex32(&commitments[2]),
+            ],
+        );
+    }
+    for e in &dto.csca {
+        let cc = hex_decode_vec(&e.country_code);
+        let mut country_code = [0u8; 3];
+        country_code.copy_from_slice(&cc[..3.min(cc.len())]);
+        let mut entry = CscaEntry::active(
+            country_code,
+            unhex32(&e.key_id),
+            hex_decode_vec(&e.pubkey),
+            e.added_at,
+        );
+        entry.status = match e.status {
+            1 => CscaStatus::Revoked,
+            _ => CscaStatus::Active,
+        };
+        s.put_csca(entry);
+    }
+    if let Some(gov) = &dto.csca_governance {
+        s.set_csca_governance(unhex20(gov));
+    }
     s
 }
 

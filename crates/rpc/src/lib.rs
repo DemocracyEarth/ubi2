@@ -49,15 +49,19 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
-    fee_for_gas, finalize_registration, fund_contract as lc_fund_contract, gas_for_deploy,
-    invoke_contract as lc_invoke_contract, open_stream, request_verification, stop_stream,
-    submit_effect as lc_submit_effect, submit_verdict, system_challenge as lc_system_challenge,
-    vouch as lc_vouch, Account, Address, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
-    ContractInterpreter, ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle,
-    Juror, LivenessEvidence, MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict,
-    GAS_CONTRACT, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM,
-    GAS_TRANSFER,
+    apply_transfer, challenge as lc_challenge, charge_fee, csca_registry_root,
+    deploy_contract as lc_deploy_contract, fee_for_gas, finalize_registration,
+    fund_contract as lc_fund_contract, gas_for_deploy, invoke_contract as lc_invoke_contract,
+    open_stream, register_csca as lc_register_csca, request_verification,
+    revoke_csca as lc_revoke_csca, stop_stream, submit_effect as lc_submit_effect, submit_verdict,
+    submit_zk_passport_proof as lc_submit_zk_passport_proof,
+    system_challenge as lc_system_challenge, vouch as lc_vouch, Account, Address, Assurance,
+    CanonicalEffect, Case, CaseKind, CaseStatus, Confidence, ContractInterpreter, ContractStatus,
+    CscaEntry, CscaStatus, ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle, Juror,
+    LivenessEvidence, MemState, MockZkVerifier, Op, PromptContract, State, Stream, StreamStatus,
+    Verdict, ZkAttrType, ZkPassportVerifier, ZkProofSubmission, GAS_CONTRACT, GAS_CSCA_GOV,
+    GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM, GAS_TRANSFER,
+    GAS_ZKPOH,
 };
 
 pub mod persist;
@@ -70,8 +74,9 @@ use streams::{
 
 pub mod humanity;
 use humanity::{
-    addr_topic as h_addr_topic, derive_liveness, parse_calldata as parse_humanity_calldata,
-    u64_topic as h_u64_topic, CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
+    addr_topic as h_addr_topic, derive_liveness, over18_attribute_type,
+    parse_calldata as parse_humanity_calldata, u64_topic as h_u64_topic,
+    CalldataError as HumanityCalldataError, HumanityOp, HUMANITY_HUB,
 };
 
 pub mod poh_nft;
@@ -121,6 +126,10 @@ fn gas_for_kind(kind: &PendingKind) -> u64 {
         PendingKind::Vouch { .. }
         | PendingKind::Challenge { .. }
         | PendingKind::SubmitVerdict { .. } => GAS_HUMANITY,
+        // M6: the ZK-passport proof runs a pairing check — the heaviest HumanityHub op (NOT fee-exempt,
+        // §4.1). The CSCA-governance ops pay the humanity tier (governance-gated, small surface).
+        PendingKind::SubmitZkPassportProof { .. } => GAS_ZKPOH,
+        PendingKind::RegisterCsca { .. } | PendingKind::RevokeCsca { .. } => GAS_CSCA_GOV,
         // Size-metered: base contract gas + per-byte surcharge on the stored UTF-8 text (the text is
         // already capped at submit, so the length is bounded; storing more costs more).
         PendingKind::DeployContract { text, .. } => gas_for_deploy(text.len()),
@@ -154,6 +163,10 @@ fn gas_for_call_obj(call: &Value) -> u64 {
             // estimate is 0 and the new human can submit. Other HumanityHub ops pay the humanity tier.
             match parse_humanity_calldata(&data) {
                 Ok(HumanityOp::RequestVerification { .. }) => GAS_ONBOARD,
+                Ok(HumanityOp::SubmitZkPassportProof { .. }) => GAS_ZKPOH,
+                Ok(HumanityOp::RegisterCsca { .. }) | Ok(HumanityOp::RevokeCsca { .. }) => {
+                    GAS_CSCA_GOV
+                }
                 _ => GAS_HUMANITY,
             }
         }
@@ -494,6 +507,26 @@ enum PendingKind {
         verdict: ubi2_runtime::CanonicalVerdict,
     },
 
+    // ---- M6: ZK-passport ops to HumanityHub ----
+    /// `submitZkPassportProof(...)`: verify a ZK-passport proof for the signer (§4.1). The submitter
+    /// address is the tx sender (NOT in calldata), so it cannot be forged (§4.3).
+    SubmitZkPassportProof {
+        proof: Vec<u8>,
+        nullifier: [u8; 32],
+        attribute_commitments: [[u8; 32]; 3],
+        csca_registry_root: [u8; 32],
+        scheme_tag: u8,
+        now_epoch: u64,
+    },
+    /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3).
+    RegisterCsca {
+        country_code: [u8; 3],
+        key_id: [u8; 32],
+        pubkey: Vec<u8>,
+    },
+    /// `revokeCsca(keyId)`: governance-gated CSCA revoke (§7.3/§7.4).
+    RevokeCsca { key_id: [u8; 32] },
+
     // ---- M4: prompt-contract ops to ContractHub ----
     /// `deployContract(text, parties)`: register an `Active` contract for the signer. Carries the
     /// **full** plain-language text (stored on-chain); the node derives `text_ref = keccak256(utf8)`.
@@ -681,6 +714,33 @@ fn verdict_submitted_topic() -> B256 {
 /// `HumanStatus` changes as a lifecycle effect (e.g. Pending→Verified, *→Revoked). `status` in `data`.
 fn status_changed_topic() -> B256 {
     keccak256(b"StatusChanged(address,uint8)")
+}
+/// Topic for `ZkPassportVerified(address indexed subject, uint8 assurance)` — emitted on a successful
+/// `submitZkPassportProof` (spec §4.2 step 5). `assurance` byte (1=ENH,2=DUAL) is in `data`. Carries NO
+/// PII (only the level — I6). `nullifier`/commitments are NEVER logged.
+fn zk_verified_topic() -> B256 {
+    keccak256(b"ZkPassportVerified(address,uint8)")
+}
+/// Topic for `CscaRegistered(bytes32 indexed keyId, bytes3 countryCode)` — emitted on `registerCsca`.
+fn csca_registered_topic() -> B256 {
+    keccak256(b"CscaRegistered(bytes32,bytes3)")
+}
+/// Topic for `CscaRevoked(bytes32 indexed keyId)` — emitted on `revokeCsca`.
+fn csca_revoked_topic() -> B256 {
+    keccak256(b"CscaRevoked(bytes32)")
+}
+
+/// A `ZkPassportVerified(subject, assurance)` log for a successful ZK-passport proof (§4.2 step 5). The
+/// `data` is the 1-byte assurance level (ENH/DUAL); no PII.
+fn zk_verified_log(subject: &Address, assurance: Assurance) -> TxLog {
+    TxLog {
+        address: HUMANITY_HUB,
+        topics: vec![
+            zk_verified_topic(),
+            h_addr_topic(&AlloyAddr::from(*subject)),
+        ],
+        data: u8_data(assurance.tag()),
+    }
 }
 
 /// Encode a [`CaseKind`] as the 1-byte ABI value used in the `CaseOpened` log `data` (0/1).
@@ -1109,6 +1169,12 @@ pub struct Chain {
     /// config + the localhost-only `ubi_setOracleConfig`) swaps a provider-backed impl behind the same
     /// runtime traits at runtime. See [`oracle_admin`].
     oracle_admin: Arc<OracleAdmin>,
+    /// M6 — the ZK-passport verifier seam (spec §6.1, ADR-0005 D2). The deterministic
+    /// [`MockZkVerifier`] ships on the consensus path by default (exactly as M3 ships `MockOracle`); a
+    /// node wires the real `ubi2_zkpoh::Groth16Verifier` (or, for the EC-7 injected-disagreement test, a
+    /// stubbed mock) via [`Chain::with_verifier`]. Read once per block in `execute_block` so the verifier
+    /// is fixed for the duration of a block (re-execution consensus, §5.4).
+    verifier: Arc<dyn ZkPassportVerifier>,
     /// Browser-CSRF / DNS-rebinding policy for the admin methods (`Origin` allowlist + `Host` pinning).
     /// The loopback TCP-peer gate is always on; this scopes which browser origins may reach the admin
     /// surface (default: the local wallet at `http://localhost:3000`). See [`oracle_admin::AdminAccess`].
@@ -1277,6 +1343,10 @@ impl Chain {
             // verifies end-to-end in CI (I5). The node may swap a provider-backed impl at runtime via
             // the localhost-only admin RPC (`with_oracle_admin`).
             oracle_admin: Arc::new(OracleAdmin::mock_only()),
+            // M6 devnet default: the deterministic MockZkVerifier (a confident accept unless a
+            // per-(nullifier, submitter) override is scripted), so the ZK lifecycle verifies end-to-end
+            // in CI (I5). The node wires the real `Groth16Verifier` via `with_verifier`.
+            verifier: Arc::new(MockZkVerifier::default()),
             admin_access: Arc::new(AdminAccess::default()),
             proposer_key: None,
             net_status: Arc::new(Mutex::new(NetStatus {
@@ -1517,6 +1587,86 @@ impl Chain {
         &self.oracle_admin
     }
 
+    /// M6 — install the ZK-passport verifier (spec §6.1). The node wires the real
+    /// `ubi2_zkpoh::Groth16Verifier` (genesis-pinned VK); a test wires a `MockZkVerifier` or — for the
+    /// EC-7 injected-disagreement leg — a stubbed mock that returns the wrong boolean. Absent a call, the
+    /// chain runs the deterministic `MockZkVerifier::default()` (a confident accept), exactly as the
+    /// oracle defaults to `MockOracle`.
+    pub fn with_verifier(mut self, verifier: Arc<dyn ZkPassportVerifier>) -> Self {
+        self.verifier = verifier;
+        self
+    }
+
+    /// Set the CSCA governance authority (spec §7.3). The node seeds a reserved governance address at
+    /// genesis so `registerCsca`/`revokeCsca` are gated (AC-10). Concrete wiring point, like
+    /// [`Chain::register_juror`].
+    pub fn set_csca_governance(&self, authority: &Address) {
+        self.inner
+            .lock()
+            .unwrap()
+            .state
+            .set_csca_governance(*authority);
+    }
+
+    /// Seed a genesis CSCA trust anchor (the curated static set, spec §7.3). Called by the node at
+    /// genesis; `Active` from genesis (the next proof can build against the resulting root).
+    pub fn seed_csca(&self, country_code: [u8; 3], key_id: [u8; 32], pubkey: Vec<u8>) {
+        ubi2_runtime::seed_csca(
+            &mut self.inner.lock().unwrap().state,
+            country_code,
+            key_id,
+            pubkey,
+        );
+    }
+
+    /// The current live CSCA registry root (over the sorted Active set, §7.2). Pure read — a client
+    /// fetches this to build a proof against the live trust set.
+    pub fn csca_registry_root(&self) -> [u8; 32] {
+        let g = self.inner.lock().unwrap();
+        csca_registry_root(&g.state.csca_entries())
+    }
+
+    /// All CSCA entries, sorted by `key_id` (Active + Revoked). Pure read for `ubi_getCscaRegistry`.
+    pub fn csca_entries(&self) -> Vec<CscaEntry> {
+        self.inner.lock().unwrap().state.csca_entries()
+    }
+
+    /// The three Pedersen attribute commitments stored for `addr` (`[age, nationality, expiry]`), or
+    /// `None` for an `Std`-only / unverified human. Opaque (I6). Pure read for `ubi_getAttributes`.
+    pub fn attribute_commitments(&self, addr: &Address) -> Option<[[u8; 32]; 3]> {
+        self.inner.lock().unwrap().state.attribute_commitments(addr)
+    }
+
+    /// Is `nullifier` already spent? Pure read for `ubi_isNullifierUsed` (a client checks before proving).
+    pub fn nullifier_used(&self, nullifier: &[u8; 32]) -> bool {
+        self.inner.lock().unwrap().state.nullifier_used(nullifier)
+    }
+
+    /// M6 Stage D — verify an attribute-opening proof against `subject`'s stored `attr_type` commitment
+    /// (spec §4.4, EC-9). Returns `true` iff `attr_proof` is a valid opening proving the statement (e.g.
+    /// over-18) WITHOUT revealing the underlying value. Fail-closed: `false` if the subject has no stored
+    /// commitment (an STD-only / unverified human) or the proof does not verify. Pure read (no mutation):
+    /// the `eth_call` surface (`verifyAttribute`) calls this.
+    pub fn verify_attribute(
+        &self,
+        subject: &Address,
+        attr_type: ZkAttrType,
+        attr_proof: &[u8],
+    ) -> bool {
+        let commitments = {
+            let g = self.inner.lock().unwrap();
+            g.state.attribute_commitments(subject)
+        };
+        // The Stage-D `over18` verifier opens `attr_commit[0]` (the age-threshold commitment, §3.4 idx 0).
+        let commitment = match (attr_type, commitments) {
+            (ZkAttrType::Over18, Some(c)) => c[0],
+            // No stored commitment ⇒ fail closed (the feature is simply unavailable for this subject).
+            (_, None) => return false,
+        };
+        self.verifier
+            .verify_attribute(attr_type, &commitment, attr_proof)
+    }
+
     /// Insert/replace an account in genesis state (used by the node to seed the dev account).
     pub fn seed_account(&self, account: Account) {
         self.inner.lock().unwrap().state.put(account);
@@ -1590,6 +1740,10 @@ impl Chain {
         // per block makes a mid-flight `setOracleConfig` swap atomic at the block boundary.
         let oracle = self.oracle_admin.oracle();
         let interpreter = self.oracle_admin.interpreter();
+        // M6: the ZK-passport verifier is read once per block too (re-execution consensus, §5.4) — the
+        // proposer and every follower run the SAME verifier over the SAME ordered txs, so honest nodes
+        // reach a byte-identical state_root. A node whose verifier disagrees diverges and is out-voted.
+        let verifier = self.verifier.clone();
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
@@ -1800,6 +1954,105 @@ impl Chain {
                                 }
                             }
                             logs
+                        })
+                }
+
+                // ---- M6: ZK-passport ops ----
+                PendingKind::SubmitZkPassportProof {
+                    proof,
+                    nullifier,
+                    attribute_commitments,
+                    csca_registry_root,
+                    scheme_tag,
+                    now_epoch,
+                } => {
+                    // Snapshot the subject's pre-state status so the PoH mint / StatusChanged log fires
+                    // only when the proof actually crosses Pending/Unverified → Verified.
+                    let subject = p.from.into_array();
+                    let pre_status = g.state.get_human(&subject).map(|h| h.status);
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            // The submitter address is the tx sender (NOT calldata) — bound into the
+                            // public-input vector the proof commits to (§4.3). `now_epoch` must equal the
+                            // block timestamp (I2). The runtime verifies via the per-block `verifier`
+                            // (the deterministic mock on the consensus path; the real Groth16 verifier
+                            // when wired) and re-derives + binds the CSCA root (§4.2). Every follower
+                            // re-runs this same verifier ⇒ byte-identical state_root (re-execution
+                            // consensus, §5.4).
+                            let submission = ZkProofSubmission {
+                                proof: proof.clone(),
+                                nullifier: *nullifier,
+                                attribute_commitments: *attribute_commitments,
+                                csca_registry_root: *csca_registry_root,
+                                scheme_tag: *scheme_tag,
+                                now_epoch: *now_epoch,
+                            };
+                            lc_submit_zk_passport_proof(
+                                &mut g.state,
+                                &*verifier,
+                                &subject,
+                                &submission,
+                                timestamp,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .map(|assurance| {
+                            // Emit the assurance-level receipt (no PII) + a StatusChanged/PoH-mint when
+                            // the human became Verified (a new ENH user, or a Pending one finalized). An
+                            // STD→DUAL upgrade does NOT cross the token boundary (already Verified), so it
+                            // mints nothing — only the ZkPassportVerified level log fires.
+                            let mut logs = vec![zk_verified_log(&subject, assurance)];
+                            if pre_status != Some(HumanStatus::Verified) {
+                                logs.extend(humanity_status_logs(
+                                    &subject,
+                                    pre_status,
+                                    HumanStatus::Verified,
+                                ));
+                            }
+                            logs
+                        })
+                }
+
+                PendingKind::RegisterCsca {
+                    country_code,
+                    key_id,
+                    pubkey,
+                } => consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                    .and_then(|()| {
+                        lc_register_csca(
+                            &mut g.state,
+                            &p.from.into_array(),
+                            *country_code,
+                            *key_id,
+                            pubkey.clone(),
+                            number,
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                    .map(|()| {
+                        vec![TxLog {
+                            address: HUMANITY_HUB,
+                            topics: vec![csca_registered_topic(), B256::from(*key_id)],
+                            data: {
+                                let mut d = [0u8; 32];
+                                d[..3].copy_from_slice(country_code);
+                                d.to_vec()
+                            },
+                        }]
+                    }),
+
+                PendingKind::RevokeCsca { key_id } => {
+                    consume_nonce(&mut g.state, &p.from, p.nonce, timestamp)
+                        .and_then(|()| {
+                            lc_revoke_csca(&mut g.state, &p.from.into_array(), key_id)
+                                .map_err(|e| e.to_string())
+                        })
+                        .map(|()| {
+                            vec![TxLog {
+                                address: HUMANITY_HUB,
+                                topics: vec![csca_revoked_topic(), B256::from(*key_id)],
+                                data: Vec::new(),
+                            }]
                         })
                 }
 
@@ -2913,6 +3166,31 @@ fn decode_pending_tx(chain_id: u64, raw: &[u8]) -> Result<PendingTx, ErrorObject
             Ok(HumanityOp::SubmitVerdict { case_id, verdict }) => {
                 PendingKind::SubmitVerdict { case_id, verdict }
             }
+            Ok(HumanityOp::SubmitZkPassportProof {
+                proof,
+                nullifier,
+                attribute_commitments,
+                csca_registry_root,
+                scheme_tag,
+                now_epoch,
+            }) => PendingKind::SubmitZkPassportProof {
+                proof,
+                nullifier,
+                attribute_commitments,
+                csca_registry_root,
+                scheme_tag,
+                now_epoch,
+            },
+            Ok(HumanityOp::RegisterCsca {
+                country_code,
+                key_id,
+                pubkey,
+            }) => PendingKind::RegisterCsca {
+                country_code,
+                key_id,
+                pubkey,
+            },
+            Ok(HumanityOp::RevokeCsca { key_id }) => PendingKind::RevokeCsca { key_id },
             Err(HumanityCalldataError::UnknownSelector(_)) => {
                 return Err(execution_reverted("unknown HumanityHub selector"));
             }
@@ -3233,8 +3511,28 @@ fn poh_nft_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned>
             verified_at: human.verified_at,
             vouches: human.vouches_in.len(),
             reputation: human.reputation,
+            assurance: human.assurance,
         };
         return Ok(encode_string(&render_poh_token_uri(&card)));
+    }
+    // M6 Stage D — verifyAttribute(subject, attributeType, attrProof) → bool (spec §4.4, EC-9). The
+    // chain never learns the DOB/opening — the verifier returns only the boolean. M6 ships only `over18`;
+    // an unknown attributeType fails closed (`false`), never reverts.
+    if sel == humanity::verifyAttributeCall::SELECTOR {
+        use alloy_sol_types::SolValue;
+        let call = humanity::verifyAttributeCall::abi_decode(data, true)
+            .map_err(|e| invalid_params(format!("bad verifyAttribute args: {e}")))?;
+        // Map the keccak attribute-type tag to the runtime enum. M6 knows only `over18`.
+        let ok = if call.attributeType == over18_attribute_type() {
+            chain.verify_attribute(
+                &call.subject.into_array(),
+                ZkAttrType::Over18,
+                &call.attrProof,
+            )
+        } else {
+            false // unknown attribute type ⇒ fail closed
+        };
+        return Ok(ok.abi_encode());
     }
     // Soulbound mutators (transfer/approve) reach eth_call only if a tool simulates them: revert.
     // (One token per human, non-transferable.)
@@ -3334,7 +3632,8 @@ fn hash_hex(h: &[u8; 32]) -> String {
 }
 
 /// Render a [`Human`] into the `ubi_getHuman` JSON shape. `verified_at` is unix seconds (emission
-/// epoch). Vouchers + commitments are 0x-hex; no PII is ever present (I6).
+/// epoch). Vouchers + commitments are 0x-hex; no PII is ever present (I6). M6: the `assurance` level
+/// (STD/ENH/DUAL) is surfaced additively — existing fields are unchanged (EC-5 / I3).
 fn human_view_json(h: &Human) -> Value {
     json!({
         "address": addr_hex(&h.address),
@@ -3343,6 +3642,19 @@ fn human_view_json(h: &Human) -> Value {
         "liveness_ref": hash_hex(&h.liveness_ref),
         "vouches_in": h.vouches_in.iter().map(addr_hex).collect::<Vec<_>>(),
         "reputation": h.reputation,
+        "assurance": h.assurance.as_str(),
+    })
+}
+
+/// Render a [`CscaEntry`] into the `ubi_getCscaRegistry` JSON shape (spec §9). A CSCA is a sovereign
+/// signing key, not a person — no PII. `pubkey` is raw 0x-hex; `country_code` the ICAO 3-letter code.
+fn csca_entry_json(e: &CscaEntry) -> Value {
+    json!({
+        "country_code": String::from_utf8_lossy(&e.country_code),
+        "key_id": hash_hex(&e.key_id),
+        "pubkey": format!("0x{}", hex::encode(&e.pubkey)),
+        "added_at": e.added_at,
+        "status": match e.status { CscaStatus::Active => "Active", CscaStatus::Revoked => "Revoked" },
     })
 }
 
@@ -3577,6 +3889,9 @@ fn tx_kind_str(tx: &StoredTx) -> &'static str {
             Ok(HumanityOp::Vouch { .. }) => "Vouch",
             Ok(HumanityOp::Challenge { .. }) => "Challenge",
             Ok(HumanityOp::SubmitVerdict { .. }) => "SubmitVerdict",
+            Ok(HumanityOp::SubmitZkPassportProof { .. }) => "SubmitZkPassportProof",
+            Ok(HumanityOp::RegisterCsca { .. }) => "RegisterCsca",
+            Ok(HumanityOp::RevokeCsca { .. }) => "RevokeCsca",
             // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
             _ => "HumanitySystem",
         }
@@ -3699,6 +4014,42 @@ fn decode_call_json(tx: &StoredTx) -> Value {
                     "verdict": verdict_str(verdict.verdict),
                     "confidence": confidence_str(verdict.confidence),
                 },
+            }),
+            Ok(HumanityOp::SubmitZkPassportProof {
+                proof,
+                nullifier,
+                attribute_commitments,
+                csca_registry_root,
+                scheme_tag,
+                now_epoch,
+            }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "submitZkPassportProof",
+                // The proof bytes are opaque; we surface only their length (I6 — no PII; the proof never
+                // contains plaintext). The nullifier + commitments + root are all on-chain commitments.
+                "args": {
+                    "proof_len": proof.len(),
+                    "nullifier": hash_hex(&nullifier),
+                    "attribute_commitments": attribute_commitments.iter().map(hash_hex).collect::<Vec<_>>(),
+                    "csca_registry_root": hash_hex(&csca_registry_root),
+                    "scheme_tag": scheme_tag,
+                    "now_epoch": now_epoch,
+                },
+            }),
+            Ok(HumanityOp::RegisterCsca {
+                country_code,
+                key_id,
+                pubkey,
+            }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "registerCsca",
+                "args": {
+                    "country_code": String::from_utf8_lossy(&country_code),
+                    "key_id": hash_hex(&key_id),
+                    "pubkey_len": pubkey.len(),
+                },
+            }),
+            Ok(HumanityOp::RevokeCsca { key_id }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "revokeCsca",
+                "args": { "key_id": hash_hex(&key_id) },
             }),
             // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
             _ => json!({ "kind": "System", "hub": "HumanityHub", "method": "finalizeSweep" }),
@@ -3935,6 +4286,20 @@ fn tx_result_json(state: &dyn State, tx: &StoredTx) -> Value {
                     });
                 }
                 Value::Null
+            }
+            // A successful ZK proof: report the signer's resulting human status + assurance level (no
+            // PII — only the level — I6).
+            Ok(HumanityOp::SubmitZkPassportProof { .. }) => {
+                let subject = tx.from.into_array();
+                match state.get_human(&subject) {
+                    Some(h) => json!({
+                        "kind": "ZkPassport",
+                        "subject": addr_hex(&subject),
+                        "status": human_status_str(h.status),
+                        "assurance": h.assurance.as_str(),
+                    }),
+                    None => Value::Null,
+                }
             }
             _ => Value::Null,
         }
@@ -4231,6 +4596,61 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             .map(|c| case_view_json(&c))
             .collect();
         Ok::<_, ErrorObjectOwned>(json!(cases))
+    })
+    .unwrap();
+
+    // ---- M6 ZK-passport reads (ubi_*) — spec §9 ----
+
+    // ubi_getAttributes(address) → the three opaque Pedersen commitments {age, nationality, expiry}, or
+    // empty (all-null) for an STD-only / unverified human. Opaque — no preimage (EC-8 / I6).
+    m.register_method("ubi_getAttributes", |params, ctx, _| {
+        let addr = parse_addr_param(&params)?;
+        match ctx.attribute_commitments(&addr) {
+            Some(c) => Ok::<_, ErrorObjectOwned>(json!({
+                "ageCommitment": hash_hex(&c[0]),
+                "nationalityCommitment": hash_hex(&c[1]),
+                "expiryCommitment": hash_hex(&c[2]),
+            })),
+            // No commitments (STD-only / unverified) — return nulls so the shape is stable.
+            None => Ok(json!({
+                "ageCommitment": Value::Null,
+                "nationalityCommitment": Value::Null,
+                "expiryCommitment": Value::Null,
+            })),
+        }
+    })
+    .unwrap();
+
+    // ubi_isNullifierUsed(nullifier) → bool. A client checks this before generating a proof (pure read).
+    m.register_method("ubi_isNullifierUsed", |params, ctx, _| {
+        let seq: Vec<Value> = params
+            .parse()
+            .map_err(|_| invalid_params("expected [nullifier]"))?;
+        let n = seq
+            .first()
+            .and_then(|v| v.as_str())
+            .and_then(decode_hex)
+            .filter(|b| b.len() == 32)
+            .ok_or_else(|| invalid_params("nullifier must be 32-byte 0x-hex"))?;
+        let mut nullifier = [0u8; 32];
+        nullifier.copy_from_slice(&n);
+        Ok::<_, ErrorObjectOwned>(json!(ctx.nullifier_used(&nullifier)))
+    })
+    .unwrap();
+
+    // ubi_getCscaRegistry() → the sorted Active CSCA entries + the current root (so a client can build a
+    // proof against the live trust set). Revoked entries are excluded from the listing.
+    m.register_method("ubi_getCscaRegistry", |_, ctx, _| {
+        let entries: Vec<Value> = ctx
+            .csca_entries()
+            .iter()
+            .filter(|e| e.status == CscaStatus::Active)
+            .map(csca_entry_json)
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!({
+            "root": hash_hex(&ctx.csca_registry_root()),
+            "entries": entries,
+        }))
     })
     .unwrap();
 

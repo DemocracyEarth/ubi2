@@ -215,8 +215,10 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
     let mut h = Hasher256::new();
 
     // A short domain header pins the encoding version, so a later format change is a new root (never a
-    // silent reinterpretation of old bytes).
-    h.bytes(b"ubi2/state-root/1");
+    // silent reinterpretation of old bytes). Bumped to `/2` for the M6 additions: the `Human.assurance`
+    // tag (folded in the humans section) + the new nullifier-registry, attribute-store, and CSCA-registry
+    // sections (spec 06 §5.3 / ADR-0005).
+    h.bytes(b"ubi2/state-root/2");
 
     // 1. Accounts — sorted by address.
     let mut accounts = state.accounts();
@@ -252,6 +254,10 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
             h.write(v);
         }
         h.i64(hu.reputation);
+        // M6 §5.3: fold the 1-byte assurance tag (STD=0/ENH=1/DUAL=2) into the humans section so an
+        // assurance change moves the root. Additive: an existing `Std` (default) record's bytes change,
+        // which is exactly why the version string is bumped to `/2`.
+        h.u8(hu.assurance.tag());
     }
 
     // 4. Vouch edges — `State::vouch_edges()` already returns sorted-by-`(voucher, vouchee)`.
@@ -321,6 +327,44 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
         h.write(&j.address);
         h.u128(j.stake);
         h.u8(j.active as u8);
+    }
+
+    // 7a. (M6 §5.3) Nullifier registry — `State::nullifiers()` returns sorted ascending by the 32-byte
+    //     value. A spent nullifier is a permanent on-chain fact; committing it makes one-passport-one-human
+    //     part of the agreed state (a second proof reusing it diverges identically on every node).
+    let nullifiers = state.nullifiers();
+    h.u8(0x0b);
+    h.u64(nullifiers.len() as u64);
+    for n in &nullifiers {
+        h.write(n);
+    }
+
+    // 7b. (M6 §5.3) Attribute store — sorted by address; each entry = address ‖ the three 32-byte
+    //     Pedersen commitments (opaque — I6). `State::attribute_store()` returns sorted-by-address.
+    let attrs = state.attribute_store();
+    h.u8(0x0c);
+    h.u64(attrs.len() as u64);
+    for (addr, commitments) in &attrs {
+        h.write(addr);
+        for c in commitments {
+            h.write(c);
+        }
+    }
+
+    // 7c. (M6 §5.3) CSCA trust-anchor registry — `State::csca_entries()` returns sorted-by-`key_id`
+    //     (Active AND Revoked — a revoke is a state change the root must reflect, §7.4). Committing the
+    //     full set means all nodes agree on the trust anchors to the bit; the `csca_registry_root`
+    //     (over the Active subset) is itself bound as a proof public input, so it need not be a separate
+    //     section — the entries fully determine it.
+    let csca = state.csca_entries();
+    h.u8(0x0d);
+    h.u64(csca.len() as u64);
+    for e in &csca {
+        h.write(&e.country_code);
+        h.write(&e.key_id);
+        h.bytes(&e.pubkey);
+        h.u64(e.added_at);
+        h.u8(e.status.tag());
     }
 
     // 8. Contracts — `State::contracts()` already returns sorted-by-id. `vars` is a HashMap; commit it

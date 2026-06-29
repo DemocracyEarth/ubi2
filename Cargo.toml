@@ -6,6 +6,7 @@ members = [
     "crates/node",
     "crates/oracle",
     "crates/network",
+    "crates/zkpoh",
 ]
 
 [workspace.package]

@@ -54,11 +54,45 @@ sol! {
         /// A juror's signed canonical verdict on `caseId`. `verdict`: 0=Human,1=Sybil,2=Uncertain.
         /// `confidence`: 0=Low,1=Med,2=High. (`reasons_hash` is off-chain/informational — I1.)
         function submitVerdict(uint256 caseId, uint8 verdict, uint8 confidence) external;
+
+        // ---- M6: ZK-passport proof of humanity (spec 06 §4.1/§7.3) ----
+
+        /// Submit a ZK-passport proof for the tx signer (spec §4.1). `submitter_address` is NOT in
+        /// calldata — it is `ecrecover(tx.sig)` (the tx sender), so it cannot be forged (§4.3). `nowEpoch`
+        /// is the not-expired reference epoch the proof used; the runtime validates it == `block.timestamp`.
+        function submitZkPassportProof(
+            bytes proof,
+            bytes32 nullifier,
+            bytes32[3] attributeCommitments,
+            bytes32 cscaRegistryRoot,
+            uint8 schemeTag,
+            uint64 nowEpoch
+        ) external;
+        /// Register a CSCA trust anchor (governance-gated — spec §7.3, EC-10). `keyId` is the unique key
+        /// fingerprint; `pubkey` the raw CSCA public-key bytes; `countryCode` the ICAO 3-letter code.
+        function registerCsca(bytes3 countryCode, bytes32 keyId, bytes pubkey) external;
+        /// Revoke a CSCA trust anchor (governance-gated — spec §7.3/§7.4).
+        function revokeCsca(bytes32 keyId) external;
+
+        /// Stage-D attribute verifier (read-only, `eth_call` — spec §4.4). Returns `true` iff `attrProof`
+        /// is a valid Pedersen-opening + range proof that `subject`'s stored `attributeType` commitment
+        /// satisfies the statement (e.g. over-18), WITHOUT revealing the DOB. `attributeType` is a keccak
+        /// tag, e.g. `keccak256("over18")`. M6 ships only `over18`.
+        function verifyAttribute(address subject, bytes32 attributeType, bytes attrProof) external view returns (bool);
     }
 }
 
 /// Re-export the generated call types so `lib.rs` can match on selectors without re-deriving them.
-pub use IHumanityHub::{challengeCall, requestVerificationCall, submitVerdictCall, vouchCall};
+pub use IHumanityHub::{
+    challengeCall, registerCscaCall, requestVerificationCall, revokeCscaCall, submitVerdictCall,
+    submitZkPassportProofCall, verifyAttributeCall, vouchCall,
+};
+
+/// The keccak tag for the `over18` attribute (`keccak256("over18")`) — the `verifyAttribute`
+/// `attributeType` selector M6 ships. Computed once via a const-friendly helper at the call site.
+pub fn over18_attribute_type() -> alloy_primitives::B256 {
+    alloy_primitives::keccak256(b"over18")
+}
 
 /// A decoded HumanityHub *write* op, parsed from a tx's calldata. The signer (recovered from the tx)
 /// is supplied separately as `from`/`caller` by the dispatcher in `lib.rs`.
@@ -78,6 +112,26 @@ pub enum HumanityOp {
         case_id: u64,
         verdict: CanonicalVerdict,
     },
+
+    // ---- M6: ZK-passport ops ----
+    /// `submitZkPassportProof(...)` — a ZK-passport proof for the tx signer (§4.1). The submitter
+    /// address is the tx sender (NOT in calldata) — supplied separately by the dispatcher (§4.3).
+    SubmitZkPassportProof {
+        proof: Vec<u8>,
+        nullifier: Hash,
+        attribute_commitments: [Hash; 3],
+        csca_registry_root: Hash,
+        scheme_tag: u8,
+        now_epoch: u64,
+    },
+    /// `registerCsca(countryCode, keyId, pubkey)` — governance-gated CSCA add (§7.3).
+    RegisterCsca {
+        country_code: [u8; 3],
+        key_id: Hash,
+        pubkey: Vec<u8>,
+    },
+    /// `revokeCsca(keyId)` — governance-gated CSCA revoke (§7.3/§7.4).
+    RevokeCsca { key_id: Hash },
 }
 
 /// Why a HumanityHub calldata blob could not be turned into a [`HumanityOp`].
@@ -93,6 +147,8 @@ pub enum CalldataError {
     Overflow(&'static str),
     /// `submitVerdict` carried a `verdict`/`confidence` byte outside the canonical enum range.
     BadVerdict(&'static str),
+    /// A `submitZkPassportProof` proof blob was outside the accepted size bounds (spec §4.2 step 1).
+    BadProofLength(usize),
 }
 
 impl std::fmt::Display for CalldataError {
@@ -106,9 +162,18 @@ impl std::fmt::Display for CalldataError {
             CalldataError::BadArgs(e) => write!(f, "bad HumanityHub calldata args: {e}"),
             CalldataError::Overflow(which) => write!(f, "{which} exceeds the runtime range"),
             CalldataError::BadVerdict(which) => write!(f, "{which} is out of canonical enum range"),
+            CalldataError::BadProofLength(n) => {
+                write!(f, "ZK proof length {n} is outside the accepted bounds")
+            }
         }
     }
 }
+
+/// Maximum accepted `submitZkPassportProof` proof-blob size (spec §4.2 step 1 bound-check). A Groth16
+/// proof is ~200 bytes (3 compressed BN254 group elements); we accept a generous ceiling so a future
+/// uncompressed/padded encoding still fits, while rejecting an unbounded blob at decode (DoS guard,
+/// §11). The verifier itself fails closed on any malformed bytes within this bound.
+pub const MAX_ZK_PROOF_BYTES: usize = 1024;
 
 /// Map the `uint8 verdict` ABI byte to the canonical [`Verdict`] enum (0=Human,1=Sybil,2=Uncertain).
 fn verdict_from_u8(b: u8) -> Result<Verdict, CalldataError> {
@@ -174,6 +239,46 @@ pub fn parse_calldata(data: &[u8]) -> Result<HumanityOp, CalldataError> {
                 verdict: CanonicalVerdict::new(verdict, confidence),
             })
         }
+        s if s == submitZkPassportProofCall::SELECTOR => {
+            let call = submitZkPassportProofCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            let proof = call.proof.to_vec();
+            // Bound-check the proof length at decode (spec §4.2 step 1) — an unbounded blob never enters
+            // the mempool / reaches the pairing check (DoS guard).
+            if proof.is_empty() || proof.len() > MAX_ZK_PROOF_BYTES {
+                return Err(CalldataError::BadProofLength(proof.len()));
+            }
+            // `bytes32[3]` decodes to a fixed array of `B256`; copy into `[Hash; 3]`.
+            let attribute_commitments = [
+                call.attributeCommitments[0].0,
+                call.attributeCommitments[1].0,
+                call.attributeCommitments[2].0,
+            ];
+            Ok(HumanityOp::SubmitZkPassportProof {
+                proof,
+                nullifier: call.nullifier.0,
+                attribute_commitments,
+                csca_registry_root: call.cscaRegistryRoot.0,
+                scheme_tag: call.schemeTag,
+                now_epoch: call.nowEpoch,
+            })
+        }
+        s if s == registerCscaCall::SELECTOR => {
+            let call = registerCscaCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            Ok(HumanityOp::RegisterCsca {
+                country_code: call.countryCode.0,
+                key_id: call.keyId.0,
+                pubkey: call.pubkey.to_vec(),
+            })
+        }
+        s if s == revokeCscaCall::SELECTOR => {
+            let call = revokeCscaCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            Ok(HumanityOp::RevokeCsca {
+                key_id: call.keyId.0,
+            })
+        }
         other => Err(CalldataError::UnknownSelector(other)),
     }
 }
@@ -232,6 +337,96 @@ mod tests {
         assert_eq!(
             &submitVerdictCall::SELECTOR,
             &keccak256(b"submitVerdict(uint256,uint8,uint8)")[..4]
+        );
+        assert_eq!(
+            &submitZkPassportProofCall::SELECTOR,
+            &keccak256(b"submitZkPassportProof(bytes,bytes32,bytes32[3],bytes32,uint8,uint64)")
+                [..4]
+        );
+        assert_eq!(
+            &registerCscaCall::SELECTOR,
+            &keccak256(b"registerCsca(bytes3,bytes32,bytes)")[..4]
+        );
+        assert_eq!(
+            &revokeCscaCall::SELECTOR,
+            &keccak256(b"revokeCsca(bytes32)")[..4]
+        );
+    }
+
+    #[test]
+    fn parse_submit_zk_passport_proof_roundtrips() {
+        use alloy_primitives::{Bytes, FixedBytes};
+        let proof = Bytes::from(vec![0xAB; 192]);
+        let nullifier: Hash = [0x07; 32];
+        let attrs = [
+            FixedBytes::<32>::from([0x11; 32]),
+            FixedBytes::<32>::from([0x22; 32]),
+            FixedBytes::<32>::from([0x33; 32]),
+        ];
+        let root: Hash = [0xC5; 32];
+        let data = submitZkPassportProofCall {
+            proof: proof.clone(),
+            nullifier: nullifier.into(),
+            attributeCommitments: attrs,
+            cscaRegistryRoot: root.into(),
+            schemeTag: 0,
+            nowEpoch: 1_700_000_000,
+        }
+        .abi_encode();
+        assert_eq!(
+            parse_calldata(&data).unwrap(),
+            HumanityOp::SubmitZkPassportProof {
+                proof: vec![0xAB; 192],
+                nullifier,
+                attribute_commitments: [[0x11; 32], [0x22; 32], [0x33; 32]],
+                csca_registry_root: root,
+                scheme_tag: 0,
+                now_epoch: 1_700_000_000,
+            }
+        );
+
+        // An over-long proof blob is rejected at decode (bound-check, §4.2 step 1).
+        let big = submitZkPassportProofCall {
+            proof: Bytes::from(vec![0u8; MAX_ZK_PROOF_BYTES + 1]),
+            nullifier: nullifier.into(),
+            attributeCommitments: attrs,
+            cscaRegistryRoot: root.into(),
+            schemeTag: 0,
+            nowEpoch: 0,
+        }
+        .abi_encode();
+        assert!(matches!(
+            parse_calldata(&big).unwrap_err(),
+            CalldataError::BadProofLength(_)
+        ));
+    }
+
+    #[test]
+    fn parse_csca_governance_ops() {
+        use alloy_primitives::{Bytes, FixedBytes};
+        let key_id: Hash = [0xD1; 32];
+        let data = registerCscaCall {
+            countryCode: FixedBytes::<3>::from([b'U', b'S', b'A']),
+            keyId: key_id.into(),
+            pubkey: Bytes::from(vec![9, 9, 9]),
+        }
+        .abi_encode();
+        assert_eq!(
+            parse_calldata(&data).unwrap(),
+            HumanityOp::RegisterCsca {
+                country_code: [b'U', b'S', b'A'],
+                key_id,
+                pubkey: vec![9, 9, 9],
+            }
+        );
+
+        let data = revokeCscaCall {
+            keyId: key_id.into(),
+        }
+        .abi_encode();
+        assert_eq!(
+            parse_calldata(&data).unwrap(),
+            HumanityOp::RevokeCsca { key_id }
         );
     }
 

@@ -14,6 +14,7 @@
 //! The AI oracle implementation (M3-T3) and the RPC wiring (M3-T4) build against the trait + types
 //! exported here; the [`MockOracle`] lets the whole lifecycle run in CI with no model/network calls.
 
+use crate::zkpoh::Assurance;
 use crate::Address;
 use std::collections::HashMap;
 
@@ -268,10 +269,17 @@ pub struct Human {
     pub vouches_in: Vec<Address>,
     /// Voucher reputation; slashed for vouching a proven sybil. `i64` (may go negative).
     pub reputation: i64,
+    /// M6: the proof-of-humanity assurance level (spec §5.1). **Additive metadata that NEVER gates UBI
+    /// accrual** (the inclusion constraint, structurally — no code path lets `assurance` affect
+    /// [`balance()`](crate::State::balance)). Defaults to [`Assurance::Std`] for every existing record
+    /// (§5.6 migration): genesis-seeded + all M3 humans are `Std`, untouched. A ZK-passport proof sets
+    /// it to `Enh` (new ZK-only user) or `Dual` (an `Std` upgrader). `Std` humans are first-class.
+    pub assurance: Assurance,
 }
 
 impl Human {
-    /// A fresh `Pending` registration with the given liveness commitment.
+    /// A fresh `Pending` registration with the given liveness commitment. Assurance defaults to `Std`
+    /// (the M3 vouching path); a later ZK proof may raise it (§5.2).
     pub fn pending(address: Address, liveness_ref: Hash) -> Self {
         Self {
             address,
@@ -280,6 +288,7 @@ impl Human {
             liveness_ref,
             vouches_in: Vec::new(),
             reputation: 0,
+            assurance: Assurance::Std,
         }
     }
 }

@@ -655,6 +655,256 @@ pub fn seed_verified_human(state: &mut dyn State, addr: &Address, verified_at: u
         liveness_ref: [0u8; 32],
         vouches_in: Vec::new(),
         reputation: 0,
+        // M6 §5.6: genesis-seeded humans are `Std` (the additive-field migration default). No
+        // re-verification; a later ZK proof can upgrade to `Dual`.
+        assurance: crate::zkpoh::Assurance::Std,
     });
     sync_account_verified(state, addr, true, verified_at);
+}
+
+// =============================================================================================
+// M6 — ZK-passport proof of humanity (spec 06 §4.2/§5.2, ADR-0005). Additive: every M3 transition
+// above is UNTOUCHED. This is the ONLY new lifecycle entry point.
+// =============================================================================================
+
+use crate::zkpoh::{
+    csca_registry_root, Assurance, CscaEntry, CscaStatus, ZkPassportVerifier, ZkPublicInputs,
+    NUM_ATTRIBUTE_COMMITMENTS, SCHEME_TAG_PASSPORT,
+};
+
+/// Why a `submitZkPassportProof` op was rejected (spec §4.2; AC-2/3, AC-F1…F6/F9). Deterministic so two
+/// nodes reject identically (I1/I4). Every variant is a clean fail-closed abort — **no partial state**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZkPohError {
+    /// The `scheme_tag` is not a known document scheme (spec §4.2 step 1 bound-check).
+    UnknownScheme(u8),
+    /// `submitter_address` in the public inputs ≠ the tx sender (`ecrecover`) — anti-replay (F-4).
+    SubmitterMismatch,
+    /// `now_epoch` in the public inputs ≠ the block timestamp (I2 — the only clock execution sees).
+    StaleNowEpoch { got: u64, expected: u64 },
+    /// `cscaRegistryRoot` ∉ the live CSCA registry (untrusted/stale trust anchor — EC-3, F-2).
+    UntrustedCscaRoot,
+    /// The `nullifier` is already spent (one-passport-one-human; cheap pre-check before pairing — F-5).
+    NullifierAlreadyUsed,
+    /// The SNARK verifier returned `false` (tampered/forged/expired proof — F-1/F-3).
+    InvalidProof,
+    /// The subject is already `Enh`/`Dual` — a re-submission is idempotently rejected (F-9).
+    AlreadyEnhanced(Assurance),
+    /// The subject is `Revoked` — a revoked human cannot re-bootstrap via ZK in M6 (fail-closed).
+    SubjectRevoked,
+}
+
+impl std::fmt::Display for ZkPohError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ZkPohError::*;
+        match self {
+            UnknownScheme(t) => write!(f, "unknown passport scheme tag {t}"),
+            SubmitterMismatch => write!(f, "submitter address does not match the tx sender"),
+            StaleNowEpoch { got, expected } => {
+                write!(f, "nowEpoch {got} != block timestamp {expected}")
+            }
+            UntrustedCscaRoot => write!(f, "cscaRegistryRoot is not the live registry root"),
+            NullifierAlreadyUsed => write!(f, "nullifier already used (one passport, one human)"),
+            InvalidProof => write!(f, "ZK proof verification failed"),
+            AlreadyEnhanced(a) => write!(f, "human already ZK-enhanced ({})", a.as_str()),
+            SubjectRevoked => write!(f, "subject is revoked"),
+        }
+    }
+}
+
+impl std::error::Error for ZkPohError {}
+
+/// The decoded `submitZkPassportProof` calldata the runtime hands the lifecycle (spec §4.1). The
+/// `submitter_address` is NOT carried here — it is the tx sender, supplied separately (`subject`) so it
+/// cannot be forged (§4.3). `now_epoch` is the block timestamp the dispatcher passes as `now`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZkProofSubmission {
+    /// The ~200-byte Groth16 proof (canonical-decoded by the verifier; opaque here).
+    pub proof: Vec<u8>,
+    /// The one-passport-one-human nullifier (§3.3).
+    pub nullifier: Hash,
+    /// The three Pedersen attribute commitments `[age, nationality, expiry]` (§3.4) — stored opaque (I6).
+    pub attribute_commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
+    /// The CSCA-registry root the proof was built against (§7.2) — re-derived + bound (§4.2 step 2).
+    pub csca_registry_root: Hash,
+    /// The 1-byte document/scheme discriminant (§2.4).
+    pub scheme_tag: u8,
+    /// The not-expired reference epoch the proof used — must equal `block.timestamp` (§4.2 step 2).
+    pub now_epoch: u64,
+}
+
+/// Verify + commit a ZK-passport proof for `subject` (the tx sender) at block timestamp `now`
+/// (spec §4.2). This is the **only** new lifecycle entry point; every M3 transition is untouched (EC-5).
+///
+/// Fail-closed, in order, aborting on the first failure with **no state change** (I4):
+///  1. **Bound-check** the scheme tag (the array lengths are enforced by the typed [`ZkProofSubmission`]).
+///  2. **Bind the public inputs:** `now_epoch == now` (block ts — I2); `cscaRegistryRoot` == the live
+///     CSCA root (§7.2, EC-3). The submitter address is bound by construction (`subject` *is* the tx
+///     sender, §4.3) and is stamped into the public-input vector the verifier checks.
+///  3. **Nullifier pre-check** (cheap, before the pairing — F-5): reject a spent nullifier.
+///  4. **SNARK verify** (the pure crypto): `verifier.verify_passport`. `false` ⇒ reject (F-1/F-3).
+///  5. **Commit atomically** on success: insert the nullifier, store the commitments, set the assurance
+///     level + status, and — if not already `Verified` — start emission exactly as M3
+///     `finalize_registration` does (set `verified_at`, flip the account cache). A *new* user → `Enh`;
+///     an `Std`-Verified upgrader → `Dual` (balance + `verified_at` **never** touched).
+///
+/// Returns the resulting [`Assurance`] level. Two nodes reach the identical accept/reject + post-state
+/// (I1/I2), so the `state_root` agrees byte-for-byte.
+pub fn submit_zk_passport_proof(
+    state: &mut dyn State,
+    verifier: &dyn ZkPassportVerifier,
+    subject: &Address,
+    submission: &ZkProofSubmission,
+    now: u64,
+) -> Result<Assurance, ZkPohError> {
+    // --- (1) bound-check the scheme tag. ---
+    if submission.scheme_tag != SCHEME_TAG_PASSPORT {
+        return Err(ZkPohError::UnknownScheme(submission.scheme_tag));
+    }
+
+    // --- (2) bind the chain-supplied public inputs (anti-replay + trust-anchor, §4.2 step 2). ---
+    // `now_epoch` must equal the block timestamp — the only clock execution sees (I2). This also ties
+    // the in-circuit not-expired check (which used `now_epoch`) to block time deterministically (F-1).
+    if submission.now_epoch != now {
+        return Err(ZkPohError::StaleNowEpoch {
+            got: submission.now_epoch,
+            expected: now,
+        });
+    }
+    // `cscaRegistryRoot` must equal the current live root (§7.2). A proof against an untrusted/stale
+    // CSCA set is rejected (EC-3 / F-2). Recomputed deterministically from the sorted Active set.
+    let live_root = csca_registry_root(&state.csca_entries());
+    if submission.csca_registry_root != live_root {
+        return Err(ZkPohError::UntrustedCscaRoot);
+    }
+
+    // --- pre-state idempotency / status guard (before any mutation). ---
+    // An existing record's assurance gates a re-submit: `Enh`/`Dual` ⇒ already enhanced (F-9); `Revoked`
+    // ⇒ rejected (a revoked human does not re-bootstrap via ZK in M6 — §5.2 revocation interaction).
+    if let Some(h) = state.get_human(subject) {
+        if h.status == HumanStatus::Revoked {
+            return Err(ZkPohError::SubjectRevoked);
+        }
+        if h.assurance != Assurance::Std {
+            return Err(ZkPohError::AlreadyEnhanced(h.assurance));
+        }
+    }
+
+    // --- (3) nullifier-uniqueness pre-check (cheap fail-closed BEFORE the pairing — F-5). ---
+    if state.nullifier_used(&submission.nullifier) {
+        return Err(ZkPohError::NullifierAlreadyUsed);
+    }
+
+    // --- (4) the SNARK verify (the pure crypto). `false` ⇒ reject; NO partial state (F-1/F-3). ---
+    // The submitter address is bound into the public-input vector the proof commits to (§4.3): a copied
+    // proof verifies `false` for any other sender. We assemble the canonical vector (§3.5) and verify.
+    let public_inputs = ZkPublicInputs::new(
+        submission.nullifier,
+        submission.attribute_commitments,
+        submission.csca_registry_root,
+        *subject,
+        submission.now_epoch,
+        submission.scheme_tag,
+    );
+    if !verifier.verify_passport(&submission.proof, &public_inputs) {
+        return Err(ZkPohError::InvalidProof);
+    }
+
+    // --- (5) commit atomically (success only). ---
+    // Insert the now-permanently-spent nullifier and the opaque attribute commitments (I6).
+    state.put_nullifier(submission.nullifier);
+    state.put_attribute_commitments(subject, submission.attribute_commitments);
+
+    // Set the assurance level + status. Two routes (spec §5.2):
+    //   * existing `Std`-Verified human  → `Dual` (balance + verified_at UNTOUCHED — the hard rule);
+    //   * no record / Pending / Unverified → create+`Enh`, transition to `Verified`, START emission
+    //     exactly as `finalize_registration` (set verified_at, flip the account cache).
+    let resulting = match state.get_human(subject) {
+        Some(mut h) if h.status == HumanStatus::Verified => {
+            // Pure upgrade: do NOT touch verified_at, balance, or the account cache (§5.2).
+            h.assurance = Assurance::Dual;
+            state.put_human(h);
+            Assurance::Dual
+        }
+        existing => {
+            // New ZK-only user, OR a Pending/Challenged/never-recorded subject: the cryptographic proof
+            // satisfies uniqueness, so finalize to Verified/Enh immediately and start emission. Preserve
+            // any existing vouch/reputation/liveness fields (a Pending human's in-flight case is left
+            // as-is, simply no longer gating them).
+            let mut h = existing.unwrap_or_else(|| Human::pending(*subject, [0u8; 32]));
+            h.status = HumanStatus::Verified;
+            h.verified_at = now;
+            h.assurance = Assurance::Enh;
+            sync_account_verified(state, subject, true, now);
+            state.put_human(h);
+            Assurance::Enh
+        }
+    };
+    Ok(resulting)
+}
+
+// ---------------------------------------------------------------------------------------------
+// CSCA registry governance (spec §7.3) — register/revoke a trust anchor. M6: a reserved governance
+// authority (mirrors how M5 gates validator-set changes); M7 re-points it at the DAO vote (no shape
+// change). A newly-added root is IMMEDIATELY usable (EC-10): the next proof can build against it.
+// ---------------------------------------------------------------------------------------------
+
+/// Why a CSCA-governance op was rejected (spec §7.3, AC-10). Deterministic (I1/I4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CscaGovError {
+    /// The caller is not the governance authority (a non-governance `registerCsca`/`revokeCsca` — AC-10).
+    NotGovernance,
+    /// `revokeCsca` for a `key_id` not present in the registry.
+    UnknownCsca,
+}
+
+impl std::fmt::Display for CscaGovError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CscaGovError::NotGovernance => write!(f, "caller is not the CSCA governance authority"),
+            CscaGovError::UnknownCsca => write!(f, "no such CSCA key id"),
+        }
+    }
+}
+
+/// Register (or re-activate) a CSCA trust anchor, gated by the governance authority (spec §7.3, EC-10).
+/// The new entry is `Active` immediately, so the registry root changes and the **next** proof can build
+/// against the new root (immediate usability — EC-10). Fail-closed: a non-governance caller mutates
+/// nothing (`NotGovernance`).
+pub fn register_csca(
+    state: &mut dyn State,
+    caller: &Address,
+    country_code: [u8; 3],
+    key_id: Hash,
+    pubkey: Vec<u8>,
+    now_block: u64,
+) -> Result<(), CscaGovError> {
+    if !state.is_csca_governance(caller) {
+        return Err(CscaGovError::NotGovernance);
+    }
+    state.put_csca(CscaEntry::active(country_code, key_id, pubkey, now_block));
+    Ok(())
+}
+
+/// Revoke a CSCA trust anchor (set its entry `Revoked`), gated by governance (spec §7.3/§7.4). The key
+/// leaves the Active set → the root changes → proofs chaining to it stop verifying (forward-invalidation;
+/// already-spent nullifiers are NOT retroactively purged — that is M7, §7.4). Fail-closed.
+pub fn revoke_csca(
+    state: &mut dyn State,
+    caller: &Address,
+    key_id: &Hash,
+) -> Result<(), CscaGovError> {
+    if !state.is_csca_governance(caller) {
+        return Err(CscaGovError::NotGovernance);
+    }
+    let mut entry = state.get_csca(key_id).ok_or(CscaGovError::UnknownCsca)?;
+    entry.status = CscaStatus::Revoked;
+    state.put_csca(entry);
+    Ok(())
+}
+
+/// Seed a genesis CSCA trust anchor directly (the curated static genesis set, spec §7.3). Governance
+/// bypass for genesis wiring only — like `seed_verified_human`. `Active` from genesis.
+pub fn seed_csca(state: &mut dyn State, country_code: [u8; 3], key_id: Hash, pubkey: Vec<u8>) {
+    state.put_csca(CscaEntry::active(country_code, key_id, pubkey, 0));
 }
