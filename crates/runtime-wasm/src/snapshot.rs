@@ -533,6 +533,9 @@ fn import_state(dto: &StateDto) -> MemState {
             liveness_ref: unhex32(&h.liveness_ref),
             vouches_in: h.vouches_in.iter().map(|a| unhex20(a)).collect(),
             reputation: h.reputation,
+            // M6 merge: Human gained an `assurance` level. A light-client snapshot defaults it to Std —
+            // the WASM kernel does not process HumanityHub ops in Stage 1, so it never observes Enh/Dual.
+            assurance: ubi2_runtime::Assurance::Std,
         });
     }
     for (voucher, vouchee) in &dto.vouch_edges {

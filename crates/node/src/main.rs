@@ -77,6 +77,13 @@ const DEVNET_JURORS: [alloy_primitives::Address; 3] = [
     address!("90F79bf6EB2c4f870365E785982E1f101E93b906"),
 ];
 
+/// M6: a single curated devnet CSCA trust anchor `key_id` (spec §7.3 — a static genesis set). A fixed,
+/// documented, NON-SECRET devnet constant — NOT a real ICAO CSCA key. Stage-1 uses the deterministic
+/// `MockZkVerifier`, so the registry need only be non-empty for a proof to bind a valid `cscaRegistryRoot`.
+const DEVNET_CSCA_KEY_ID: [u8; 32] = [0xC5; 32];
+/// The raw `pubkey` bytes for the devnet CSCA (opaque to the runtime). Fixed devnet constant.
+const DEVNET_CSCA_PUBKEY: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBE];
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -169,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|b| ProposerKey::from_bytes(&b).ok())
         .map(Arc::new);
 
+    // True iff we booted from a persisted snapshot — used to skip re-seeding genesis-only state (the dev
+    // account, the M6 CSCA registry) that a restored snapshot already carries (FU-3).
+    let restored_from_snapshot = loaded_snapshot.is_some();
+
     let chain = if let Some(snap) = loaded_snapshot {
         let tip = snap.tip_height();
         let mut chain = Chain::from_snapshot(&snap)
@@ -227,6 +238,27 @@ async fn main() -> anyhow::Result<()> {
     // ContractHub address space derived purely from the contract id (no per-contract seeding).
     for juror in DEVNET_JURORS {
         chain.register_juror(&juror.into_array(), 0);
+    }
+
+    // M6 (ZK-passport, spec 06 §6.1/§7.3): the chain runs the deterministic `MockZkVerifier` on the
+    // consensus path by default (exactly as M3 ships `MockOracle`) — the `Chain::new` default — so the
+    // ZK lifecycle verifies end-to-end with no pairing math (I5). A production node swaps the real
+    // `ubi2_zkpoh::Groth16Verifier` (genesis-pinned VK) here via `Chain::with_verifier` once the
+    // trusted-setup ceremony VK is wired. Seed the CSCA trust-anchor registry only on a FRESH genesis
+    // (a restored snapshot already carries it): the governance authority + a curated static genesis CSCA
+    // set (spec §7.3 — a static set is sufficient for Stage 1; the set is mutable without a hard fork via
+    // `registerCsca`/`revokeCsca` from the governance address).
+    if !restored_from_snapshot {
+        // The dev account is the reserved CSCA governance authority on devnet (mirrors how M5 gates the
+        // validator set). M7 re-points this at the DAO vote.
+        chain.set_csca_governance(&dev_addr.into_array());
+        // A single curated devnet CSCA so a test/devnet proof can build against a non-empty trust set.
+        // `key_id` + `pubkey` are fixed, documented, non-secret devnet constants (NOT a real CSCA key).
+        chain.seed_csca(*b"USA", DEVNET_CSCA_KEY_ID, DEVNET_CSCA_PUBKEY.to_vec());
+        tracing::info!(
+            csca_root = %hex::encode(chain.csca_registry_root().as_slice()),
+            "M6: seeded the genesis CSCA trust-anchor registry + governance authority"
+        );
     }
 
     let handle = serve(addr, chain.clone()).await?;

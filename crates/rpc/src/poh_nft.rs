@@ -18,7 +18,7 @@ use alloy_sol_types::{sol, SolValue};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 
-use ubi2_runtime::HumanStatus;
+use ubi2_runtime::{Assurance, HumanStatus};
 
 /// The PoH ERC-721 collection name (ERC-721 Metadata `name()`).
 pub const POH_NAME: &str = "Proof of Humanity";
@@ -194,6 +194,9 @@ pub struct CardData {
     pub verified_at: u64,
     pub vouches: usize,
     pub reputation: i64,
+    /// M6: the assurance level (STD/ENH/DUAL — spec §5.5/EC-6) reflected on the soulbound card. No PII —
+    /// only the level string (I6).
+    pub assurance: Assurance,
 }
 
 /// Render the PoH SVG card (viewBox `0 0 500 500`): a dark card with the gradient-filled fingerprint
@@ -204,22 +207,35 @@ pub fn render_svg(card: &CardData) -> String {
     let verified = xml_escape(&fmt_date(card.verified_at));
     let vouches = card.vouches;
     let reputation = card.reputation;
+    // M6: the assurance level badge (STD/ENH/DUAL — EC-6). No PII, only the level string (I6).
+    let level = card.assurance.as_str();
+    let level_label = assurance_label(card.assurance);
 
     format!(
-        r##"<svg width="100%" viewBox="0 0 500 500" role="img" xmlns="http://www.w3.org/2000/svg"><title>Proof of Humanity</title><desc>Verified human {short}, verified {verified}, {vouches} vouches, reputation {reputation}.</desc>
+        r##"<svg width="100%" viewBox="0 0 500 500" role="img" xmlns="http://www.w3.org/2000/svg"><title>Proof of Humanity</title><desc>Verified human {short}, {level_label}, verified {verified}, {vouches} vouches, reputation {reputation}.</desc>
 <defs><linearGradient id="poh" gradientUnits="userSpaceOnUse" x1="190" y1="70" x2="310" y2="250"><stop offset="0%" stop-color="#FFFF00"/><stop offset="100%" stop-color="#FF6699"/></linearGradient></defs>
 <rect x="0" y="0" width="500" height="500" rx="28" fill="#0b0b0f" stroke="#2a2a36"/>
 <g transform="translate(186,52) scale(0.34)"><path fill="url(#poh)" stroke="none" d="{FINGERPRINT_PATH}"/></g>
 <text x="250" y="232" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="30" font-weight="700" fill="#ffffff">Proof of Humanity</text>
 <g transform="translate(250,262)"><rect x="-78" y="-16" width="156" height="30" rx="15" fill="#0d2419" stroke="#009966"/><circle cx="-58" cy="-1" r="4" fill="#009966"/><text x="6" y="4" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#34d399">Verified human</text></g>
-<text x="250" y="316" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="18" fill="#e8e8ec">{short}</text>
-<line x1="60" y1="350" x2="440" y2="350" stroke="#1b1b24"/>
-<text x="78" y="384" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Verified since</text><text x="78" y="406" font-size="15" fill="#e8e8ec" font-family="ui-sans-serif,system-ui,sans-serif">{verified}</text>
-<text x="250" y="384" text-anchor="middle" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Vouches</text><text x="250" y="406" text-anchor="middle" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{vouches}</text>
-<text x="422" y="384" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Reputation</text><text x="422" y="406" text-anchor="end" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{reputation}</text>
-<line x1="60" y1="440" x2="440" y2="440" stroke="#1b1b24"/>
-<text x="78" y="470" font-size="12" fill="#6f6f78" font-family="ui-monospace,Menlo,monospace">soulbound · proof of humanity</text><text x="422" y="470" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">POH</text></svg>"##
+<g transform="translate(250,300)"><rect x="-40" y="-14" width="80" height="24" rx="12" fill="#1a1430" stroke="#7c5cff"/><text x="0" y="3" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12" font-weight="700" fill="#b9a6ff">{level}</text></g>
+<text x="250" y="340" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="18" fill="#e8e8ec">{short}</text>
+<line x1="60" y1="368" x2="440" y2="368" stroke="#1b1b24"/>
+<text x="78" y="396" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Verified since</text><text x="78" y="416" font-size="15" fill="#e8e8ec" font-family="ui-sans-serif,system-ui,sans-serif">{verified}</text>
+<text x="250" y="396" text-anchor="middle" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Vouches</text><text x="250" y="416" text-anchor="middle" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{vouches}</text>
+<text x="422" y="396" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Reputation</text><text x="422" y="416" text-anchor="end" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{reputation}</text>
+<line x1="60" y1="448" x2="440" y2="448" stroke="#1b1b24"/>
+<text x="78" y="474" font-size="12" fill="#6f6f78" font-family="ui-monospace,Menlo,monospace">soulbound · proof of humanity</text><text x="422" y="474" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">POH</text></svg>"##
     )
+}
+
+/// A human-readable assurance-level label for the card `desc` / metadata (no PII — only the level).
+fn assurance_label(a: Assurance) -> &'static str {
+    match a {
+        Assurance::Std => "standard assurance",
+        Assurance::Enh => "ZK-passport enhanced",
+        Assurance::Dual => "dual (vouching + ZK-passport)",
+    }
 }
 
 /// Build the full `tokenURI` data document for `card`: a `data:application/json;base64,…` whose
@@ -241,10 +257,11 @@ pub fn render_token_uri(card: &CardData) -> String {
     );
 
     let json = format!(
-        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}]}}"#,
+        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Assurance","value":"{assurance}"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}]}}"#,
         name = json_escape(&name),
         description = json_escape(&description),
         image = image, // base64, no escaping needed
+        assurance = card.assurance.as_str(),
         addr = json_escape(&full),
         verified_at = card.verified_at,
         verified = json_escape(&verified),
@@ -268,6 +285,7 @@ mod tests {
             verified_at: 1_700_000_000,
             vouches: 2,
             reputation: 7,
+            assurance: Assurance::Std,
         }
     }
 
@@ -315,6 +333,28 @@ mod tests {
         // The fingerprint mark path is embedded with the gradient fill.
         assert!(svg.contains("url(#poh)"));
         assert!(svg.contains("M 347.25 181.1"));
+    }
+
+    #[test]
+    fn token_uri_reflects_assurance_level() {
+        // EC-6: the level (STD/ENH/DUAL) is in the tokenURI JSON + the SVG card. No PII.
+        for (level, tag) in [
+            (Assurance::Std, "STD"),
+            (Assurance::Enh, "ENH"),
+            (Assurance::Dual, "DUAL"),
+        ] {
+            let mut c = card(AlloyAddr::from([0x12; 20]));
+            c.assurance = level;
+            let uri = render_token_uri(&c);
+            let b64 = uri.strip_prefix("data:application/json;base64,").unwrap();
+            let json = String::from_utf8(B64.decode(b64).unwrap()).unwrap();
+            assert!(
+                json.contains(&format!("\"trait_type\":\"Assurance\",\"value\":\"{tag}\"")),
+                "tokenURI carries the {tag} assurance attribute"
+            );
+            // The SVG badge carries the level too.
+            assert!(render_svg(&c).contains(tag));
+        }
     }
 
     #[test]

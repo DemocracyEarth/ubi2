@@ -1,0 +1,60 @@
+[package]
+name = "ubi2-zkpoh"
+description = "ubi2 ZK-passport proof-of-humanity verifier: a pure, deterministic Groth16-over-BN254 SNARK verifier behind the ZkPassportVerifier seam (M6, ADR-0005 D1/D2)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# -------------------------------------------------------------------------------------------------
+# Dependency discipline (ADR-0005 Decision 2 / spec §6.1, §12.1):
+#
+#   * `crates/runtime` stays dependency-free and OWNS the `ZkPassportVerifier` trait (no crypto in it).
+#   * `crates/zkpoh` (this crate) is the ISOLATED home of the pairing math. It may depend ONLY on a
+#     pure, deterministic pairing library — arkworks — and MUST NOT pull any async/network/clock/float
+#     dependency. The verifier path must stay consensus-safe and wasm32-compilable.
+#
+# The arkworks versions are PINNED to the 0.5.x family (the same major as the `ark-ff`/`ark-serialize`/
+# `ark-std` 0.5.0 already resolved in the workspace lockfile). A version bump is a deliberate, reviewed
+# change because the verifying key + proof byte encodings interoperate forever once a nullifier is
+# registered on-chain (spec §2).
+#
+# `default-features = false` everywhere keeps `std`/`parallel`/`rng` features opt-in: we do NOT enable
+# `parallel` (rayon would introduce reduction-order nondeterminism — forbidden, spec §6.2) and we do NOT
+# rely on any RNG on the verify path. The `std` feature is enabled (this crate runs in the node); the
+# verify path itself allocates only bounded scratch and reads no clock.
+# -------------------------------------------------------------------------------------------------
+[dependencies]
+# The deterministic, dependency-free runtime crate OWNS the `ZkPassportVerifier` trait + the plain-bytes
+# `ZkPublicInputs`/`ZkAttrType` types (ADR-0005 D2 / spec §6.1). This crate IMPLEMENTS that trait —
+# exactly as `ubi2-oracle` implements `ubi2_runtime::HumanityOracle`. `ubi2-runtime` pulls NO
+# crypto/async/network dep, so depending on it does not perturb this crate's verifier purity (the
+# dependency-clean test allow-lists it alongside the pinned arkworks crates).
+ubi2-runtime = { path = "../runtime" }
+# BN254 (alt-bn128) curve — the curve every chain precompile + the OpenPassport/Self artifacts target.
+ark-bn254 = { version = "0.5.0", default-features = false, features = ["curve"] }
+# Groth16 verify (the fixed 3-pairing equation + the public-input MSM). No `parallel`.
+ark-groth16 = { version = "0.5.0", default-features = false }
+# Curve / pairing traits (`Pairing`, `CurveGroup`) the verify path uses.
+ark-ec = { version = "0.5.0", default-features = false }
+# Field traits (`Field`, `PrimeField`, `BigInteger`) for the scalar conversions / public inputs.
+ark-ff = { version = "0.5.0", default-features = false }
+# Canonical, single-encoding-per-element (de)serialization of group elements + the VK + the proof.
+# This is the non-malleability guarantee (spec §6.2): a non-canonical encoding is REJECTED.
+ark-serialize = { version = "0.5.0", default-features = false }
+# `ark-std` provides the `Zero`/`One`/`Vec` shims arkworks builds on. NO rng/clock on the verify path.
+ark-std = { version = "0.5.0", default-features = false }
+
+[dev-dependencies]
+# Tests-only: we GENERATE a Groth16 proof for a tiny circuit to prove the verifier against the real
+# curve (determinism + soundness). Proof GENERATION needs the constraint-system + the SNARK trait
+# (`setup`/`prove`) + an RNG; all of that is dev-only and NEVER on the consensus/verify path. The verify
+# path uses only the INHERENT `Groth16::verify_proof` (no `ark-snark` in the lib deps). `ark-relations` =
+# the R1CS DSL; `ark-snark` = the `SNARK` trait; `ark-std` `rng` gives the test a seeded `StdRng`.
+ark-relations = { version = "0.5.1", default-features = false }
+ark-snark = { version = "0.5.1", default-features = false }
+ark-std = { version = "0.5.0", default-features = false, features = ["std"] }
+# Tests-only: parse the REAL Self/OpenPassport snarkjs `verification_key.json` fixture into the string
+# arrays `SnarkjsVk` consumes. The crate itself never depends on serde_json — the node parses JSON and
+# hands strings to `SnarkjsVk` (keeping the verifier path arkworks-only), so this is dev-only.
+serde_json = { workspace = true }

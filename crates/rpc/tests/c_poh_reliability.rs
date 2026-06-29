@@ -77,7 +77,7 @@ use ubi2_rpc::poh_nft::{
     render_token_uri, supportsInterfaceCall, symbolCall, tokenURICall, token_id_of, CardData,
     IFACE_ERC165, IFACE_ERC721, IFACE_ERC721_METADATA, POH_NAME, POH_SYMBOL,
 };
-use ubi2_runtime::HumanStatus;
+use ubi2_runtime::{Assurance, HumanStatus};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,6 +121,7 @@ fn card(address: AlloyAddr, verified_at: u64, vouches: usize, reputation: i64) -
         verified_at,
         vouches,
         reputation,
+        assurance: Assurance::Std,
     }
 }
 
@@ -966,6 +967,7 @@ fn c5_two_node_identical_bytes() {
             verified_at,
             vouches,
             reputation,
+            assurance: Assurance::Std,
         };
         let uri_a = render_token_uri(&card_a);
 
@@ -976,6 +978,7 @@ fn c5_two_node_identical_bytes() {
             verified_at,
             vouches,
             reputation,
+            assurance: Assurance::Std,
         };
         let uri_b = render_token_uri(&card_b);
 
