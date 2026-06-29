@@ -1,0 +1,90 @@
+[package]
+name = "ubi2-runtime-wasm"
+description = "ubi2 browser light-node WASM wrapper: a thin, bytes/JSON API over the deterministic crates/runtime (spec 07 §2.2; ADR-0006 Decision 1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# Stage 1 browser light node (spec `07-browser-light-node.md`, `adr/0006-browser-light-node.md`).
+#
+# This is the ONLY new crate that may pull `wasm-bindgen`. It re-exports a thin bytes/JSON API over the
+# UNTOUCHED `crates/runtime` (its empty `[dependencies]` is guarded by `runtime/tests/dependency_free.rs`)
+# plus the tx-decode + ecrecover primitives the browser follower needs to re-execute a `WireBlock` — the
+# same `alloy`/`k256` decode `crates/rpc::decode_pending_tx` uses, so the browser decodes a block
+# byte-identically to a server follower (ADR-0006 Decision 3, "no logic fork"). The `WireBlock` wire
+# format is consumed VERBATIM from `crates/network` (no second block serialization).
+#
+# `wasm-bindgen` is behind a `wasm` feature (default for the wasm32 build) so the native parity test can
+# call the same `LightCore` kernel without the JS-interop layer. The `lib` is both `cdylib` (the wasm
+# artifact) and `rlib` (so the native parity test + downstream Rust can link it).
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The `wasm-bindgen` JS-interop surface. On by default; the native parity test builds with
+# `--no-default-features` so it links only the pure `LightCore` kernel (no wasm-bindgen on a native host).
+default = ["wasm"]
+wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:console_error_panic_hook"]
+
+[dependencies]
+# The deterministic core — UNTOUCHED. This is the whole point: the browser re-executes the same audited
+# state transitions consensus runs (apply_transfer / open_stream / stop_stream / charge_fee / state_root /
+# Account::balance), so there is no second balance/state implementation to drift.
+ubi2-runtime = { path = "../runtime" }
+
+# NOTE on the wire format (spec 07 §2.3 / ADR-0006 Decision 2): the canonical `WireBlock` lives in
+# `crates/network::wire`, but that crate depends on the FULL libp2p stack (yamux → rand → getrandom 0.3,
+# prost, snow, hickory-dns) which does NOT compile to wasm32 and has no business in a browser blob. The
+# spec is explicit that the wire types depend ONLY on `alloy-primitives` + `k256`. So this crate carries
+# a small, self-contained `WireBlock` decode (`src/wire.rs`) using exactly those two crates — and the
+# parity gate (`tests/parity.rs`, AC-WB) asserts it decodes the SAME bytes to the SAME fields / hash /
+# `shallow_verify` as `ubi2_network::wire::WireBlock`, so it is PROVABLY the canonical format, not a
+# drifting fork. (Folding `wire` into a wasm-friendly feature of `crates/network` is the clean follow-up
+# the network owner can take; until then this seam keeps libp2p out of the wasm artifact.)
+
+# The tx-decode + ecrecover primitives the browser follower needs — the SAME alloy/k256 decode the server
+# follower (`crates/rpc::decode_pending_tx`) uses, so a block decodes byte-identically on both. These live
+# in the wrapper (not in `crates/runtime`) so `crates/runtime` keeps its empty `[dependencies]`.
+alloy-primitives = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-sol-types = { workspace = true }
+k256 = { version = "0.13", features = ["ecdsa"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Force the `display` feature on derive_more 1.x for feature unification: alloy-eip7702 0.4.2 (pulled
+# transitively by alloy-eips) uses `derive_more::Display` but does not enable the feature itself, so
+# without this the build fails. Mirrors the same pin every other alloy-consuming crate carries (see the
+# workspace Cargo.toml note). Harmless otherwise — we do not use derive_more directly.
+derive_more = { workspace = true }
+
+# JS-interop, only compiled for the `wasm` feature. `getrandom` is pinned to its `js` backend so any
+# transitive RNG resolves in the browser; the deterministic core never calls it (no randomness on any
+# consensus path), it is here only to satisfy the wasm32 link.
+wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+# Dev-only: the parity gate (AC-WB, `tests/parity.rs`) drives the REAL server follower
+# (`crates/rpc::Chain`) as the reference and the wasm wrapper's `LightCore` as the browser follower over
+# the SAME ordered blocks, asserting byte-identical `state_root` + `balanceOf` at every height — proving
+# one shared kernel (ADR-0006 Decision 3). This is a NATIVE test (built `--no-default-features` so it
+# links only the pure kernel, no wasm-bindgen); these deps NEVER reach the wasm32 artifact.
+[dev-dependencies]
+ubi2-rpc = { path = "../rpc" }
+ubi2-runtime = { path = "../runtime" }
+ubi2-network = { path = "../network" }
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-sol-types = { workspace = true }
+serde_json = { workspace = true }
+k256 = { version = "0.13", features = ["ecdsa"] }
