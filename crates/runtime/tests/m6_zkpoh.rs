@@ -115,6 +115,77 @@ fn ac2_nullifier_reuse_rejected_chain_wide_no_state_change() {
 }
 
 // --------------------------------------------------------------------------------------------------
+// SECURITY regression — gate finding zk-nullifier-malleable-1 (HIGH, PoC-confirmed). The nullifier is
+// the one-passport-one-human registry key, stored/compared as RAW bytes, while the verifier reduces it
+// mod the BN254 order `r`. Without a canonicality guard, N and N+r are distinct registry keys that
+// satisfy the SAME proof — so one passport mints unlimited Verified/ENH humans (and UBI streams). The
+// guard rejects any non-canonical (≥ r) field input BEFORE the registry/verifier.
+// --------------------------------------------------------------------------------------------------
+
+/// Big-endian 32-byte addition with carry — builds `N + r`, the malleated twin of `N` that reduces to
+/// the SAME field element the proof commits to.
+fn add_be(a: &Hash, b: &Hash) -> Hash {
+    let mut out = [0u8; 32];
+    let mut carry = 0u16;
+    for i in (0..32).rev() {
+        let s = a[i] as u16 + b[i] as u16 + carry;
+        out[i] = (s & 0xff) as u8;
+        carry = s >> 8;
+    }
+    out
+}
+
+#[test]
+fn noncanonical_nullifier_rejected_blocks_malleability_double_mint() {
+    use ubi2_runtime::zkpoh::{is_canonical_scalar, BN254_FR_MODULUS_BE};
+
+    // The guard itself: < r is canonical; r and anything above it is not.
+    let r = BN254_FR_MODULUS_BE;
+    assert!(is_canonical_scalar(&h(7)), "a small value is canonical");
+    assert!(
+        !is_canonical_scalar(&r),
+        "r itself is non-canonical (r ≡ 0)"
+    );
+    assert!(!is_canonical_scalar(&[0xff; 32]), "all-ones is ≥ r");
+
+    let mut s = MemState::new();
+    let root = bootstrap_csca(&mut s);
+    let now = 1_000;
+    // Worst case for the guard: a verifier that ACCEPTS everything (the real Groth16 verifier likewise
+    // reduces N+r ≡ N and so would verify the malleated twin against the same proof).
+    let v = MockZkVerifier::default();
+
+    // The one legitimate passport registers ONE human under canonical nullifier N.
+    let n = h(7);
+    submit_zk_passport_proof(&mut s, &v, &addr(1), &submission(n, root, now), now)
+        .expect("the canonical nullifier registers the one legitimate human");
+    assert!(s.nullifier_used(&n));
+    let root_after_one = state_root(&s);
+
+    // The attack: a SECOND address submits the malleated twin N+r. It reduces to N (the verifier would
+    // accept it), but the canonicality guard rejects it BEFORE the registry/verifier — no second human,
+    // no second UBI stream, from the one passport.
+    let n_plus_r = add_be(&n, &r);
+    assert!(!is_canonical_scalar(&n_plus_r), "N + r is ≥ r");
+    let err = submit_zk_passport_proof(&mut s, &v, &addr(2), &submission(n_plus_r, root, now), now)
+        .expect_err("the malleated non-canonical nullifier must be rejected");
+    assert_eq!(err, ZkPohError::NonCanonicalNullifier);
+    assert!(
+        s.get_human(&addr(2)).is_none(),
+        "no human minted from the malleated twin"
+    );
+    assert!(
+        !s.nullifier_used(&n_plus_r),
+        "the malleated key was never inserted"
+    );
+    assert_eq!(
+        state_root(&s),
+        root_after_one,
+        "the rejection leaves state byte-identical (I4)"
+    );
+}
+
+// --------------------------------------------------------------------------------------------------
 // AC-3 / AC-F1..F3 (EC-3): fail-closed legs at the lifecycle layer (mock verifier). The real-curve
 // soundness against tampered proofs is in crates/zkpoh.
 // --------------------------------------------------------------------------------------------------

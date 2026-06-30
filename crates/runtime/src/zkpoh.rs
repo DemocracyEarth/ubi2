@@ -191,6 +191,33 @@ impl ZkPublicInputs {
     }
 }
 
+/// The BN254 scalar-field order `r` (big-endian). `crates/zkpoh` reduces every 32-byte public input by
+/// this modulus via `Fr::from_be_bytes_mod_order`, so a value `≥ r` is folded into a *different*
+/// canonical element than its raw bytes. Pinned here as bytes so the runtime stays dependency-free
+/// (no arkworks): `r = 0x30644e72…f0000001`.
+pub const BN254_FR_MODULUS_BE: Hash = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
+
+/// Is `bytes` the **canonical** BN254 scalar representation — strictly `< r`? Pure big-endian integer
+/// compare (most-significant byte first).
+///
+/// The malleability guard the public-input contract requires (§3.5): only a canonical 32-byte value
+/// round-trips (`bytes == Fr::from_be_bytes_mod_order(bytes)` serialized), so the runtime's raw-byte
+/// registry key for the nullifier equals the element the proof actually commits to. Rejecting `≥ r`
+/// blocks the `N, N+r, N+2r…` family that would otherwise register as distinct humans from ONE passport.
+/// A genuine proof's field outputs are always canonical, so this never rejects a valid submission.
+pub fn is_canonical_scalar(bytes: &Hash) -> bool {
+    for (b, m) in bytes.iter().zip(BN254_FR_MODULUS_BE.iter()) {
+        if b != m {
+            return b < m;
+        }
+    }
+    // bytes == r exactly is NON-canonical (r ≡ 0 in the field).
+    false
+}
+
 /// A scripted, fully-deterministic verifier for CI / lifecycle tests (I5) — the runtime-side analogue
 /// of [`MockOracle`](crate::humanity::MockOracle) and `ubi2_zkpoh::MockZkVerifier`. **This is the impl
 /// the consensus path ships on for Stage B** (exactly as M3 ships `MockOracle`); the real Groth16
