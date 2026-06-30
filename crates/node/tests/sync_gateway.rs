@@ -27,7 +27,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use ubi2_network::consts::PROTOCOL_VERSION;
-use ubi2_network::wire::{GetBlocks, Hello, SyncRequest, SyncResponse};
+use ubi2_network::wire::{GetBlocks, GetGenesis, Hello, SyncRequest, SyncResponse};
 use ubi2_rpc::{serve_sync_gateway, Block, Chain, ProposerKey, DEVNET_CHAIN_ID};
 use ubi2_runtime::{Account, UBI};
 use ubi2_runtime_wasm::kernel::LightCore;
@@ -35,6 +35,7 @@ use ubi2_runtime_wasm::kernel::LightCore;
 // ─── Ports (non-default, no clash with other tests) ───────────────────────────
 const SYNC_PORT: u16 = 19800;
 const WRONG_NET_PORT: u16 = 19801;
+const GENESIS_ANCHOR_PORT: u16 = 19802;
 
 // ─── Devnet constants ────────────────────────────────────────────────────────
 const GENESIS_TIME: u64 = 1_700_100_000;
@@ -81,6 +82,31 @@ fn make_test_chain() -> (Chain, Block) {
     // Produce one empty anchor block to commit the seeded state to a real `state_root`.
     let anchor = chain.produce_block(GENESIS_TIME + 2);
     (chain, anchor)
+}
+
+/// Build a test chain with a realistic seeded genesis (dev verified human + a CSCA registry +
+/// governance) and SEAL the genesis anchor BEFORE producing any block — exactly what `main.rs` does at
+/// boot. Returns the chain and the first block above genesis (height 1).
+fn make_test_chain_sealed() -> (Chain, Block) {
+    let key = Arc::new(ProposerKey::from_bytes(&PROPOSER_SECRET).expect("proposer key"));
+    let chain = Chain::new(DEVNET_CHAIN_ID, GENESIS_TIME).with_proposer_key(key);
+    chain.seed_verified_human(&DEV_ADDR.into_array(), GENESIS_TIME);
+    chain.seed_account(Account {
+        address: DEV_ADDR.into_array(),
+        verified: true,
+        verified_at: GENESIS_TIME,
+        last_settled_at: GENESIS_TIME,
+        settled_balance: 100 * UBI,
+        nonce: 0,
+    });
+    // A non-empty CSCA registry + governance, so the genesis state_root folds the M6 registries (the
+    // exact data the empty import could not reproduce).
+    chain.set_csca_governance(&DEV_ADDR.into_array());
+    chain.seed_csca(*b"USA", [0xC5; 32], vec![0xCA, 0xFE, 0xBA, 0xBE]);
+    // Seal the seeded genesis anchor (the height-0 state) before any block mutates state.
+    chain.seal_genesis();
+    let first = chain.produce_block(GENESIS_TIME + 2);
+    (chain, first)
 }
 
 /// Build a `LightCore` whose verified state equals the server's at `anchor`, by importing the
@@ -385,4 +411,132 @@ async fn wrong_network_rejected() {
         "gateway must close connection on wrong network (AC-F-LN4)"
     );
     println!("[wrong_network_rejected] PASS: gateway closed connection on wrong genesis_hash");
+}
+
+// ─── Test 3: pinned, gateway-independent genesis anchor (ln-trust-1/2/3) ───────
+
+/// End-to-end over the REAL WS gateway: a light client fetches the seeded genesis anchor via
+/// `GetGenesis`, verifies the served snapshot re-derives to the PINNED `state_root`, imports it, pins the
+/// PoA validator set, and re-executes block #1+ to a state_root byte-identical to the honest node. Proves
+/// the product works on a REAL seeded chain (`ln-trust-2`), that the anchor is pinned not gateway-adopted
+/// (`ln-trust-3`), and that proposer authority is enforced on every block (`ln-trust-1`).
+#[tokio::test]
+#[ignore]
+async fn genesis_anchor_pinned_and_reproduced() {
+    let (chain, _anchor_block) = make_test_chain_sealed();
+
+    // The app's PINNED constants — derived from the actual devnet genesis (here, the sealed anchor).
+    let pinned_hash = chain.genesis_hash().0;
+    let pinned_root = chain.genesis_state_root().expect("genesis sealed").0;
+    let pinned_proposer = chain
+        .genesis_proposer()
+        .expect("proposer configured")
+        .into_array();
+
+    // Produce a couple of real blocks on top of the seeded genesis (heights 1..3), capturing per-height
+    // balances right after producing each (the committed per-height read).
+    let mut produced: Vec<(Block, u64, u128)> = Vec::new();
+    for i in 0..3u64 {
+        let ts = GENESIS_TIME + 100 + i * 100;
+        let b = chain.produce_block(ts);
+        produced.push((b, ts, chain.balance(&DEV_ADDR.into_array(), ts)));
+    }
+
+    // ---- Start the gateway ----
+    let sync_addr: SocketAddr = format!("127.0.0.1:{GENESIS_ANCHOR_PORT}").parse().unwrap();
+    let _gw = serve_sync_gateway(sync_addr, chain.clone())
+        .await
+        .expect("start gateway");
+    assert!(
+        wait_port(GENESIS_ANCHOR_PORT, Duration::from_secs(3)),
+        "gateway did not start"
+    );
+
+    let (ws, _) = connect_async(format!("ws://127.0.0.1:{GENESIS_ANCHOR_PORT}"))
+        .await
+        .expect("ws connect");
+    let (mut sink, mut stream) = ws.split();
+
+    // Hello handshake (the client pins the genesis hash and rejects a mismatch).
+    send_req(
+        &mut sink,
+        &SyncRequest::Hello(Hello {
+            genesis_hash: chain.genesis_hash(),
+            chain_id: DEVNET_CHAIN_ID,
+            tip: (0, alloy_primitives::B256::ZERO),
+            validator: None,
+            peer_proof: vec![],
+            protocol_ver: PROTOCOL_VERSION,
+        }),
+    )
+    .await;
+    let gw_hello = match recv_resp(&mut stream).await {
+        SyncResponse::Hello(h) => h,
+        other => panic!("expected Hello, got {other:?}"),
+    };
+    assert_eq!(gw_hello.genesis_hash.0, pinned_hash, "pinned genesis hash");
+
+    // ---- Fetch the genesis anchor via GetGenesis ----
+    send_req(&mut sink, &SyncRequest::GetGenesis(GetGenesis)).await;
+    let genesis = match recv_resp(&mut stream).await {
+        SyncResponse::Genesis(g) => g,
+        other => panic!("expected Genesis, got {other:?}"),
+    };
+    // The client checks the served anchor fields against its PINNED constants (it NEVER adopts them).
+    assert_eq!(genesis.genesis_hash.0, pinned_hash, "served hash == pinned");
+    assert_eq!(genesis.state_root.0, pinned_root, "served root == pinned");
+    assert_eq!(genesis.chain_id, DEVNET_CHAIN_ID);
+    assert_eq!(
+        genesis.proposer.into_array(),
+        pinned_proposer,
+        "served proposer == pinned PoA proposer"
+    );
+
+    // ---- Import: re-derive the snapshot's root LOCALLY and verify == pinned (ln-trust-2/3) ----
+    let mut lc = LightCore::genesis_import(
+        DEVNET_CHAIN_ID,
+        pinned_hash,
+        pinned_root,
+        chain.genesis_time(),
+        &genesis.snapshot,
+        vec![pinned_proposer], // the pinned PoA validator set
+    )
+    .expect("client imports the verified seeded genesis");
+    assert_eq!(lc.tip().number, 0, "verified tip anchored at genesis");
+    assert_eq!(
+        lc.state_root(),
+        pinned_root,
+        "imported verified state re-derives to the pinned seeded root"
+    );
+
+    // ---- Sync block #1..3 and re-execute on the verified seeded state ----
+    send_req(
+        &mut sink,
+        &SyncRequest::GetBlocks(GetBlocks { from: 1, to: 3 }),
+    )
+    .await;
+    let blocks = match recv_resp(&mut stream).await {
+        SyncResponse::Blocks(b) => b.blocks,
+        other => panic!("expected Blocks, got {other:?}"),
+    };
+    assert_eq!(blocks.len(), 3, "blocks 1..3 served");
+
+    for (wb, (server_b, ts, want_bal)) in blocks.iter().zip(produced.iter()) {
+        let outcome = lc
+            .apply_block(&wb.encode(), Some(pinned_proposer))
+            .unwrap_or_else(|e| panic!("client re-executes seeded block {}: {e}", server_b.number));
+        assert_eq!(
+            outcome.state_root, server_b.state_root.0,
+            "client state_root must equal the honest node at seeded block {}",
+            server_b.number
+        );
+        assert_eq!(
+            lc.balance_of(&DEV_ADDR.into_array(), *ts).to_string(),
+            want_bal.to_string(),
+            "balanceOf parity at seeded block {}",
+            server_b.number
+        );
+    }
+
+    println!("[genesis_anchor_pinned_and_reproduced] PASS: pinned anchor verified + seeded chain reproduced");
 }

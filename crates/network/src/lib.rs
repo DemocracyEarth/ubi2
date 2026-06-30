@@ -713,6 +713,11 @@ fn handle_behaviour_event(st: &mut LoopState, ev: Ubi2BehaviourEvent) {
                                 token: SyncResponder { channel, peer },
                             });
                         }
+                        // The genesis-anchor fetch (spec 07 §3.4) is a BROWSER light-client concern served
+                        // by the WS sync gateway; full P2P nodes seed genesis identically and never request
+                        // it over libp2p. Drop `channel` without responding (an unexpected request from a
+                        // peer) rather than match non-exhaustively.
+                        SyncRequest::GetGenesis(_) => {}
                     }
                 }
                 request_response::Message::Response {

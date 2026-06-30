@@ -18,7 +18,7 @@
 
 import "./styles.css";
 import { LightClient, VerificationError, WrongNetworkError, GatewayError } from "@ubi2/light-client";
-import { initWasm, wasmLightStateFactory } from "./wasm-shim.js";
+import { initWasm, wasmLightStateGenesisFactory } from "./wasm-shim.js";
 import { getConfig, saveWatchAddress, loadWatchAddress } from "./config.js";
 import {
   setBadge,
@@ -358,14 +358,17 @@ async function startSync(config: ReturnType<typeof getConfig>): Promise<void> {
   const progressLabel = document.getElementById("progress-label");
   if (progressLabel) progressLabel.textContent = "Connecting to gateway…";
 
-  // Custom LightClient with progress tracking.
+  // Custom LightClient with progress tracking. Pins the gateway-independent genesis anchor + PoA
+  // validator set (ln-trust-1/2/3): the client verifies the gateway's genesis snapshot against these
+  // pinned constants and enforces proposer authority on every block.
   const lc = new LightClient({
     gatewayUrl: config.gatewayUrl,
     chainId: config.chainId,
     genesisHash: config.genesisHash,
     genesisStateRoot: config.genesisStateRoot,
     genesisTime: config.genesisTime,
-    lightStateFactory: wasmLightStateFactory(),
+    validatorSet: config.validatorSet,
+    lightStateGenesisFactory: wasmLightStateGenesisFactory(),
     logger: (level, msg) => {
       if (level === "error") console.error("[light-client]", msg);
       else console.log("[light-client]", msg);

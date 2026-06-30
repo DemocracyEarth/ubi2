@@ -91,6 +91,40 @@ export class LightState {
         return LightState.__wrap(ret[0]);
     }
     /**
+     * Construct the verified state from a **pinned, gateway-independent genesis anchor** (spec 07
+     * §3.4 — the `ln-trust-1/2/3` fix). The light client calls THIS (not the empty-state `new`) for a
+     * real seeded chain:
+     *   * `genesis_snapshot` is the seeded genesis state the gateway served (untrusted bytes).
+     *   * `pinned_state_root` is the app's HARD-CODED genesis `state_root` constant. The kernel
+     *     re-derives the root from the snapshot LOCALLY and throws unless it equals this — so a lying
+     *     gateway is caught and the all-zeros default is never silently accepted.
+     *   * `validator_set` is a JSON array of `0x`-hex 20-byte proposer addresses; it is pinned and
+     *     enforced on EVERY block (always-on proposer authority — no None-skip).
+     * On success the verified tip is height 0 over the verified seeded state.
+     * @param {bigint} chain_id
+     * @param {string} genesis_hash
+     * @param {string} pinned_state_root
+     * @param {bigint} genesis_time
+     * @param {Uint8Array} genesis_snapshot
+     * @param {string[]} validator_set
+     * @returns {LightState}
+     */
+    static genesisImport(chain_id, genesis_hash, pinned_state_root, genesis_time, genesis_snapshot, validator_set) {
+        const ptr0 = passStringToWasm0(genesis_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(pinned_state_root, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(genesis_snapshot, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayJsValueToWasm0(validator_set, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.lightstate_genesisImport(chain_id, ptr0, len0, ptr1, len1, genesis_time, ptr2, len2, ptr3, len3);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return LightState.__wrap(ret[0]);
+    }
+    /**
      * The PoH status tag of `addr` (`0`=Unverified, `1`=Pending, `2`=Verified, `3`=Challenged,
      * `4`=Revoked).
      * @param {string} addr
@@ -153,6 +187,20 @@ export class LightState {
         return v1;
     }
     /**
+     * Re-pin the PoA validator set after a snapshot `deserialize` (`ln-trust-1`), so proposer
+     * authority is enforced on the next block even on a resumed session. `validator_set` is a JSON
+     * array of `0x`-hex 20-byte addresses.
+     * @param {string[]} validator_set
+     */
+    setValidatorSet(validator_set) {
+        const ptr0 = passArrayJsValueToWasm0(validator_set, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lightstate_setValidatorSet(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * The 32-byte `state_root` over the current verified state, as a `0x` hex string — the SAME
      * commitment consensus uses (`ubi2_runtime::state_root`).
      * @returns {string}
@@ -193,6 +241,14 @@ function __wbg_get_imports() {
             const ret = String(arg1);
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
             const len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbg___wbindgen_string_get_71bb4348194e31f0: function(arg0, arg1) {
+            const obj = arg1;
+            const ret = typeof(obj) === 'string' ? obj : undefined;
+            var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            var len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
@@ -263,6 +319,12 @@ const LightStateFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_lightstate_free(ptr, 1));
 
+function addToExternrefTable0(obj) {
+    const idx = wasm.__externref_table_alloc();
+    wasm.__wbindgen_externrefs.set(idx, obj);
+    return idx;
+}
+
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
@@ -296,6 +358,16 @@ function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 

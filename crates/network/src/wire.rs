@@ -451,6 +451,85 @@ impl GetBlocks {
     }
 }
 
+/// `GetGenesis` — a light client asks the gateway for the **seeded genesis anchor**: the block-0 hash,
+/// the seeded genesis `state_root`, genesis time, the authorized PoA proposer, and the canonical genesis
+/// state SNAPSHOT (the seeded accounts/humans/jurors/CSCA/governance). The light client re-derives the
+/// snapshot's `state_root` locally and rejects the gateway unless it equals its PINNED constant (so the
+/// snapshot is untrusted DATA verified against a hard-coded anchor — a lying gateway is caught, spec 07
+/// §3.4 / ADR-0006). The request carries no body. (`ln-trust-1`/`ln-trust-2` fix.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetGenesis;
+
+impl GetGenesis {
+    pub fn encode(&self) -> Vec<u8> {
+        Vec::new()
+    }
+    pub fn decode(buf: &[u8]) -> Result<Self, WireError> {
+        // No body. A non-empty buffer is non-canonical.
+        if buf.is_empty() {
+            Ok(GetGenesis)
+        } else {
+            Err(WireError::TrailingBytes)
+        }
+    }
+}
+
+/// `Genesis` — the gateway's reply to `GetGenesis` (spec 07 §3.4): the verifiable genesis anchor + the
+/// seeded genesis state snapshot. The light client (a) checks `genesis_hash`/`state_root`/`chain_id`/
+/// `proposer` against its PINNED constants, then (b) imports `snapshot` and re-derives its `state_root`,
+/// rejecting unless it equals the pinned root. Only then does it re-execute blocks on the verified state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Genesis {
+    /// The block-0 hash (the network-identity anchor — must equal the pinned constant).
+    pub genesis_hash: Hash,
+    /// The chain id (must equal the pinned constant).
+    pub chain_id: u64,
+    /// The **seeded** genesis `state_root` over the snapshot below — the light client re-derives it and
+    /// rejects on mismatch with the pinned constant. (NOT the block-0 header's `state_root`, which is a
+    /// fixed `ZERO` anchor; the seeded root is what re-execution of block #1 builds upon.)
+    pub state_root: Hash,
+    /// Genesis unix time (the anchor timestamp for the verified tip at height 0).
+    pub genesis_time: u64,
+    /// The authorized PoA proposer/validator (the light client verifies every block proposer ∈ the
+    /// pinned set; on a single-proposer devnet this IS that set).
+    pub proposer: Address,
+    /// The canonical genesis state snapshot bytes — the `runtime-wasm` snapshot `state` section
+    /// (accounts/streams/humans/jurors/contracts/CSCA/governance/…), serialized as JSON. Opaque to the
+    /// network; the light client decodes + verifies it. Length-prefixed, bounded by `MAX_BLOCK_BYTES`.
+    pub snapshot: Vec<u8>,
+}
+
+impl Genesis {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(128 + self.snapshot.len());
+        out.extend_from_slice(self.genesis_hash.as_slice());
+        out.extend_from_slice(&self.chain_id.to_be_bytes());
+        out.extend_from_slice(self.state_root.as_slice());
+        out.extend_from_slice(&self.genesis_time.to_be_bytes());
+        out.extend_from_slice(self.proposer.as_slice());
+        put_bytes(&mut out, &self.snapshot);
+        out
+    }
+    pub fn decode(buf: &[u8]) -> Result<Self, WireError> {
+        let mut r = Reader::new(buf);
+        let genesis_hash = r.b256()?;
+        let chain_id = r.u64()?;
+        let state_root = r.b256()?;
+        let genesis_time = r.u64()?;
+        let proposer = r.address()?;
+        let snapshot = r.bytes(MAX_BLOCK_BYTES)?;
+        r.finish()?;
+        Ok(Genesis {
+            genesis_hash,
+            chain_id,
+            state_root,
+            genesis_time,
+            proposer,
+            snapshot,
+        })
+    }
+}
+
 /// `Blocks { blocks }` — the requested blocks, ascending height, each canonically encoded (§4.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Blocks {
@@ -495,14 +574,18 @@ impl Blocks {
 const SYNC_TAG_HELLO: u8 = 0;
 /// Tag for a `GetBlocks` request / `Blocks` response.
 const SYNC_TAG_BLOCKS: u8 = 1;
+/// Tag for a `GetGenesis` request / `Genesis` response (the verifiable genesis anchor, spec 07 §3.4).
+const SYNC_TAG_GENESIS: u8 = 2;
 
-/// A `ubi2/sync/1` request: either the connection handshake or a block-range pull.
+/// A `ubi2/sync/1` request: the connection handshake, a block-range pull, or a genesis-anchor fetch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncRequest {
     /// The handshake (§4.1): "here is my genesis/chain/tip/validator-binding; send me yours".
     Hello(Hello),
     /// A block-range pull (§4.2): "send me `[from, to]`".
     GetBlocks(GetBlocks),
+    /// A genesis-anchor fetch (spec 07 §3.4): "send me the seeded genesis snapshot + anchor".
+    GetGenesis(GetGenesis),
 }
 
 impl SyncRequest {
@@ -517,6 +600,10 @@ impl SyncRequest {
                 out.push(SYNC_TAG_BLOCKS);
                 out.extend_from_slice(&g.encode());
             }
+            SyncRequest::GetGenesis(g) => {
+                out.push(SYNC_TAG_GENESIS);
+                out.extend_from_slice(&g.encode());
+            }
         }
         out
     }
@@ -525,16 +612,18 @@ impl SyncRequest {
         match tag {
             SYNC_TAG_HELLO => Ok(SyncRequest::Hello(Hello::decode(rest)?)),
             SYNC_TAG_BLOCKS => Ok(SyncRequest::GetBlocks(GetBlocks::decode(rest)?)),
+            SYNC_TAG_GENESIS => Ok(SyncRequest::GetGenesis(GetGenesis::decode(rest)?)),
             _ => Err(WireError::Invalid("sync-request-tag")),
         }
     }
 }
 
-/// A `ubi2/sync/1` response: the responder's `Hello` (to a `Hello`) or the requested `Blocks`.
+/// A `ubi2/sync/1` response: the responder's `Hello`, the requested `Blocks`, or the `Genesis` anchor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncResponse {
     Hello(Hello),
     Blocks(Blocks),
+    Genesis(Genesis),
 }
 
 impl SyncResponse {
@@ -549,6 +638,10 @@ impl SyncResponse {
                 out.push(SYNC_TAG_BLOCKS);
                 out.extend_from_slice(&b.encode());
             }
+            SyncResponse::Genesis(g) => {
+                out.push(SYNC_TAG_GENESIS);
+                out.extend_from_slice(&g.encode());
+            }
         }
         out
     }
@@ -557,6 +650,7 @@ impl SyncResponse {
         match tag {
             SYNC_TAG_HELLO => Ok(SyncResponse::Hello(Hello::decode(rest)?)),
             SYNC_TAG_BLOCKS => Ok(SyncResponse::Blocks(Blocks::decode(rest)?)),
+            SYNC_TAG_GENESIS => Ok(SyncResponse::Genesis(Genesis::decode(rest)?)),
             _ => Err(WireError::Invalid("sync-response-tag")),
         }
     }
@@ -754,5 +848,33 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&((super::super::consts::SYNC_MAX_BATCH + 1) as u32).to_be_bytes());
         assert_eq!(Blocks::decode(&buf), Err(WireError::TooLong));
+    }
+
+    /// The genesis-anchor request/response round-trips through the `SyncRequest`/`SyncResponse`
+    /// envelope (spec 07 §3.4 — the `ln-trust-1`/`ln-trust-2` verifiable-anchor messages).
+    #[test]
+    fn genesis_anchor_roundtrip() {
+        // GetGenesis carries no body; an empty body round-trips, a non-empty one is non-canonical.
+        let req = SyncRequest::GetGenesis(GetGenesis);
+        assert_eq!(SyncRequest::decode(&req.encode()).unwrap(), req);
+        assert_eq!(GetGenesis::decode(&[]).unwrap(), GetGenesis);
+        assert_eq!(GetGenesis::decode(&[0]), Err(WireError::TrailingBytes));
+
+        let genesis = Genesis {
+            genesis_hash: B256::repeat_byte(0xab),
+            chain_id: 0x5542,
+            state_root: B256::repeat_byte(0xcd),
+            genesis_time: 1_700_000_000,
+            proposer: Address::repeat_byte(0x3c),
+            snapshot: br#"{"version":1,"state":{"accounts":[]}}"#.to_vec(),
+        };
+        let resp = SyncResponse::Genesis(genesis.clone());
+        let back = SyncResponse::decode(&resp.encode()).unwrap();
+        assert_eq!(back, resp);
+        if let SyncResponse::Genesis(g) = back {
+            assert_eq!(g, genesis);
+        } else {
+            panic!("expected Genesis response");
+        }
     }
 }

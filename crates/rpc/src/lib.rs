@@ -1294,6 +1294,37 @@ pub struct Chain {
     /// `crates/node` (which owns the swarm); the node updates this through [`Chain::set_net_status`] /
     /// [`Chain::set_peers`] and the RPC handlers read it. Empty until the node wires the network.
     net_status: Arc<Mutex<NetStatus>>,
+    /// Spec 07 §3.4 (`ln-trust-2` fix): the **seeded genesis anchor** — a snapshot of the state at
+    /// height 0 (after all genesis seeding, before block #1) plus its recomputed `state_root`. Captured
+    /// once by [`Chain::seal_genesis`] (or lazily at the first [`Chain::execute_block`]) and served to a
+    /// browser light client over the sync gateway so it can reproduce a REAL seeded-genesis chain. `None`
+    /// until sealed; a chain with no seeding (an empty genesis) seals to the empty-state root.
+    genesis_anchor: Arc<Mutex<Option<GenesisAnchor>>>,
+}
+
+/// The seeded genesis anchor served to a light client (spec 07 §3.4). Holds the canonical genesis state
+/// **snapshot bytes** (the `runtime-wasm`-compatible `state` JSON, re-derivable to `state_root`) and the
+/// recomputed seeded `state_root`. The light client re-derives the root from the snapshot and rejects the
+/// gateway unless it equals its PINNED constant (so the snapshot is untrusted data; the anchor is pinned).
+#[derive(Clone, Debug)]
+pub struct GenesisAnchor {
+    /// The seeded `state_root` over the height-0 state (recomputed via `ubi2_runtime::state_root`).
+    pub state_root: B256,
+    /// The canonical genesis state snapshot — the `state` section JSON the `runtime-wasm` snapshot
+    /// decoder imports (accounts/streams/humans/jurors/contracts/CSCA/governance/…), serialized bytes.
+    pub snapshot: Vec<u8>,
+}
+
+/// Build the [`GenesisAnchor`] for a height-0 `MemState`: recompute its `state_root` and serialize its
+/// canonical genesis snapshot (the `state` JSON the `runtime-wasm` decoder imports). Pure (spec 07 §3.4).
+fn build_genesis_anchor(state: &MemState) -> GenesisAnchor {
+    let state_root = B256::from(ubi2_runtime::state_root(state));
+    let json = persist::genesis_state_json(state);
+    let snapshot = serde_json::to_vec(&json).expect("genesis state json serializes");
+    GenesisAnchor {
+        state_root,
+        snapshot,
+    }
 }
 
 /// A connected peer as the node sees it, surfaced read-only by `ubi_getPeers` (spec §11). The node
@@ -1457,6 +1488,7 @@ impl Chain {
                 finality_depth: 6,
                 ..Default::default()
             })),
+            genesis_anchor: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1851,6 +1883,16 @@ impl Chain {
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
+        // Spec 07 §3.4 (`ln-trust-2`): seal the seeded genesis anchor the instant before block #1 mutates
+        // state — at this point `g.state` IS the height-0 seeded state (the genesis the light client must
+        // reproduce). Idempotent + lazy: only fires once, only at the first block, and only if the node
+        // did not already seal it explicitly at boot via `seal_genesis`. A no-op for every later block.
+        if number == 1 {
+            let mut anchor = self.genesis_anchor.lock().unwrap();
+            if anchor.is_none() {
+                *anchor = Some(build_genesis_anchor(&g.state));
+            }
+        }
         // M5: the committed block hash now commits `txs_root` + `state_root` (spec §2.2), which are only
         // known *after* execution. But jury-selection entropy and the txs' `block_hash` are needed
         // *during* execution. We therefore derive a **pre-execution** `entropy_hash` from the (already
@@ -2247,6 +2289,60 @@ impl Chain {
     /// Genesis unix time this chain was created at (also the dev account's `verified_at`).
     pub fn genesis_time(&self) -> u64 {
         self.genesis_time
+    }
+
+    /// Spec 07 §3.4 (`ln-trust-2`): **seal the seeded genesis anchor** from the CURRENT state. The node
+    /// calls this once at boot, right after seeding the genesis accounts/jurors/CSCA/governance and
+    /// BEFORE producing any block, so the captured snapshot + root are the canonical height-0 state a
+    /// light client must reproduce. Idempotent: a second call is a no-op (the anchor is sealed once). If
+    /// the node never calls it, [`Chain::execute_block`] seals it lazily before block #1 — but an explicit
+    /// boot-time seal is correct even for a chain restored from a FU-3 snapshot (whose state has advanced
+    /// past genesis), provided the caller seals from a freshly-seeded genesis state.
+    pub fn seal_genesis(&self) {
+        let mut anchor = self.genesis_anchor.lock().unwrap();
+        if anchor.is_none() {
+            let g = self.inner.lock().unwrap();
+            *anchor = Some(build_genesis_anchor(&g.state));
+        }
+    }
+
+    /// Spec 07 §3.4: seal the genesis anchor from an EXPLICIT height-0 `MemState`. Used by a node that
+    /// boots from a FU-3 persistence snapshot (its live state has advanced past genesis): the caller
+    /// reconstructs the canonical seeded genesis into a throwaway state and seals it here, so the gateway
+    /// can still serve the verifiable anchor. Idempotent (a no-op if already sealed).
+    pub fn seal_genesis_from_state(&self, genesis_state: &MemState) {
+        let mut anchor = self.genesis_anchor.lock().unwrap();
+        if anchor.is_none() {
+            *anchor = Some(build_genesis_anchor(genesis_state));
+        }
+    }
+
+    /// The seeded genesis anchor (snapshot + seeded `state_root`), if sealed. Spec 07 §3.4. The sync
+    /// gateway serves this to a browser light client as the `Genesis` response; the client re-derives the
+    /// root from the snapshot and rejects unless it equals its PINNED constant. `None` until sealed.
+    pub fn genesis_anchor(&self) -> Option<GenesisAnchor> {
+        self.genesis_anchor.lock().unwrap().clone()
+    }
+
+    /// The seeded genesis `state_root` (the root over the height-0 seeded state), if sealed. This is the
+    /// value the shipped light client PINS — distinct from the genesis BLOCK header's `state_root` (a
+    /// fixed `ZERO` anchor, never re-executed). `None` until [`Chain::seal_genesis`] / block #1.
+    pub fn genesis_state_root(&self) -> Option<B256> {
+        self.genesis_anchor
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.state_root)
+    }
+
+    /// The authorized PoA proposer address for this chain — the proposer key's address if configured,
+    /// else the designated-proposer published in the net status, else `None`. The sync gateway advertises
+    /// it in the `Genesis` response and the light client verifies every block's proposer ∈ the pinned set.
+    pub fn genesis_proposer(&self) -> Option<AlloyAddr> {
+        if let Some(k) = &self.proposer_key {
+            return Some(k.address());
+        }
+        self.net_status.lock().unwrap().designated_proposer
     }
 
     // ---- M3: proof-of-humanity reads (pure snapshots — invariants I1/I6) ----

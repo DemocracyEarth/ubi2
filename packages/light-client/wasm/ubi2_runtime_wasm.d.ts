@@ -33,6 +33,19 @@ export class LightState {
      */
     static deserialize(bytes: Uint8Array): LightState;
     /**
+     * Construct the verified state from a **pinned, gateway-independent genesis anchor** (spec 07
+     * §3.4 — the `ln-trust-1/2/3` fix). The light client calls THIS (not the empty-state `new`) for a
+     * real seeded chain:
+     *   * `genesis_snapshot` is the seeded genesis state the gateway served (untrusted bytes).
+     *   * `pinned_state_root` is the app's HARD-CODED genesis `state_root` constant. The kernel
+     *     re-derives the root from the snapshot LOCALLY and throws unless it equals this — so a lying
+     *     gateway is caught and the all-zeros default is never silently accepted.
+     *   * `validator_set` is a JSON array of `0x`-hex 20-byte proposer addresses; it is pinned and
+     *     enforced on EVERY block (always-on proposer authority — no None-skip).
+     * On success the verified tip is height 0 over the verified seeded state.
+     */
+    static genesisImport(chain_id: bigint, genesis_hash: string, pinned_state_root: string, genesis_time: bigint, genesis_snapshot: Uint8Array, validator_set: string[]): LightState;
+    /**
      * The PoH status tag of `addr` (`0`=Unverified, `1`=Pending, `2`=Verified, `3`=Challenged,
      * `4`=Revoked).
      */
@@ -53,6 +66,12 @@ export class LightState {
      */
     serialize(): Uint8Array;
     /**
+     * Re-pin the PoA validator set after a snapshot `deserialize` (`ln-trust-1`), so proposer
+     * authority is enforced on the next block even on a resumed session. `validator_set` is a JSON
+     * array of `0x`-hex 20-byte addresses.
+     */
+    setValidatorSet(validator_set: string[]): void;
+    /**
      * The 32-byte `state_root` over the current verified state, as a `0x` hex string — the SAME
      * commitment consensus uses (`ubi2_runtime::state_root`).
      */
@@ -71,10 +90,12 @@ export interface InitOutput {
     readonly lightstate_applyBlock: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly lightstate_balanceOf: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
     readonly lightstate_deserialize: (a: number, b: number) => [number, number, number];
+    readonly lightstate_genesisImport: (a: bigint, b: number, c: number, d: number, e: number, f: bigint, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly lightstate_humanStatus: (a: number, b: number, c: number) => [number, number, number];
     readonly lightstate_new: (a: bigint, b: number, c: number, d: number, e: number, f: bigint) => [number, number, number];
     readonly lightstate_nonceOf: (a: number, b: number, c: number) => [bigint, number, number];
     readonly lightstate_serialize: (a: number) => [number, number];
+    readonly lightstate_setValidatorSet: (a: number, b: number, c: number) => [number, number];
     readonly lightstate_stateRoot: (a: number) => [number, number];
     readonly lightstate_tip: (a: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
@@ -82,6 +103,7 @@ export interface InitOutput {
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
     readonly __wbindgen_start: () => void;
 }
 

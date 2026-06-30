@@ -53,11 +53,21 @@ pub enum VerifyError {
     BadTimestamp,
     /// `proposer` is not the expected (scheduled) proposer, when one was supplied.
     WrongProposer,
+    /// The block's `proposer` is not in the pinned PoA validator set (`ln-trust-1` — proposer authority
+    /// is enforced on EVERY block; a self-signed block from an unauthorized key is rejected, never
+    /// "verified"). Fail-closed; the tip never advances.
+    UnauthorizedProposer { proposer: [u8; 20] },
     /// A raw tx in the block did not decode (malformed/forged block).
     UndecodableTx(String),
     /// Re-execution produced a different `state_root` than the header claims — the I1/I2 cross-node
     /// check failed (AC-LC2 / AC-F-LN1). The lying server is **caught**; the verified state is unchanged.
     StateRootMismatch { expected: [u8; 32], got: [u8; 32] },
+    /// A genesis snapshot the gateway served re-derived to a `state_root` other than the PINNED constant
+    /// (`ln-trust-2`/`ln-trust-3`). The gateway is on the wrong network or lied about the seeded genesis;
+    /// the anchor is REJECTED and no block is ever applied on top of it (fail-closed).
+    GenesisRootMismatch { expected: [u8; 32], got: [u8; 32] },
+    /// The genesis snapshot bytes did not decode (malformed anchor).
+    BadGenesisSnapshot(String),
 }
 
 impl core::fmt::Display for VerifyError {
@@ -74,6 +84,14 @@ impl core::fmt::Display for VerifyError {
             VerifyError::WrongParent => write!(f, "parent_hash does not link to verified tip"),
             VerifyError::BadTimestamp => write!(f, "timestamp not greater than parent"),
             VerifyError::WrongProposer => write!(f, "proposer is not the expected proposer"),
+            VerifyError::UnauthorizedProposer { proposer } => write!(
+                f,
+                "proposer 0x{} is not in the pinned validator set",
+                proposer
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ),
             VerifyError::UndecodableTx(e) => write!(f, "undecodable tx: {e}"),
             VerifyError::StateRootMismatch { expected, got } => write!(
                 f,
@@ -81,6 +99,13 @@ impl core::fmt::Display for VerifyError {
                 hex32(expected),
                 hex32(got)
             ),
+            VerifyError::GenesisRootMismatch { expected, got } => write!(
+                f,
+                "genesis state_root mismatch: pinned 0x{} re-derived 0x{}",
+                hex32(expected),
+                hex32(got)
+            ),
+            VerifyError::BadGenesisSnapshot(e) => write!(f, "bad genesis snapshot: {e}"),
         }
     }
 }
@@ -125,6 +150,11 @@ pub struct LightCore {
     tip_hash: [u8; 32],
     tip_state_root: [u8; 32],
     tip_timestamp: u64,
+    /// The pinned PoA validator set (`ln-trust-1`): the addresses authorized to propose blocks. When
+    /// NON-EMPTY, [`LightCore::apply_decoded`] rejects ANY block whose `proposer` is not in this set —
+    /// proposer authority is enforced on every block, never skipped. Empty ⇒ no set pinned (the legacy
+    /// `genesis` constructor; the always-on enforcement is engaged via `genesis_import`).
+    validator_set: Vec<[u8; 20]>,
     oracle: MockOracle,
     interpreter: MockInterpreter,
     verifier: MockZkVerifier,
@@ -155,10 +185,63 @@ impl LightCore {
             tip_hash: genesis_hash,
             tip_state_root: genesis_state_root,
             tip_timestamp: genesis_time,
+            validator_set: Vec::new(),
             oracle: MockOracle::default(),
             interpreter: MockInterpreter::default(),
             verifier: MockZkVerifier::default(),
         }
+    }
+
+    /// Construct the verified state from a **pinned, gateway-independent genesis anchor** (spec 07 §3.4,
+    /// `ln-trust-1`/`ln-trust-2`/`ln-trust-3`). This is how the shipped light client anchors a REAL seeded
+    /// chain:
+    ///
+    ///   * `genesis_snapshot` is the seeded genesis state the gateway served (untrusted DATA): the seeded
+    ///     accounts/humans/jurors/CSCA/governance. It is decoded into a `MemState`.
+    ///   * `pinned_state_root` is the app's HARD-CODED genesis `state_root` constant. We re-derive the
+    ///     `state_root` from the decoded snapshot LOCALLY and reject (`GenesisRootMismatch`) unless it
+    ///     equals `pinned_state_root` — so a lying gateway serving a different seeded genesis is caught,
+    ///     and the all-zeros default is never silently accepted (closes `ln-trust-3`).
+    ///   * `validator_set` is the app's pinned PoA proposer/validator set; it is stored and enforced on
+    ///     EVERY subsequent block (`ln-trust-1` — no None-skip).
+    ///   * `genesis_hash` / `genesis_time` anchor the verified tip at height 0 so block #1 links by
+    ///     `parent_hash`. (`genesis_hash` is the block-0 header hash — over the ZERO header root — which
+    ///     the caller has already checked equals its pinned constant; the SEEDED root the client commits
+    ///     as the verified tip's `state_root` is `pinned_state_root`, what re-execution builds upon.)
+    ///
+    /// On success the verified tip is `(0, genesis_hash, pinned_state_root, genesis_time)` over the
+    /// verified seeded state; `apply_block` grows it from there.
+    pub fn genesis_import(
+        chain_id: u64,
+        genesis_hash: [u8; 32],
+        pinned_state_root: [u8; 32],
+        genesis_time: u64,
+        genesis_snapshot: &[u8],
+        validator_set: Vec<[u8; 20]>,
+    ) -> Result<Self, VerifyError> {
+        let state = crate::snapshot::decode_state(genesis_snapshot)
+            .map_err(VerifyError::BadGenesisSnapshot)?;
+        // ln-trust-2/3: re-derive the root from the served snapshot and verify it equals the PINNED
+        // constant BEFORE trusting any byte of the snapshot. A mismatch ⇒ reject the whole anchor.
+        let derived = runtime_state_root(&state);
+        if derived != pinned_state_root {
+            return Err(VerifyError::GenesisRootMismatch {
+                expected: pinned_state_root,
+                got: derived,
+            });
+        }
+        Ok(LightCore {
+            chain_id,
+            state,
+            tip_number: 0,
+            tip_hash: genesis_hash,
+            tip_state_root: pinned_state_root,
+            tip_timestamp: genesis_time,
+            validator_set,
+            oracle: MockOracle::default(),
+            interpreter: MockInterpreter::default(),
+            verifier: MockZkVerifier::default(),
+        })
     }
 
     /// The verified tip `(number, hash, state_root, timestamp)`.
@@ -245,6 +328,18 @@ impl LightCore {
                 return Err(VerifyError::WrongProposer);
             }
         }
+        // ln-trust-1 (ALWAYS-ON proposer authority): when a PoA validator set is pinned, the block's
+        // proposer MUST be in it — on EVERY block, independent of `expected_proposer`. This closes the
+        // None-skip: a malicious gateway that self-signs a chain from its own key is rejected here, not
+        // shown as "verified". (An empty set means the legacy `genesis` constructor was used — the TS
+        // client always pins a set via `genesis_import`, so the shipped app always enforces this.)
+        if !self.validator_set.is_empty()
+            && !self.validator_set.contains(&block.proposer.into_array())
+        {
+            return Err(VerifyError::UnauthorizedProposer {
+                proposer: block.proposer.into_array(),
+            });
+        }
 
         // 3. Decode the ordered raw user txs via the SHARED kernel decode — the SAME structural decode
         //    the proposer / server follower ran (chain-id bind, signer recovery, hub calldata shape), so
@@ -330,10 +425,21 @@ impl LightCore {
             tip_hash,
             tip_state_root,
             tip_timestamp,
+            // A restored IndexedDB snapshot does not carry the validator set; the caller re-pins it via
+            // `set_validator_set` after deserialize (the TS client always re-supplies its pinned set on
+            // load). Empty here keeps the snapshot codec format unchanged.
+            validator_set: Vec::new(),
             oracle: MockOracle::default(),
             interpreter: MockInterpreter::default(),
             verifier: MockZkVerifier::default(),
         }
+    }
+
+    /// Re-pin the PoA validator set on a `LightCore` restored from a snapshot (`ln-trust-1`). The TS
+    /// client calls this right after `deserialize` so proposer authority is enforced on the next block
+    /// even on a resumed session. (The snapshot format itself stays unchanged — the set is app-pinned.)
+    pub fn set_validator_set(&mut self, validator_set: Vec<[u8; 20]>) {
+        self.validator_set = validator_set;
     }
 
     // --- accessors for the snapshot encoder (read-only; no mutation) ---

@@ -49,17 +49,39 @@ export interface ILightState {
   humanStatus(addr: string): number;
   /** Serialize the verified state + tip for IndexedDB persistence. */
   serialize(): Uint8Array;
+  /**
+   * Re-pin the PoA validator set after a snapshot restore (`ln-trust-1`).  Optional on the interface
+   * (the WASM `LightState` always provides it); a restored session re-supplies its pinned set so
+   * proposer authority is enforced on the next block.
+   */
+  setValidatorSet?(validatorSet: string[]): void;
 }
 
 /**
- * Factory: constructs a `LightState` anchored at genesis.  The factory is provided by the caller
- * so the light-client package stays WASM-agnostic — the browser supplies the actual
- * wasm-bindgen-generated class; Node tests supply a Rust-native shim via `LightCore` FFI or the
- * pure-JS shim below.
+ * Legacy factory: constructs an EMPTY-state `LightState` anchored at a genesis hash/root (the pre-pin
+ * path).  RETAINED for back-compat / tests, but the shipped client uses {@link LightStateGenesisFactory}
+ * with a PINNED, verified seeded-genesis snapshot — the empty-state path is non-functional on a real
+ * seeded chain (`ln-trust-2`).
  */
 export type LightStateFactory = (
   chainId: number,
   genesisHash: string,
   genesisStateRoot: string,
   genesisTime: number,
+) => ILightState;
+
+/**
+ * Factory: constructs a `LightState` from a **pinned, gateway-independent genesis anchor** (spec 07
+ * §3.4 — the `ln-trust-1/2/3` fix).  `genesisSnapshot` is the seeded genesis state the gateway served
+ * (untrusted bytes); `pinnedStateRoot` is the app's HARD-CODED genesis state_root constant.  The kernel
+ * re-derives the snapshot's root LOCALLY and THROWS unless it equals `pinnedStateRoot` (so a lying
+ * gateway is caught).  `validatorSet` is the pinned PoA proposer set, enforced on every block.
+ */
+export type LightStateGenesisFactory = (
+  chainId: number,
+  genesisHash: string,
+  pinnedStateRoot: string,
+  genesisTime: number,
+  genesisSnapshot: Uint8Array,
+  validatorSet: string[],
 ) => ILightState;

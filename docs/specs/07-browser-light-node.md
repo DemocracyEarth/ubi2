@@ -227,6 +227,29 @@ replay; in Stage 1 the default is **replay from genesis**.
   an eclipse beyond what re-execution + the proposer-schedule check give it — multi-gateway is the
   mitigation, full browser gossip the long-term one (§7).
 
+**The pinned, gateway-independent genesis anchor (closes findings `ln-trust-1/2/3`).** Re-execution from
+genesis only gives the guarantee above if the *genesis itself* is fixed independently of the gateway —
+otherwise a malicious gateway serves a self-consistent chain signed by **its own** key from **its own**
+genesis and the UI still reads "verified". The shipped app therefore pins THREE hard-coded constants
+(`apps/light-node/src/config.ts`), derived from the actual devnet genesis:
+- **`genesisHash`** — the block-0 hash. The client rejects (`WrongNetwork`) any gateway advertising a
+  different one (in its `Hello` AND in the genesis anchor); it **never adopts the gateway's**.
+- **`genesisStateRoot`** — the **seeded** genesis `state_root` (over the seeded accounts/jurors/CSCA/
+  governance — distinct from the block-0 header's `ZERO` root, which is never re-executed). The node
+  seeds genesis via non-block state writes and **seals** an anchor (`Chain::seal_genesis`); it serves the
+  seeded genesis **snapshot** over the sync gateway via a new `GetGenesis`/`Genesis` message. The client
+  imports the snapshot, **re-derives its `state_root` locally**, and rejects unless it equals this pinned
+  constant — so the snapshot is untrusted *data* checked against the pinned *anchor*. The client then
+  re-executes blocks on top of the verified seeded state (it no longer starts from an empty state, so a
+  real seeded chain reproduces byte-identically — the previous empty-state import was non-functional).
+- **`validatorSet`** — the authorized PoA proposer set. Proposer authority is enforced on **every** block
+  (the kernel checks `block.proposer ∈ validatorSet`, and the scheduled proposer is always passed to
+  `applyBlock`); there is no "skip when unspecified" path.
+
+The on-chain consensus genesis format is unchanged (the block-0 header still commits a `ZERO` state_root,
+so M5 consensus + `m5_stage_a` are untouched): the pinned anchor is a separate, app-held verification
+constant over the seeded height-0 state, not a change to the committed header.
+
 **Documented later optimizations (backlog, not Stage 1):**
 - **Header-only sync** (the brief's Risk-1 fallback): verify the header chain (`parent_hash` links +
   `proposer_sig` recovering to the scheduled proposer) and *trust* the header `state_root` without
