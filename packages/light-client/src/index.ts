@@ -16,7 +16,13 @@
 
 export { LightClient, VerificationError, WrongNetworkError, GatewayError } from "./client.js";
 export type { LightClientOptions, VerifiedBalanceSample, VerifyMode } from "./client.js";
-export type { ILightState, LightStateFactory, BlockOutcome, TipInfo } from "./wasm-types.js";
+export type {
+  ILightState,
+  LightStateFactory,
+  LightStateGenesisFactory,
+  BlockOutcome,
+  TipInfo,
+} from "./wasm-types.js";
 export {
   defaultStore,
   InMemoryStore,
@@ -36,6 +42,8 @@ export {
   decodeGetBlocks,
   encodeBlocks,
   decodeBlocks,
+  encodeGenesis,
+  decodeGenesis,
   toHex,
   fromHex,
   bytesEqual,
@@ -45,6 +53,7 @@ export type {
   Hello,
   GetBlocks,
   Blocks,
+  Genesis,
   SyncRequest,
   SyncResponse,
 } from "./wire.js";

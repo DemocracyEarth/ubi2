@@ -130,6 +130,57 @@ mod bindings {
             })
         }
 
+        /// Construct the verified state from a **pinned, gateway-independent genesis anchor** (spec 07
+        /// §3.4 — the `ln-trust-1/2/3` fix). The light client calls THIS (not the empty-state `new`) for a
+        /// real seeded chain:
+        ///   * `genesis_snapshot` is the seeded genesis state the gateway served (untrusted bytes).
+        ///   * `pinned_state_root` is the app's HARD-CODED genesis `state_root` constant. The kernel
+        ///     re-derives the root from the snapshot LOCALLY and throws unless it equals this — so a lying
+        ///     gateway is caught and the all-zeros default is never silently accepted.
+        ///   * `validator_set` is a JSON array of `0x`-hex 20-byte proposer addresses; it is pinned and
+        ///     enforced on EVERY block (always-on proposer authority — no None-skip).
+        /// On success the verified tip is height 0 over the verified seeded state.
+        #[wasm_bindgen(js_name = genesisImport)]
+        pub fn genesis_import(
+            chain_id: u64,
+            genesis_hash: &str,
+            pinned_state_root: &str,
+            genesis_time: u64,
+            genesis_snapshot: &[u8],
+            validator_set: Vec<String>,
+        ) -> Result<LightState, JsError> {
+            console_error_panic_hook::set_once();
+            let hash = from_hex::<32>(genesis_hash)?;
+            let root = from_hex::<32>(pinned_state_root)?;
+            let mut set = Vec::with_capacity(validator_set.len());
+            for v in &validator_set {
+                set.push(from_hex::<20>(v)?);
+            }
+            let core = LightCore::genesis_import(
+                chain_id,
+                hash,
+                root,
+                genesis_time,
+                genesis_snapshot,
+                set,
+            )
+            .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(LightState { core })
+        }
+
+        /// Re-pin the PoA validator set after a snapshot `deserialize` (`ln-trust-1`), so proposer
+        /// authority is enforced on the next block even on a resumed session. `validator_set` is a JSON
+        /// array of `0x`-hex 20-byte addresses.
+        #[wasm_bindgen(js_name = setValidatorSet)]
+        pub fn set_validator_set(&mut self, validator_set: Vec<String>) -> Result<(), JsError> {
+            let mut set = Vec::with_capacity(validator_set.len());
+            for v in &validator_set {
+                set.push(from_hex::<20>(v)?);
+            }
+            self.core.set_validator_set(set);
+            Ok(())
+        }
+
         /// Decode + re-execute + root-verify a canonical `WireBlock` (the bytes the gateway served, the
         /// SAME `ubi2/sync/1` payload a server follower verifies). On success the verified tip advances
         /// and the accepted block's `{number,hash,stateRoot,timestamp}` is returned; on ANY failure a

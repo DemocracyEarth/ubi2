@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#07080c"/>
+  <circle cx="256" cy="256" r="180" stroke="#4fe7a8" stroke-width="20" fill="none"/>
+  <path d="M160 256c0-52.9 43.1-96 96-96s96 43.1 96 96-43.1 96-96 96" stroke="#4fe7a8" stroke-width="20" stroke-linecap="round" fill="none"/>
+  <circle cx="256" cy="256" r="36" fill="#4fe7a8"/>
+  <!-- Streaming lines suggesting UBI flow -->
+  <line x1="196" y1="256" x2="100" y2="256" stroke="#4fe7a8" stroke-width="12" stroke-linecap="round" opacity="0.4"/>
+  <line x1="196" y1="230" x2="120" y2="190" stroke="#4fe7a8" stroke-width="8" stroke-linecap="round" opacity="0.25"/>
+  <line x1="196" y1="282" x2="120" y2="322" stroke="#4fe7a8" stroke-width="8" stroke-linecap="round" opacity="0.25"/>
+</svg>

@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use alloy_primitives::address;
 use ubi2_rpc::{serve, serve_sync_gateway, AdminAccess, Chain, ProposerKey, DEVNET_CHAIN_ID};
-use ubi2_runtime::Account;
+use ubi2_runtime::{Account, MemState, State};
 
 /// Env var: comma-separated list of browser origins allowed to call the loopback admin RPC
 /// (`ubi_getOracleConfig`/`ubi_setOracleConfig`). Default: the local wallet at `http://localhost:3000`.
@@ -89,6 +89,37 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Spec 07 §3.4 (`ln-trust-2`): reconstruct the canonical seeded genesis state into a throwaway
+/// `MemState`, applying the EXACT same genesis seeds the fresh-boot path applies to the live chain (the
+/// dev account + verified human, the devnet jurors, the CSCA governance authority + curated CSCA). Used
+/// to seal the genesis anchor on a node booted from a FU-3 persistence snapshot (whose live state has
+/// advanced past genesis). The result must be byte-identical to the fresh path's height-0 state — it
+/// seeds the same entries; `state_root` sorts, so insertion order is irrelevant. Keep IN SYNC with the
+/// fresh-genesis seeding block in `main`.
+fn build_genesis_state(dev_addr: &[u8; 20], genesis_time: u64) -> MemState {
+    let mut s = MemState::new();
+    s.put(Account {
+        address: *dev_addr,
+        verified: true,
+        verified_at: genesis_time,
+        last_settled_at: genesis_time,
+        settled_balance: 0,
+        nonce: 0,
+    });
+    ubi2_runtime::seed_verified_human(&mut s, dev_addr, genesis_time);
+    for juror in DEVNET_JURORS {
+        ubi2_runtime::register_juror(&mut s, &juror.into_array(), 0);
+    }
+    s.set_csca_governance(*dev_addr);
+    ubi2_runtime::seed_csca(
+        &mut s,
+        *b"USA",
+        DEVNET_CSCA_KEY_ID,
+        DEVNET_CSCA_PUBKEY.to_vec(),
+    );
+    s
 }
 
 #[tokio::main]
@@ -258,6 +289,27 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(
             csca_root = %hex::encode(chain.csca_registry_root().as_slice()),
             "M6: seeded the genesis CSCA trust-anchor registry + governance authority"
+        );
+    }
+
+    // Spec 07 §3.4 (`ln-trust-2`): seal the **seeded genesis anchor** so the sync gateway can serve a
+    // browser light client the verifiable genesis (the seeded accounts/jurors/CSCA/governance + its
+    // recomputed `state_root`). For a FRESH genesis the live state IS the height-0 state — `seal_genesis`
+    // captures it directly. For a chain RESTORED from a FU-3 snapshot the live state has advanced past
+    // genesis, so we reconstruct the canonical seeded genesis into a throwaway state (the SAME seeds the
+    // fresh path applies) and seal from that. Either way the anchor is the deterministic devnet genesis,
+    // and the shipped app's PINNED `state_root` constant catches a lying gateway.
+    if restored_from_snapshot {
+        let genesis_state = build_genesis_state(&dev_addr.into_array(), genesis_time);
+        chain.seal_genesis_from_state(&genesis_state);
+    } else {
+        chain.seal_genesis();
+    }
+    if let Some(root) = chain.genesis_state_root() {
+        tracing::info!(
+            genesis_state_root = %hex::encode(root.as_slice()),
+            genesis_hash = %hex::encode(chain.genesis_hash().as_slice()),
+            "M5-LN: sealed the seeded genesis anchor (light-client pinned root)"
         );
     }
 

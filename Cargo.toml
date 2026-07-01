@@ -11,6 +11,10 @@ members = [
     # Browser light-node WASM wrapper (spec 07 / ADR-0006). The ONLY crate that pulls `wasm-bindgen`;
     # a thin bytes/JSON API over the UNTOUCHED, dependency-free `crates/runtime`.
     "crates/runtime-wasm",
+    # Shared block re-execution kernel (spec 07 §2.3 / ADR-0006 Decision 3). The SINGLE ordered-op apply
+    # path used by BOTH the full node (crates/rpc) and the WASM light client (crates/runtime-wasm) — no
+    # async/networking, wasm32-compilable, so there is no logic fork between the two followers.
+    "crates/exec",
 ]
 
 [workspace.package]

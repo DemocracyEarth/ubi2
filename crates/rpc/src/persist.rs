@@ -895,6 +895,14 @@ fn import_block(dto: &BlockDto) -> Block {
 // Public API on `Chain`
 // ---------------------------------------------------------------------------------------------
 
+/// Serialize a `MemState`'s `state` section to the canonical JSON the `runtime-wasm` snapshot decoder
+/// imports (spec 07 §3.4). The field shapes are byte-for-byte the `StateDto` the light client reads (the
+/// AC-WB parity gate proves the two `StateDto`s round-trip), so a light client decoding these bytes
+/// rebuilds a state with the SAME `state_root`. Used to serve the seeded genesis anchor over the gateway.
+pub(crate) fn genesis_state_json(state: &MemState) -> serde_json::Value {
+    serde_json::to_value(export_state(state)).expect("StateDto serializes")
+}
+
 impl Chain {
     /// Build a full, deterministic [`ChainSnapshot`] of the current chain (blocks + state). Pure read.
     pub fn export_snapshot(&self) -> ChainSnapshot {

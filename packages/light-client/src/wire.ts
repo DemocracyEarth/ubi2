@@ -152,13 +152,30 @@ export interface Blocks {
   blocks: Uint8Array[]; // canonical-encoded WireBlock bytes (pass directly to WASM applyBlock)
 }
 
+/**
+ * The seeded genesis anchor the gateway serves to a light client (spec 07 §3.4 — the
+ * `ln-trust-1/2/3` fix).  The client checks `genesisHash`/`stateRoot`/`chainId`/`proposer` against its
+ * PINNED constants (it NEVER adopts the gateway's), then imports `snapshot` and re-derives its state_root
+ * locally, rejecting unless it equals the pinned root.
+ */
+export interface Genesis {
+  genesisHash: Uint8Array; // 32 bytes
+  chainId: bigint;
+  stateRoot: Uint8Array; // 32 bytes — the SEEDED genesis state_root (re-derived + checked vs pinned)
+  genesisTime: bigint;
+  proposer: Uint8Array; // 20 bytes — the authorized PoA proposer
+  snapshot: Uint8Array; // the genesis state snapshot bytes (imported into the WASM kernel)
+}
+
 export type SyncRequest =
   | { tag: "Hello"; hello: Hello }
-  | { tag: "GetBlocks"; getBlocks: GetBlocks };
+  | { tag: "GetBlocks"; getBlocks: GetBlocks }
+  | { tag: "GetGenesis" };
 
 export type SyncResponse =
   | { tag: "Hello"; hello: Hello }
-  | { tag: "Blocks"; blocks: Blocks };
+  | { tag: "Blocks"; blocks: Blocks }
+  | { tag: "Genesis"; genesis: Genesis };
 
 // ---------------------------------------------------------------------------
 // WireBlock encode/decode
@@ -288,20 +305,51 @@ export function decodeBlocks(buf: Uint8Array): Blocks {
 }
 
 // ---------------------------------------------------------------------------
+// Genesis encode/decode (spec 07 §3.4 — the verifiable genesis anchor)
+// ---------------------------------------------------------------------------
+
+export function encodeGenesis(g: Genesis): Uint8Array {
+  const w = new Writer();
+  w.bytes(g.genesisHash);
+  w.u64(g.chainId);
+  w.bytes(g.stateRoot);
+  w.u64(g.genesisTime);
+  w.bytes(g.proposer);
+  w.blob(g.snapshot);
+  return w.finish();
+}
+
+export function decodeGenesis(buf: Uint8Array): Genesis {
+  const r = new Reader(buf);
+  const genesisHash = r.take(32);
+  const chainId = r.u64();
+  const stateRoot = r.take(32);
+  const genesisTime = r.u64();
+  const proposer = r.take(20);
+  const snapshot = r.blob(MAX_BLOCK_BYTES);
+  r.finish();
+  return { genesisHash, chainId, stateRoot, genesisTime, proposer, snapshot };
+}
+
+// ---------------------------------------------------------------------------
 // SyncRequest encode/decode
 // ---------------------------------------------------------------------------
 
 const SYNC_TAG_HELLO = 0;
 const SYNC_TAG_BLOCKS = 1;
+const SYNC_TAG_GENESIS = 2;
 
 export function encodeSyncRequest(req: SyncRequest): Uint8Array {
   const w = new Writer();
   if (req.tag === "Hello") {
     w.u8(SYNC_TAG_HELLO);
     w.bytes(encodeHello(req.hello));
-  } else {
+  } else if (req.tag === "GetBlocks") {
     w.u8(SYNC_TAG_BLOCKS);
     w.bytes(encodeGetBlocks(req.getBlocks));
+  } else {
+    // GetGenesis carries no body.
+    w.u8(SYNC_TAG_GENESIS);
   }
   return w.finish();
 }
@@ -314,6 +362,8 @@ export function decodeSyncResponse(buf: Uint8Array): SyncResponse {
     return { tag: "Hello", hello: decodeHello(rest) };
   } else if (tag === SYNC_TAG_BLOCKS) {
     return { tag: "Blocks", blocks: decodeBlocks(rest) };
+  } else if (tag === SYNC_TAG_GENESIS) {
+    return { tag: "Genesis", genesis: decodeGenesis(rest) };
   }
   throw new Error(`wire: unknown SyncResponse tag ${tag}`);
 }

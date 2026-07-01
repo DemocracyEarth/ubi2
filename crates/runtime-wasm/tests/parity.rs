@@ -26,15 +26,39 @@ use ubi2_runtime::{Account, UBI};
 use ubi2_runtime_wasm::wire::WireBlock as WasmWireBlock;
 use ubi2_runtime_wasm::LightCore;
 
-// The StreamHub write selectors, declared exactly as the runtime/rpc do.
+// The hub write selectors, declared exactly as the runtime/rpc/exec do (so the `sol!`-derived 4-byte
+// selectors are byte-identical and the kernel decodes the calldata these tests build).
 sol! {
     function openStream(address to, uint256 ratePerSec, uint256 deposit) external returns (uint256 id);
     function stopStream(uint256 id) external;
+
+    function requestVerification(bytes32 livenessRef) external;
+    function vouch(address vouchee) external;
+    function submitZkPassportProof(
+        bytes proof,
+        bytes32 nullifier,
+        bytes32[3] attributeCommitments,
+        bytes32 cscaRegistryRoot,
+        uint8 schemeTag,
+        uint64 nowEpoch
+    ) external;
+
+    function deployContract(string text, address[] parties) external returns (uint256 id);
+    function fundContract(uint256 id) external payable;
+    function invokeContract(uint256 id, bytes32 triggerRef) external returns (uint256 caseId);
 }
 
 const STREAM_HUB: [u8; 20] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x57, 0x42,
+];
+const HUMANITY_HUB: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x50, 0x48,
+];
+const CONTRACT_HUB: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x50, 0x43,
 ];
 
 /// Derive the EVM address of a secp256k1 signing key (`keccak256(uncompressed_pubkey[1..])[12..]`).
@@ -425,6 +449,357 @@ fn snapshot_roundtrip_preserves_state_root_and_tip() {
         restored.serialize(),
         bytes,
         "snapshot bytes must be stable across round-trips"
+    );
+}
+
+/// AC-WB (Stage 2) — a **PoH social-vouching** block re-executes byte-identically. Two seeded verified
+/// humans vouch for a fresh applicant who first `requestVerification`s; the auto-finalize sweep then
+/// promotes the applicant once it has the vouches + the window clears. Every block's `state_root` and
+/// `balanceOf` must match between the WASM kernel and the server follower — proving the light client
+/// re-executes the HumanityHub path (which Stage 1 fail-closed with `UnsupportedKind`).
+#[test]
+fn poh_vouching_block_parity() {
+    let genesis_time = 1_700_000_000u64;
+    let chain_id = DEVNET_CHAIN_ID;
+    let proposer = std::sync::Arc::new(ProposerKey::from_bytes(&[13u8; 32]).unwrap());
+    let chain = Chain::new(chain_id, genesis_time).with_proposer_key(proposer);
+
+    // Two verified humans (the vouchers) + jurors so the registration case has a jury (MockOracle grades
+    // a confident Human pass — the SAME default the light client's MockOracle uses).
+    let v1_sk = SigningKey::from_slice(&[0x51; 32]).unwrap();
+    let v2_sk = SigningKey::from_slice(&[0x52; 32]).unwrap();
+    let app_sk = SigningKey::from_slice(&[0x53; 32]).unwrap();
+    let v1 = addr_of(&v1_sk);
+    let v2 = addr_of(&v2_sk);
+    let app = addr_of(&app_sk);
+    for (sk_addr, seed) in [(v1, [0x51u8; 32]), (v2, [0x52u8; 32])] {
+        let _ = seed;
+        chain.seed_verified_human(&sk_addr, genesis_time);
+        chain.seed_account(Account {
+            address: sk_addr,
+            verified: true,
+            verified_at: genesis_time,
+            last_settled_at: genesis_time,
+            settled_balance: 100 * UBI,
+            nonce: 0,
+        });
+        chain.register_juror(&sk_addr, 1);
+    }
+
+    let anchor = chain.produce_block(genesis_time + 2);
+    let mut light = build_light_at_anchor(&chain, chain_id, &anchor);
+    assert_eq!(light.state_root(), anchor.state_root.0);
+
+    // Capture each block's committed balances RIGHT AFTER producing it (the per-height read, not the
+    // final-tip read) so the per-height parity check is meaningful.
+    let mut all: Vec<(Block, u64, Vec<u128>)> = Vec::new();
+
+    // Block A: the applicant opens a registration (onboarding — fee-exempt).
+    let t1 = genesis_time + 10;
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &app_sk,
+            chain_id,
+            HUMANITY_HUB,
+            0,
+            requestVerificationCall {
+                livenessRef: [7u8; 32].into(),
+            }
+            .abi_encode(),
+            0,
+        ))
+        .expect("requestVerification admitted");
+    let block_a = chain.produce_block(t1);
+    all.push((block_a, t1, balances_at(&chain, &[v1, v2, app], t1)));
+
+    // Block B: both verified humans vouch for the applicant.
+    let t2 = genesis_time + 20;
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &v1_sk,
+            chain_id,
+            HUMANITY_HUB,
+            0,
+            vouchCall {
+                vouchee: AlloyAddr::from(app),
+            }
+            .abi_encode(),
+            0,
+        ))
+        .expect("v1 vouch admitted");
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &v2_sk,
+            chain_id,
+            HUMANITY_HUB,
+            0,
+            vouchCall {
+                vouchee: AlloyAddr::from(app),
+            }
+            .abi_encode(),
+            0,
+        ))
+        .expect("v2 vouch admitted");
+    let block_b = chain.produce_block(t2);
+    all.push((block_b, t2, balances_at(&chain, &[v1, v2, app], t2)));
+
+    // Blocks C..: empty ticks to let the challenge window clear so the auto-finalize sweep promotes the
+    // applicant to Verified (emission starts) — re-executed by the light client's finalize sweep too.
+    let mut t = genesis_time + 100;
+    for _ in 0..12 {
+        let b = chain.produce_block(t);
+        all.push((b, t, balances_at(&chain, &[v1, v2, app], t)));
+        t += 100;
+    }
+
+    for (b, now, want) in &all {
+        let wire = wire_block_for(&chain, b);
+        let outcome = light
+            .apply_decoded(&wire, Some(b.proposer.into_array()))
+            .unwrap_or_else(|e| panic!("browser must accept PoH block {}: {e}", b.number));
+        assert_eq!(
+            outcome.state_root, b.state_root.0,
+            "state_root diverged at PoH block {}",
+            b.number
+        );
+        assert_eq!(
+            light.state_root(),
+            chain.state_root_at(b.number).unwrap().0,
+            "light vs server state_root diverged at PoH block {}",
+            b.number
+        );
+        for (i, who) in [v1, v2, app].iter().enumerate() {
+            assert_eq!(
+                light.balance_of(who, *now).to_string(),
+                want[i].to_string(),
+                "balanceOf diverged for {who:?} at PoH block {}",
+                b.number
+            );
+        }
+    }
+    drop(all);
+    // The applicant must have been finalized (status Verified ⇒ tag 2) on BOTH followers.
+    assert_eq!(
+        light.human_status(&app),
+        2,
+        "applicant must be Verified after the vouch + finalize sweep (light)"
+    );
+    assert_eq!(
+        chain.get_human(&app).map(|h| h.status),
+        Some(ubi2_runtime::HumanStatus::Verified),
+        "applicant must be Verified after the vouch + finalize sweep (server)"
+    );
+}
+
+/// AC-WB (Stage 2) — a **prompt-contract** block re-executes byte-identically. The dev account deploys
+/// a contract, funds its escrow, then invokes it; the deterministic MockInterpreter quorum commits an
+/// effect at block time. The light client re-runs the SAME interpreter (its MockInterpreter), so the
+/// `state_root` (which commits the contract record, escrow, and exec case) matches at every height.
+#[test]
+fn prompt_contract_block_parity() {
+    let genesis_time = 1_700_000_000u64;
+    let chain_id = DEVNET_CHAIN_ID;
+    let proposer = std::sync::Arc::new(ProposerKey::from_bytes(&[14u8; 32]).unwrap());
+    let chain = Chain::new(chain_id, genesis_time).with_proposer_key(proposer);
+
+    let dev_sk = SigningKey::from_slice(&[0x61; 32]).unwrap();
+    let payee_sk = SigningKey::from_slice(&[0x62; 32]).unwrap();
+    let dev = addr_of(&dev_sk);
+    let payee = addr_of(&payee_sk);
+    // The dev account must be a verified human (to fund the gas fee) + a juror (an interpreter on the
+    // quorum). The default MockInterpreter aborts deterministically — which still mutates the exec case
+    // state — so parity holds regardless of the effect's content.
+    chain.seed_verified_human(&dev, genesis_time);
+    chain.seed_account(Account {
+        address: dev,
+        verified: true,
+        verified_at: genesis_time,
+        last_settled_at: genesis_time,
+        settled_balance: 1_000 * UBI,
+        nonce: 0,
+    });
+    chain.register_juror(&dev, 1);
+
+    let anchor = chain.produce_block(genesis_time + 2);
+    let mut light = build_light_at_anchor(&chain, chain_id, &anchor);
+    assert_eq!(light.state_root(), anchor.state_root.0);
+
+    // Block A: deploy a contract (stamps deploy_block + deploy_tx into state — a consensus mutation the
+    // shared kernel now performs on BOTH followers).
+    let t1 = genesis_time + 10;
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &dev_sk,
+            chain_id,
+            CONTRACT_HUB,
+            0,
+            deployContractCall {
+                text: "Pay the payee 1 UBI when triggered.".to_string(),
+                parties: vec![AlloyAddr::from(dev), AlloyAddr::from(payee)],
+            }
+            .abi_encode(),
+            0,
+        ))
+        .expect("deployContract admitted");
+    let block_a = chain.produce_block(t1);
+    let bal_a = balances_at(&chain, &[dev, payee], t1);
+
+    // Block B: fund the contract's escrow.
+    let t2 = genesis_time + 20;
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &dev_sk,
+            chain_id,
+            CONTRACT_HUB,
+            10 * UBI,
+            fundContractCall {
+                id: U256::from(0u64),
+            }
+            .abi_encode(),
+            1,
+        ))
+        .expect("fundContract admitted");
+    let block_b = chain.produce_block(t2);
+    let bal_b = balances_at(&chain, &[dev, payee], t2);
+
+    // Block C: invoke the contract — the interpreter quorum resolves the case in-call.
+    let t3 = genesis_time + 30;
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &dev_sk,
+            chain_id,
+            CONTRACT_HUB,
+            0,
+            invokeContractCall {
+                id: U256::from(0u64),
+                triggerRef: [9u8; 32].into(),
+            }
+            .abi_encode(),
+            2,
+        ))
+        .expect("invokeContract admitted");
+    let block_c = chain.produce_block(t3);
+    let bal_c = balances_at(&chain, &[dev, payee], t3);
+
+    for (b, now, want) in [
+        (&block_a, t1, &bal_a),
+        (&block_b, t2, &bal_b),
+        (&block_c, t3, &bal_c),
+    ] {
+        let wire = wire_block_for(&chain, b);
+        let outcome = light
+            .apply_decoded(&wire, Some(b.proposer.into_array()))
+            .unwrap_or_else(|e| panic!("browser must accept contract block {}: {e}", b.number));
+        assert_eq!(
+            outcome.state_root, b.state_root.0,
+            "state_root diverged at contract block {}",
+            b.number
+        );
+        assert_eq!(
+            light.state_root(),
+            chain.state_root_at(b.number).unwrap().0,
+            "light vs server state_root diverged at contract block {}",
+            b.number
+        );
+        for (i, who) in [dev, payee].iter().enumerate() {
+            assert_eq!(
+                light.balance_of(who, now).to_string(),
+                want[i].to_string(),
+                "balanceOf diverged for {who:?} at contract block {}",
+                b.number
+            );
+        }
+    }
+}
+
+/// AC-WB (Stage 2) — a **ZK-passport** block re-executes byte-identically. A fresh address submits a
+/// `submitZkPassportProof` against the live CSCA registry root; the deterministic `MockZkVerifier`
+/// (a confident accept — the SAME default both followers use) verifies it, the address becomes Verified
+/// and its nullifier is spent. The `state_root` (which commits the human record, assurance, nullifier
+/// set, and attribute commitments) matches between the WASM kernel and the server follower.
+#[test]
+fn zk_passport_block_parity() {
+    let genesis_time = 1_700_000_000u64;
+    let chain_id = DEVNET_CHAIN_ID;
+    let proposer = std::sync::Arc::new(ProposerKey::from_bytes(&[15u8; 32]).unwrap());
+    let chain = Chain::new(chain_id, genesis_time).with_proposer_key(proposer);
+
+    // Fund the submitter so it can pay the (non-exempt) ZK-PoH gas fee. We do NOT seed a CSCA anchor
+    // pre-anchor here: the `MockZkVerifier` (default confident accept) verifies by `(nullifier,
+    // submitter)`, so the proof binds the LIVE (empty-set) CSCA registry root the chain advertises, and
+    // both followers share the same (empty) CSCA set at the anchor. (A seeded CSCA would need the
+    // IndexedDB snapshot to carry the CSCA set — a Stage-1 snapshot-format follow-up, orthogonal to
+    // re-execution coverage; the proof verifies identically against the live root either way.)
+    let user_sk = SigningKey::from_slice(&[0x71; 32]).unwrap();
+    let user = addr_of(&user_sk);
+    chain.seed_verified_human(&user, genesis_time);
+    chain.seed_account(Account {
+        address: user,
+        verified: true,
+        verified_at: genesis_time,
+        last_settled_at: genesis_time,
+        settled_balance: 100 * UBI,
+        nonce: 0,
+    });
+
+    let anchor = chain.produce_block(genesis_time + 2);
+    let mut light = build_light_at_anchor(&chain, chain_id, &anchor);
+    assert_eq!(light.state_root(), anchor.state_root.0);
+
+    // Block A: submit a ZK-passport proof. `nowEpoch` MUST equal the block timestamp (the runtime binds
+    // it, I2); `cscaRegistryRoot` MUST equal the live registry root the chain advertises.
+    let t1 = genesis_time + 10;
+    let root = chain.csca_registry_root();
+    let proof = vec![0xABu8; 192]; // a non-empty, within-bound proof blob (Mock verifier accepts).
+    chain
+        .ingest_gossip_tx(&signed_tx(
+            &user_sk,
+            chain_id,
+            HUMANITY_HUB,
+            0,
+            submitZkPassportProofCall {
+                proof: proof.into(),
+                nullifier: [0x44u8; 32].into(),
+                attributeCommitments: [[1u8; 32].into(), [2u8; 32].into(), [3u8; 32].into()],
+                cscaRegistryRoot: root.into(),
+                schemeTag: 0,
+                nowEpoch: t1,
+            }
+            .abi_encode(),
+            0,
+        ))
+        .expect("submitZkPassportProof admitted");
+    let block_a = chain.produce_block(t1);
+
+    let want = balances_at(&chain, &[user], t1);
+    let wire = wire_block_for(&chain, &block_a);
+    let outcome = light
+        .apply_decoded(&wire, Some(block_a.proposer.into_array()))
+        .unwrap_or_else(|e| panic!("browser must accept ZK block {}: {e}", block_a.number));
+    assert_eq!(
+        outcome.state_root, block_a.state_root.0,
+        "state_root diverged at ZK block"
+    );
+    assert_eq!(
+        light.state_root(),
+        chain.state_root_at(block_a.number).unwrap().0,
+        "light vs server state_root diverged at ZK block"
+    );
+    assert_eq!(
+        light.balance_of(&user, t1).to_string(),
+        want[0].to_string(),
+        "balanceOf diverged for the ZK user"
+    );
+    // The user is Verified on BOTH followers after the proof (status tag 2).
+    assert_eq!(
+        light.human_status(&user),
+        2,
+        "ZK user must be Verified after the proof (light)"
+    );
+    assert_eq!(
+        chain.get_human(&user).map(|h| h.status),
+        Some(ubi2_runtime::HumanStatus::Verified),
+        "ZK user must be Verified after the proof (server)"
     );
 }
 

@@ -12,9 +12,9 @@
 use serde::{Deserialize, Serialize};
 
 use ubi2_runtime::{
-    Account, CanonicalEffect, CanonicalVerdict, Case, CaseKind, CaseStatus, Confidence,
-    ContractStatus, ExecCase, ExecStatus, Human, HumanStatus, Juror, MemState, Op, PromptContract,
-    State, Stream, StreamStatus, Verdict, Vouch,
+    Account, Assurance, CanonicalEffect, CanonicalVerdict, Case, CaseKind, CaseStatus, Confidence,
+    ContractStatus, CscaEntry, CscaStatus, ExecCase, ExecStatus, Human, HumanStatus, Juror,
+    MemState, Op, PromptContract, State, Stream, StreamStatus, Verdict, Vouch,
 };
 
 use crate::kernel::LightCore;
@@ -64,6 +64,20 @@ fn unhex32(s: &str) -> [u8; 32] {
 fn parse_u128(s: &str) -> u128 {
     s.parse().unwrap_or(0)
 }
+/// Decode a lowercase, no-`0x` hex string into a `Vec<u8>` of arbitrary length (CSCA `country_code` /
+/// `pubkey`). Mirrors `rpc::persist::hex_decode_vec` so a server-served entry round-trips byte-identical.
+fn hex_decode_vec(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16).unwrap_or(0) as u8;
+        let lo = (bytes[i + 1] as char).to_digit(16).unwrap_or(0) as u8;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    out
+}
 
 // ---- DTOs (mirror rpc::persist) ----
 
@@ -105,6 +119,23 @@ struct HumanDto {
     liveness_ref: String,
     vouches_in: Vec<String>,
     reputation: i64,
+    // M6 §5.3: the assurance level (0 STD / 1 ENH / 2 DUAL). `#[serde(default)]` keeps a pre-M6
+    // light-client snapshot loadable (it restores `Std`, the default), matching `rpc::persist`.
+    #[serde(default)]
+    assurance: u8,
+}
+
+/// M6: a CSCA trust-anchor entry (spec §7.2) — mirrors `rpc::persist::CscaDto` field-for-field so a
+/// genesis snapshot the server serves imports to a state with the SAME `state_root` (which folds the
+/// CSCA registry, §5.3).
+#[derive(Serialize, Deserialize)]
+struct CscaDto {
+    country_code: String,
+    key_id: String,
+    pubkey: String,
+    added_at: u64,
+    /// 0 Active, 1 Revoked.
+    status: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -188,6 +219,18 @@ struct StateDto {
     next_case_id: u64,
     next_contract_id: u64,
     next_exec_case_id: u64,
+    // ---- M6: ZK-passport registries (sorted by the State accessors — the deterministic order the
+    //         `state_root` folds, §5.3). All `#[serde(default)]` so a pre-M6 snapshot loads (empty
+    //         registries / no governance). These are what make a seeded genesis snapshot (which carries
+    //         a curated CSCA + governance) re-derive to the SAME root the honest gateway pins. ----
+    #[serde(default)]
+    nullifiers: Vec<String>,
+    #[serde(default)]
+    attribute_store: Vec<(String, [String; 3])>,
+    #[serde(default)]
+    csca: Vec<CscaDto>,
+    #[serde(default)]
+    csca_governance: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -377,6 +420,7 @@ fn export_state(state: &MemState) -> StateDto {
                 liveness_ref: hex32(&h.liveness_ref),
                 vouches_in: h.vouches_in.iter().map(hex20).collect(),
                 reputation: h.reputation,
+                assurance: h.assurance.tag(),
             })
             .collect(),
         vouch_edges: state
@@ -488,6 +532,34 @@ fn export_state(state: &MemState) -> StateDto {
         next_case_id: state.peek_next_case_id(),
         next_contract_id: state.peek_next_contract_id(),
         next_exec_case_id: state.peek_next_exec_case_id(),
+        // ---- M6 registries (mirror rpc::persist::export_state, same sorted State accessors). ----
+        nullifiers: state.nullifiers().iter().map(hex32).collect(),
+        attribute_store: state
+            .attribute_store()
+            .iter()
+            .map(|(addr, commitments)| {
+                (
+                    hex20(addr),
+                    [
+                        hex32(&commitments[0]),
+                        hex32(&commitments[1]),
+                        hex32(&commitments[2]),
+                    ],
+                )
+            })
+            .collect(),
+        csca: state
+            .csca_entries()
+            .iter()
+            .map(|e| CscaDto {
+                country_code: hex_encode(&e.country_code),
+                key_id: hex32(&e.key_id),
+                pubkey: hex_encode(&e.pubkey),
+                added_at: e.added_at,
+                status: e.status.tag(),
+            })
+            .collect(),
+        csca_governance: state.csca_governance().map(|a| hex20(&a)),
     }
 }
 
@@ -533,9 +605,15 @@ fn import_state(dto: &StateDto) -> MemState {
             liveness_ref: unhex32(&h.liveness_ref),
             vouches_in: h.vouches_in.iter().map(|a| unhex20(a)).collect(),
             reputation: h.reputation,
-            // M6 merge: Human gained an `assurance` level. A light-client snapshot defaults it to Std —
-            // the WASM kernel does not process HumanityHub ops in Stage 1, so it never observes Enh/Dual.
-            assurance: ubi2_runtime::Assurance::Std,
+            // M6 §5.3: restore the assurance level the snapshot carried (0 STD / 1 ENH / 2 DUAL). A
+            // ZK-passport block re-executed by the light client moves an existing human to Enh/Dual, and
+            // a verified genesis snapshot must round-trip that exactly so `state_root` matches (the root
+            // folds the 1-byte assurance tag in the humans section).
+            assurance: match h.assurance {
+                1 => Assurance::Enh,
+                2 => Assurance::Dual,
+                _ => Assurance::Std,
+            },
         });
     }
     for (voucher, vouchee) in &dto.vouch_edges {
@@ -627,6 +705,39 @@ fn import_state(dto: &StateDto) -> MemState {
     s.set_next_case_id(dto.next_case_id);
     s.set_next_contract_id(dto.next_contract_id);
     s.set_next_exec_case_id(dto.next_exec_case_id);
+    // ---- M6 registries (mirror rpc::persist::import_state, same order + mappings). ----
+    for n in &dto.nullifiers {
+        s.put_nullifier(unhex32(n));
+    }
+    for (addr, commitments) in &dto.attribute_store {
+        s.put_attribute_commitments(
+            &unhex20(addr),
+            [
+                unhex32(&commitments[0]),
+                unhex32(&commitments[1]),
+                unhex32(&commitments[2]),
+            ],
+        );
+    }
+    for e in &dto.csca {
+        let cc = hex_decode_vec(&e.country_code);
+        let mut country_code = [0u8; 3];
+        country_code.copy_from_slice(&cc[..3.min(cc.len())]);
+        let mut entry = CscaEntry::active(
+            country_code,
+            unhex32(&e.key_id),
+            hex_decode_vec(&e.pubkey),
+            e.added_at,
+        );
+        entry.status = match e.status {
+            1 => CscaStatus::Revoked,
+            _ => CscaStatus::Active,
+        };
+        s.put_csca(entry);
+    }
+    if let Some(gov) = &dto.csca_governance {
+        s.set_csca_governance(unhex20(gov));
+    }
     s
 }
 
@@ -646,6 +757,17 @@ pub fn encode(core: &LightCore) -> Vec<u8> {
         state: export_state(core.state_ref()),
     };
     serde_json::to_vec(&snap).expect("snapshot serializes")
+}
+
+/// Decode a bare `state` section (the `StateDto` JSON the sync gateway serves as the genesis snapshot,
+/// spec 07 §3.4) into a `MemState`. This is the SAME `StateDto` the full snapshot's `state` field uses —
+/// the seeded accounts/humans/jurors/CSCA/governance — so re-deriving `ubi2_runtime::state_root` over the
+/// result reproduces the seeded genesis root the honest gateway pins (the AC-WB parity gate proves the
+/// rpc-vs-wasm `StateDto` round-trip). Returns an error string on malformed bytes.
+pub fn decode_state(bytes: &[u8]) -> Result<MemState, String> {
+    let dto: StateDto =
+        serde_json::from_slice(bytes).map_err(|e| format!("genesis state decode failed: {e}"))?;
+    Ok(import_state(&dto))
 }
 
 /// Decode snapshot bytes back to a verified [`LightCore`]. Returns an error string on malformed bytes

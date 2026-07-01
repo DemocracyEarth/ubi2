@@ -33,7 +33,7 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use ubi2_network::consts::{PROTOCOL_VERSION, SYNC_MAX_BATCH};
-use ubi2_network::wire::{Blocks, Hello, SyncRequest, SyncResponse, WireBlock};
+use ubi2_network::wire::{Blocks, Genesis, Hello, SyncRequest, SyncResponse, WireBlock};
 
 use crate::Chain;
 
@@ -256,6 +256,29 @@ async fn handle_request(
             });
             sink.send(Message::Binary(resp.encode())).await?;
         }
+        // Spec 07 §3.4 (`ln-trust-2`): serve the seeded genesis anchor — the block-0 hash, the seeded
+        // `state_root`, genesis time, the authorized PoA proposer, and the canonical genesis state
+        // snapshot. The light client re-derives the snapshot's root locally and rejects unless it equals
+        // its PINNED constant (so a lying gateway is caught). If the node never sealed its genesis anchor
+        // (no light-client surface configured), we drop the connection — we never serve an empty/zero
+        // anchor that the client could mistake for a real seeded genesis (fail-closed).
+        SyncRequest::GetGenesis(_) => match chain.genesis_anchor() {
+            Some(anchor) => {
+                let resp = SyncResponse::Genesis(Genesis {
+                    genesis_hash: chain.genesis_hash(),
+                    chain_id: chain.chain_id(),
+                    state_root: anchor.state_root,
+                    genesis_time: chain.genesis_time(),
+                    proposer: chain.genesis_proposer().unwrap_or_default(),
+                    snapshot: anchor.snapshot,
+                });
+                sink.send(Message::Binary(resp.encode())).await?;
+            }
+            None => {
+                tracing::debug!("sync gateway: GetGenesis but no sealed genesis anchor; closing");
+                sink.send(Message::Close(None)).await.ok();
+            }
+        },
         // A second Hello is a no-op (clients may re-send after a network hiccup).
         SyncRequest::Hello(_) => {}
     }

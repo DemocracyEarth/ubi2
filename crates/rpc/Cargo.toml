@@ -8,6 +8,11 @@ authors.workspace = true
 
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
+# The shared block re-execution kernel (spec 07 §2.3 / ADR-0006 Decision 3): the SINGLE ordered-op apply
+# path. `execute_block` decodes raw txs via `ubi2_exec::decode_tx` and applies each via
+# `ubi2_exec::apply_tx`, so the server follower and the browser follower (`crates/runtime-wasm`) run
+# byte-identical state transitions — there is no logic fork (the AC-WB parity gate proves it).
+ubi2-exec = { path = "../exec" }
 tokio.workspace = true
 jsonrpsee.workspace = true
 serde.workspace = true
