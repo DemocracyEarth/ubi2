@@ -16,10 +16,11 @@
 //!   * `ubi genesis anchor`  — print/verify the canonical genesis hash + seeded state_root.
 //!   * `ubi keys`            — print the PUBLIC devnet accounts the presets use.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 // ───────────────────────── Public, NON-SECRET devnet keys (Anvil/Hardhat) ─────────────────────────
 // These are the standard Hardhat/Anvil test accounts, published in every EVM dev toolkit. They are NOT
@@ -68,7 +69,7 @@ const MULTI_DESIGNATED_PROPOSER: &str = "70997970C51812dc3A010C7d01b50e0d17dc79C
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -162,12 +163,61 @@ enum AnchorPreset {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Node(args) => run_node(args),
-        Cmd::Genesis(GenesisCmd::Anchor(args)) => genesis_anchor(args),
-        Cmd::Keys => {
+        Some(Cmd::Node(args)) => run_node(args),
+        Some(Cmd::Genesis(GenesisCmd::Anchor(args))) => genesis_anchor(args),
+        Some(Cmd::Keys) => {
             print_keys();
             Ok(())
         }
+        // Bare `ubi` (no subcommand): the banner + the help, so the tool introduces itself.
+        None => {
+            banner();
+            Cli::command().print_help()?;
+            println!();
+            Ok(())
+        }
+    }
+}
+
+/// The `ubi` launch banner — Proof-of-Humanity yellow→pink — printed to STDERR on `ubi node` startup and
+/// on a bare `ubi`. Suppressed by `UBI_NO_BANNER=1` (set on the `multi` child nodes). Colour is used only
+/// on a tty with `NO_COLOR` unset; the art always prints. Never touches stdout, so the scriptable output
+/// of `ubi genesis anchor` / `ubi keys` stays clean.
+fn banner() {
+    if std::env::var_os("UBI_NO_BANNER").is_some() {
+        return;
+    }
+    const ART: [&str; 6] = [
+        "   ██╗   ██╗██████╗ ██╗",
+        "   ██║   ██║██╔══██╗██║",
+        "   ██║   ██║██████╔╝██║",
+        "   ██║   ██║██╔══██╗██║",
+        "   ╚██████╔╝██████╔╝██║",
+        "    ╚═════╝ ╚═════╝ ╚═╝",
+    ];
+    // yellow #FFFF00 → pink #FF6699 — the PoH brand ramp.
+    const GRAD: [(u8, u8, u8); 6] = [
+        (255, 255, 0),
+        (255, 224, 31),
+        (255, 194, 61),
+        (255, 163, 92),
+        (255, 133, 122),
+        (255, 102, 153),
+    ];
+    let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    eprintln!();
+    for (line, (r, g, b)) in ART.iter().zip(GRAD) {
+        if color {
+            eprintln!("\x1b[1;38;2;{r};{g};{b}m{line}\x1b[0m");
+        } else {
+            eprintln!("{line}");
+        }
+    }
+    let tagline = "   universal basic income · a human-verified, AI-executed chain";
+    if color {
+        eprintln!("\x1b[2m{tagline}\x1b[0m\n");
+    } else {
+        eprintln!("{tagline}\n");
     }
 }
 
@@ -180,6 +230,8 @@ fn set_env(key: &str, val: &str) {
 }
 
 fn run_node(args: NodeArgs) -> anyhow::Result<()> {
+    banner();
+
     // The `multi` preset is a process launcher, not a single in-process node — handle it separately.
     if args.preset == Some(Preset::Multi) {
         return run_multi(&args);
@@ -251,11 +303,14 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
     let p2p_base: u16 = 19540;
     let data_root = ".ubi2-multi";
 
-    // Locate the `ubi2-node` binary next to this `ubi` binary (same target dir). We spawn it (rather
-    // than re-exec `ubi`) because the node's `peer-id` utility + boot are already the node binary's job.
-    let node_bin = node_binary_path()?;
+    // Re-invoke THIS `ubi` binary for each child node, so a plain `cargo install --path crates/cli` is
+    // fully self-sufficient — no separate `ubi2-node` binary required. `ubi node` with the child's env
+    // vars boots a node identically to `ubi2-node`.
+    let ubi_exe = std::env::current_exe().map_err(|e| {
+        anyhow::anyhow!("cannot locate the running `ubi` executable to relaunch: {e}")
+    })?;
 
-    // Derive every node's PeerId up front (via `ubi2-node peer-id <seed>`) so we can wire a FULL
+    // Derive every node's PeerId up front (pure, IN-PROCESS — no subprocess) so we can wire a FULL
     // cross-bootstrap mesh deterministically. Node i's seed = the hex of `i` repeated to 64 chars.
     let mut seeds = Vec::with_capacity(n);
     let mut peer_ids = Vec::with_capacity(n);
@@ -264,7 +319,8 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
         let seed: String = d.repeat(64 / d.len().max(1));
         let seed = format!("{seed:0>64}"); // pad/truncate defensively to 64 hex chars
         let seed = seed[..64].to_string();
-        let peer_id = derive_peer_id(&node_bin, &seed)?;
+        let peer_id = ubi2_node::netcfg::peer_id_for_seed_hex(&seed)
+            .map_err(|e| anyhow::anyhow!("deriving PeerId for node {i}: {e}"))?;
         seeds.push(seed);
         peer_ids.push(peer_id);
     }
@@ -286,8 +342,10 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
 
     let mut children = Vec::with_capacity(n);
     for i in 1..=n {
-        let mut cmd = Command::new(&node_bin);
-        cmd.env("UBI2_RPC_ADDR", rpc_addr(i))
+        let mut cmd = Command::new(&ubi_exe);
+        cmd.arg("node")
+            .env("UBI_NO_BANNER", "1") // one banner (the launcher's) is enough
+            .env("UBI2_RPC_ADDR", rpc_addr(i))
             .env("UBI2_P2P_ADDR", p2p_addr(i))
             .env("UBI2_P2P_SEED", &seeds[i - 1])
             .env("UBI2_BOOTSTRAP", bootstrap_for(i))
@@ -310,7 +368,7 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
             peer_ids[i - 1]
         );
         let child = cmd.spawn().map_err(|e| {
-            anyhow::anyhow!("failed to spawn node {i} ({}): {e}", node_bin.display())
+            anyhow::anyhow!("failed to spawn node {i} ({}): {e}", ubi_exe.display())
         })?;
         children.push(child);
     }
@@ -338,38 +396,6 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
     }
     println!("multi devnet stopped.");
     Ok(())
-}
-
-/// Locate the `ubi2-node` binary: prefer one sitting beside this `ubi` binary (the same `target/<profile>`
-/// dir cargo produced both in); fall back to a bare `ubi2-node` on `PATH`.
-fn node_binary_path() -> anyhow::Result<PathBuf> {
-    if let Ok(self_exe) = std::env::current_exe() {
-        if let Some(dir) = self_exe.parent() {
-            let candidate = dir.join("ubi2-node");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    // Fall back to PATH lookup — `Command` resolves a bare name against PATH.
-    Ok(PathBuf::from("ubi2-node"))
-}
-
-/// Derive a node's libp2p PeerId by invoking `ubi2-node peer-id <seed>` (the node's pure utility).
-fn derive_peer_id(node_bin: &PathBuf, seed: &str) -> anyhow::Result<String> {
-    let out = Command::new(node_bin)
-        .arg("peer-id")
-        .arg(seed)
-        .output()
-        .map_err(|e| anyhow::anyhow!("running `{} peer-id`: {e}", node_bin.display()))?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "`{} peer-id {seed}` failed: {}",
-            node_bin.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 // ─────────────────────────────────────── `ubi genesis anchor` ─────────────────────────────────────
