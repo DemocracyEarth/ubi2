@@ -67,6 +67,17 @@ the `UBI2_*` env vars** the node already reads: a flag **overrides** the matchin
 leaves the env var as the documented fallback. Config resolution is unchanged, so the CLI adds no
 consensus risk.
 
+### Install
+
+```bash
+cargo install --path crates/cli    # installs `ubi` to ~/.cargo/bin (on your PATH)
+ubi --help
+```
+
+`multi` re-invokes the `ubi` binary itself, so installing the CLI is all you need — no separate
+`ubi2-node` on your PATH. Or run it straight from the workspace without installing (note the `--`
+before the CLI's own args, and that a bare `ubi` name won't be found until you `cargo install`):
+
 ```bash
 cargo run -q -p ubi2-cli --bin ubi -- --help          # or, after `cargo build`: ./target/debug/ubi --help
 ```
