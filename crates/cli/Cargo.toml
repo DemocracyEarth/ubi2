@@ -1,0 +1,21 @@
+[package]
+name = "ubi2-cli"
+description = "ubi2 operator CLI — run/operate the chain (`ubi node|genesis|keys`)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ubi"
+path = "src/main.rs"
+
+[dependencies]
+# The CLI drives the node IN-PROCESS: it sets the UBI2_* env vars from its flags/presets and calls
+# `ubi2_node::run()`. Config resolution stays 100% in the node (env-driven) — zero consensus risk.
+ubi2-node = { path = "../node" }
+# `ubi genesis anchor` reuses the SAME shared canonical genesis the node seeds (no duplicated seed list).
+tokio.workspace = true
+anyhow.workspace = true
+# clap derive API for the subcommand surface (`--help` on every command).
+clap = { version = "4", features = ["derive"] }

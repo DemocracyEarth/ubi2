@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "ubi2_node"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ubi2-node"
 path = "src/main.rs"

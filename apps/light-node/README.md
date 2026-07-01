@@ -62,14 +62,13 @@ The full node exposes a WebSocket sync gateway on port 8546 alongside the JSON-R
 on port 8545.
 
 ```bash
-# From the repo root — start a single-node devnet:
-cargo run -p ubi2-node -- \
-  --rpc-port 8545 \
-  --ws-gateway-port 8546 \
-  --chain-id 21826
+# From the repo root — start the single-node devnet the light node accepts, via the `ubi` CLI:
+cargo run -q -p ubi2-cli --bin ubi -- node --preset lightnode
 ```
 
-The gateway endpoint is `ws://127.0.0.1:8546`.
+The `lightnode` preset pins `genesis_time = 1700000000` (so the shipped genesis anchor matches),
+serves JSON-RPC on `127.0.0.1:8545`, and enables the sync gateway on `127.0.0.1:8546`. The gateway
+endpoint is `ws://127.0.0.1:8546`. Run `ubi node --help` for the full flag list.
 
 ### 4 — Open the light node
 
