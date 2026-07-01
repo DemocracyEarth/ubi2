@@ -28,6 +28,8 @@ import {
   verdictLabel,
   confidenceLabel,
   pohTokenId,
+  assuranceLevelLabel,
+  assuranceLevelBadge,
   HUMANITY_HUB,
   type HumanRecord,
   type CaseRecord,
@@ -35,6 +37,7 @@ import {
   type PohCard,
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
+import { ZkPassportSection } from "./zk-passport";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
@@ -335,6 +338,26 @@ function PohNftCard({ account, human }: { account: string; human: HumanRecord })
             <div className="poh-nft-attr">
               <span className="poh-nft-attr-key">Status</span>
               <span className="poh-nft-attr-val green">{getAttr("Status") ?? "—"}</span>
+            </div>
+            {/* M6: Assurance level (STD/ENH/DUAL) — additive, no PII (spec §5.5/EC-6) */}
+            <div className="poh-nft-attr">
+              <span className="poh-nft-attr-key">Assurance</span>
+              <span
+                className="poh-nft-attr-val"
+                style={{
+                  fontWeight: 700,
+                  color:
+                    (getAttr("Assurance") ?? human.assurance ?? "STD") === "DUAL"
+                      ? "#FF6699"
+                      : (getAttr("Assurance") ?? human.assurance ?? "STD") === "ENH"
+                        ? "#b9a6ff"
+                        : "var(--poh-green)",
+                }}
+              >
+                {assuranceLevelBadge(
+                  ((getAttr("Assurance") ?? human.assurance ?? "STD") as "STD" | "ENH" | "DUAL")
+                )}
+              </span>
             </div>
             <div className="poh-nft-attr">
               <span className="poh-nft-attr-key">Token</span>
@@ -777,6 +800,13 @@ export function Humanity({
           <PohNftCard account={account} human={human} />
         )}
       </section>
+
+      {/* M6 ZK-passport section — always shown in the Identity tab (spec §12.2 Stage C) */}
+      <ZkPassportSection
+        account={account}
+        human={human}
+        onRefreshHuman={refresh}
+      />
 
       {/* Vouch action */}
       <section className="card poh">

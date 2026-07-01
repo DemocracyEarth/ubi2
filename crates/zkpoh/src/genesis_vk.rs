@@ -3,46 +3,54 @@
 //!
 //! ## Real-circuit binding — current status (the honest accounting)
 //!
-//! The production verifying key is the output of the OpenPassport / Self e-passport circuit's
-//! **trusted-setup Phase-2 ceremony** (spec §2.3 mitigation 2). Until that ceremony's VK is fetched and
-//! its public-input layout is bound to ours (§3.5), this slot is **empty by default**: there is **no**
-//! hard-coded "real" VK, because shipping a placeholder VK as if it were the pinned trust anchor would
-//! be worse than shipping none — it would look authoritative while being a test key.
+//! **Stage 2 update.** This slot now ships the **real Self / OpenPassport `vc_and_disclose` verifying
+//! key** (Groth16 over BN254, `nPublic = 20`), taken verbatim from the Self monorepo (`selfxyz/self`,
+//! `common/src/constants/vkey.ts`) — the same artifact fixtured in `tests/fixtures/`. The bytes embedded
+//! here are that VK re-serialized through arkworks into its **canonical compressed** form (the exact
+//! `state_root`-commit encoding, §5.3), produced from the JSON fixture by [`crate::SnarkjsVk::to_pinned`]
+//! then [`crate::PinnedVerifyingKey::to_canonical_bytes`]. [`pinned_passport_vk`] loads them with
+//! `Validate::Yes` (on-curve, correct-subgroup, canonical) so a corrupted embed fails closed at startup.
 //!
-//! What this slot DOES provide today:
-//!   * [`PinnedVerifyingKey::from_canonical_bytes`](crate::PinnedVerifyingKey::from_canonical_bytes) —
-//!     the loader for the real ceremony VK once obtained (canonical compressed bytes, validated).
-//!   * The arity pin ([`crate::NUM_PUBLIC_INPUTS`] = 8) the real VK must satisfy (§3.5). A real
-//!     OpenPassport/Self VK has a *different* public-input layout (its own nullifier + disclosure
-//!     outputs); binding it to ours is the documented **next step**: adapt the circuit's public-output
-//!     wiring to emit our 8-field vector (nullifier, 3 attr commitments, CSCA root, submitter, now,
-//!     scheme tag), then re-run the ceremony to pin the adapted VK. The verifier code here is unchanged
-//!     by that work — only the VK bytes + the circuit's public-output map change.
+//! The pinned VK loads as a **`SelfDisclose`-layout** passport verifier ([`crate::PassportLayout`]): the
+//! runtime's domain public inputs (spec §3.5) are mapped onto the real 20-signal vector by the documented
+//! adapter ([`crate::PublicInputs::to_self_field_elements`] — see `crate::self_layout`). This is what
+//! closed the Stage-1 gap: Stage 1 only pinned the 8-field domain arity, so the real VK was rejected
+//! fail-closed; Stage 2 binds the real arity + layout, and the real VK is the genesis trust anchor.
 //!
-//! ### Why no VK ships hard-coded in M6 Phase 1
-//! The Self/OpenPassport public artifacts are large per-document-type circuit VKs whose **public-input
-//! layout does not yet match our §3.5 vector** (they emit the protocol's own scope/nullifier and the
-//! selectively-disclosed fields, not our CSCA-root / submitter-address / now-epoch bindings). Pinning
-//! one verbatim would verify *their* statement, not ours, so the adaptation (re-wire the circuit's
-//! public outputs, re-run Phase-2) is a prerequisite — tracked as the Stage-A `A1` task. Phase 1
-//! de-risks the **verifier** (this crate) against a self-generated real-curve VK + proof, which proves
-//! the determinism, soundness, and wasm story end-to-end; the real circuit binding is the next step and
-//! does not touch any code in this crate.
+//! ## The remaining gap to a fully production binding (stated plainly)
 //!
-//! Until then, tests and the devnet wire a VK via `from_*_bytes` / `from_vk` (the real-curve fixture
-//! path, spec §6.3) — exactly as the genesis CSCA set is a curated static set wired by `crates/node`.
+//! Pinning the real VK lets the verifier accept a proof generated under Self's **production circuit +
+//! their Phase-2 ceremony proving key (`vc_and_disclose_final.zkey`)**. That ceremony `.zkey` is a
+//! multi-gigabyte build artifact **not committed to the open repo** (the repo ships only the VK, which we
+//! pin here), so this Stage does not also ship a proof verifiable under *this exact* production VK. The
+//! real-curve soundness guarantee (a genuine Groth16/BN254 proof verifying at the real 20-input arity
+//! through the production seam, with tampered/replayed proofs failing closed) is proven in
+//! `tests/real_curve_self_layout.rs` against a self-generated setup of the same arity + layout — the
+//! spec §6.3 real-curve fixture path ("a test CSCA→DSC→SOD, never a real document"). Wiring Self's
+//! production ceremony proving key to emit a proof under the pinned VK is the remaining production step;
+//! it changes no code in this crate (the VK, the layout adapter, and the verifier are all in place).
 
 use crate::keys::PinnedVerifyingKey;
 
-/// The pinned passport-proof verifying key, if one has been compiled in. Returns `None` in M6 Phase 1:
-/// the real ceremony VK is not yet bound (see module docs), and we deliberately do **not** ship a
-/// placeholder masquerading as the trust anchor. `crates/node` loads the real VK bytes via
-/// [`PinnedVerifyingKey::from_canonical_bytes`] at genesis once obtained.
+/// The real Self `vc_and_disclose` VK in arkworks canonical-compressed bytes (the `state_root`-commit
+/// form, §5.3). Generated from `tests/fixtures/self_vc_and_disclose_vkey.json` via
+/// `SnarkjsVk::to_pinned().to_canonical_bytes()`; re-generatable and verified byte-stable by
+/// `tests/real_vk.rs` (canonical round-trip) + `tests/pinned_vk.rs` (this embed == the fixture import).
+const PINNED_PASSPORT_VK_BYTES: &[u8] =
+    include_bytes!("../fixtures/self_vc_and_disclose_vk.canonical.bin");
+
+/// The genesis-pinned passport-proof verifying key — the **real Self `vc_and_disclose` VK** (Stage 2).
+///
+/// Loads the embedded canonical-compressed bytes with full validation (`Validate::Yes`); returns `None`
+/// only if the embed is somehow corrupt (fail-closed: a node with an invalid trust anchor runs no
+/// `verify_passport`). The returned key reports `num_public_inputs() == 20` (the real Self arity) and is
+/// consumed in the [`crate::PassportLayout::SelfDisclose`] layout.
 pub fn pinned_passport_vk() -> Option<PinnedVerifyingKey> {
-    None
+    PinnedVerifyingKey::from_canonical_bytes(PINNED_PASSPORT_VK_BYTES).ok()
 }
 
-/// Whether a real, ceremony-derived passport VK is compiled into this build. `false` in M6 Phase 1 — a
-/// node MUST be configured with a VK (test fixture on devnet, ceremony VK in production) or the passport
-/// op is unavailable (fail closed: no VK ⇒ no `verify_passport` accepts).
-pub const HAS_PINNED_PASSPORT_VK: bool = false;
+/// Whether a real, pinned passport VK is compiled into this build. **`true` in Stage 2**: the real Self
+/// `vc_and_disclose` VK is embedded (see [`pinned_passport_vk`]). The consensus default verifier remains
+/// the [`crate::MockZkVerifier`] unless a node is explicitly configured with the real
+/// [`crate::Groth16Verifier`] + this pinned VK (ADR-0005 D2 — the mock is the Stage-B consensus default).
+pub const HAS_PINNED_PASSPORT_VK: bool = true;
