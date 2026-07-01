@@ -38,3 +38,4 @@ devnet-data/
 
 # Agent loop scratch (reports are committed; scratch is not)
 .agent-scratch/
+.devnet-lightnode-data/
