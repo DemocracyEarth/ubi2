@@ -1,4 +1,4 @@
-//! `ubi` — the ubi2 operator CLI.
+//! `ubi` — run and operate the UBI chain.
 //!
 //! One discoverable binary for running/operating the chain, replacing env-var sprawl + shell scripts +
 //! fictional README flags. Every command has `--help`.
@@ -56,12 +56,17 @@ const MULTI_DESIGNATED_PROPOSER: &str = "70997970C51812dc3A010C7d01b50e0d17dc79C
 
 // ─────────────────────────────────────── CLI definition ───────────────────────────────────────────
 
+/// The `ubi` release version — CalVer (`year.month.day`), the modern AI-tooling style; shown by
+/// `ubi --version` and the launch banner. A literal (not the Cargo semver) so the zero-padded date form
+/// `2026.07.01` renders exactly — semver forbids leading zeros in `07`/`01`. Bump this per release.
+const VERSION: &str = "2026.07.01";
+
 #[derive(Parser)]
 #[command(
     name = "ubi",
-    version,
-    about = "ubi2 operator CLI — run and operate the UBI chain.",
-    long_about = "ubi — run and operate the ubi2 UBI chain.\n\n\
+    version = VERSION,
+    about = "ubi — run and operate the UBI chain.",
+    long_about = "ubi — run and operate the UBI chain.\n\n\
         `ubi node` runs a full node; its flags are ergonomic sugar over the UBI2_* env vars the node \
         already reads (a flag overrides the env var; an unset flag leaves the env var as the fallback). \
         `ubi genesis anchor` prints/verifies the canonical genesis anchor pinned by the browser light \
@@ -187,38 +192,62 @@ fn banner() {
     if std::env::var_os("UBI_NO_BANNER").is_some() {
         return;
     }
+    // A spaced block "UBI" wordmark. The gradient sweeps HORIZONTALLY (yellow #FFFF00 on the left →
+    // pink #FF6699 on the right — the Proof-of-Humanity ramp), so it reads as one smooth left-to-right
+    // sweep across the whole wordmark rather than banded rows.
     const ART: [&str; 6] = [
-        "   ██╗   ██╗██████╗ ██╗",
-        "   ██║   ██║██╔══██╗██║",
-        "   ██║   ██║██████╔╝██║",
-        "   ██║   ██║██╔══██╗██║",
-        "   ╚██████╔╝██████╔╝██║",
-        "    ╚═════╝ ╚═════╝ ╚═╝",
-    ];
-    // yellow #FFFF00 → pink #FF6699 — the PoH brand ramp.
-    const GRAD: [(u8, u8, u8); 6] = [
-        (255, 255, 0),
-        (255, 224, 31),
-        (255, 194, 61),
-        (255, 163, 92),
-        (255, 133, 122),
-        (255, 102, 153),
+        "  ██╗   ██╗ ██████╗  ██╗",
+        "  ██║   ██║ ██╔══██╗ ██║",
+        "  ██║   ██║ ██████╔╝ ██║",
+        "  ██║   ██║ ██╔══██╗ ██║",
+        "  ╚██████╔╝ ██████╔╝ ██║",
+        "   ╚═════╝  ╚═════╝  ╚═╝",
     ];
     let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-    eprintln!();
-    for (line, (r, g, b)) in ART.iter().zip(GRAD) {
+    let width = ART.iter().map(|l| l.chars().count()).max().unwrap_or(1);
+    let dim = |s: &str| -> String {
         if color {
-            eprintln!("\x1b[1;38;2;{r};{g};{b}m{line}\x1b[0m");
+            format!("\x1b[2m{s}\x1b[0m")
         } else {
-            eprintln!("{line}");
+            s.to_string()
         }
+    };
+    eprintln!();
+    for line in ART {
+        eprintln!("{}", h_gradient(line, width, color));
     }
-    let tagline = "   universal basic income · a human-verified, AI-executed chain";
-    if color {
-        eprintln!("\x1b[2m{tagline}\x1b[0m\n");
-    } else {
-        eprintln!("{tagline}\n");
+    eprintln!(
+        "{}",
+        dim(&format!("   universal basic income   ·   ubi {VERSION}"))
+    );
+    eprintln!(
+        "{}",
+        dim("   a human-verified, AI-executed chain   ~   streaming 1 UBI/hour")
+    );
+    eprintln!();
+}
+
+/// Colour `line` with a HORIZONTAL yellow→pink gradient (per-column) — the PoH brand ramp. Each non-space
+/// glyph gets a truecolor escape keyed to its column; spaces pass through. `width` is the wordmark width,
+/// so every row shares the same left→right ramp. Integer math only.
+fn h_gradient(line: &str, width: usize, color: bool) -> String {
+    if !color {
+        return line.to_string();
     }
+    let denom = width.saturating_sub(1).max(1);
+    let mut out = String::with_capacity(line.len() * 20);
+    for (i, ch) in line.chars().enumerate() {
+        if ch == ' ' {
+            out.push(' ');
+            continue;
+        }
+        let t = i.min(denom);
+        let g = 255 - (t * (255 - 102)) / denom; // 255 → 102
+        let b = (t * 153) / denom; // 0 → 153
+        out.push_str(&format!("\x1b[1;38;2;255;{g};{b}m{ch}"));
+    }
+    out.push_str("\x1b[0m");
+    out
 }
 
 // ─────────────────────────────────────── `ubi node` ───────────────────────────────────────────────
