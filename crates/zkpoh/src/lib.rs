@@ -44,6 +44,7 @@
 mod genesis_vk;
 mod keys;
 mod public_inputs;
+mod self_layout;
 mod snarkjs;
 mod verifier;
 
@@ -54,8 +55,13 @@ pub use public_inputs::{
     IDX_ATTR_NATIONALITY, IDX_CSCA_ROOT, IDX_NOW_EPOCH, IDX_NULLIFIER, IDX_SCHEME_TAG,
     IDX_SUBMITTER, NUM_PUBLIC_INPUTS,
 };
+pub use self_layout::{
+    now_epoch_to_date_digits, SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE, SELF_IDX_MERKLE_ROOT,
+    SELF_IDX_NULLIFIER, SELF_IDX_REVEALED_DATA, SELF_IDX_SCOPE, SELF_IDX_USER_IDENTIFIER,
+    SELF_NPUBLIC, SELF_SCOPE_CONST,
+};
 pub use snarkjs::{SnarkjsImportError, SnarkjsVk};
-pub use verifier::Groth16Verifier;
+pub use verifier::{Groth16Verifier, PassportLayout};
 // The trait + the plain-bytes types + the mock now live in `crates/runtime` (dependency-free, ADR-0005
 // D2); re-export them so `ubi2_zkpoh` stays a single import surface for the verifier seam.
 pub use ubi2_runtime::{MockZkVerifier, ZkAttrType, ZkPassportVerifier, ZkPublicInputs};

@@ -155,6 +155,13 @@ export interface HumanRecord {
   vouches_in: string[];
   /** Voucher reputation score (can be negative after sybil slashing). */
   reputation: number;
+  /**
+   * M6 assurance level (additive, spec §5.1 / EC-5).
+   * "STD" for M3-vouching-only; "ENH" for ZK-passport-first; "DUAL" for vouching + ZK.
+   * Never gates UBI accrual — STD and ENH/DUAL are first-class (inclusion constraint).
+   * May be absent on nodes that have not deployed M6 (treat absent as "STD").
+   */
+  assurance?: "STD" | "ENH" | "DUAL";
 }
 
 /** A canonical verdict inside a case vote. */

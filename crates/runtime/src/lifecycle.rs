@@ -692,6 +692,10 @@ pub enum ZkPohError {
     AlreadyEnhanced(Assurance),
     /// The subject is `Revoked` — a revoked human cannot re-bootstrap via ZK in M6 (fail-closed).
     SubjectRevoked,
+    /// The `nullifier` is `≥` the BN254 scalar order `r`, so its raw bytes (the uniqueness registry key)
+    /// do not round-trip the verifier's field reduction — the malleability that would let one passport
+    /// mint many humans via `N, N+r, N+2r…` (§3.5 round-trip obligation; F-5 hardening).
+    NonCanonicalNullifier,
 }
 
 impl std::fmt::Display for ZkPohError {
@@ -708,6 +712,9 @@ impl std::fmt::Display for ZkPohError {
             InvalidProof => write!(f, "ZK proof verification failed"),
             AlreadyEnhanced(a) => write!(f, "human already ZK-enhanced ({})", a.as_str()),
             SubjectRevoked => write!(f, "subject is revoked"),
+            NonCanonicalNullifier => {
+                write!(f, "non-canonical nullifier (>= BN254 scalar order r)")
+            }
         }
     }
 }
@@ -788,6 +795,18 @@ pub fn submit_zk_passport_proof(
         if h.assurance != Assurance::Std {
             return Err(ZkPohError::AlreadyEnhanced(h.assurance));
         }
+    }
+
+    // --- (2b) nullifier canonicality guard (§3.5 round-trip obligation) — BEFORE the registry key. ---
+    // The nullifier is the one-passport-one-human registry key, stored + compared as RAW bytes, while the
+    // verifier reduces it mod the BN254 order `r`. A non-canonical value (≥ r) reduces to a DIFFERENT
+    // element, so `N`, `N+r`, `N+2r`… are distinct registry keys that all satisfy the SAME proof — minting
+    // unlimited humans (and UBI) from ONE passport. Require the nullifier to be canonical (< r) so the raw
+    // registry key == the element the proof commits to. A genuine proof's nullifier is always canonical.
+    // (Attribute commitments are intentionally NOT constrained — they are opaque, never a uniqueness key;
+    // `csca_registry_root` is pinned to the live root above, not attacker-free.)
+    if !crate::zkpoh::is_canonical_scalar(&submission.nullifier) {
+        return Err(ZkPohError::NonCanonicalNullifier);
     }
 
     // --- (3) nullifier-uniqueness pre-check (cheap fail-closed BEFORE the pairing — F-5). ---
