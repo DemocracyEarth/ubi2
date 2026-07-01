@@ -4,6 +4,9 @@ members = [
     "crates/runtime",
     "crates/rpc",
     "crates/node",
+    # Operator CLI: the `ubi` binary (node|genesis|keys). Thin sugar over the node's UBI2_* env config —
+    # it sets env vars from flags/presets and calls `ubi2_node::run()` in-process (zero consensus risk).
+    "crates/cli",
     "crates/oracle",
     "crates/network",
     # ZK-Passport PoH verifier (spec 06 / ADR-0005). Deterministic Groth16/BN254, isolated from runtime.

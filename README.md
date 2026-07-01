@@ -59,6 +59,74 @@ Unconfigured, proof-of-humanity verdicts and contract interpretation use the det
 
 ---
 
+## CLI (`ubi`)
+
+`ubi` is the one discoverable binary for running and operating the chain — it replaces the env-var
+sprawl and shell scripts. Every command has `--help`. The `ubi node` flags are ergonomic **sugar over
+the `UBI2_*` env vars** the node already reads: a flag **overrides** the matching env var; an unset flag
+leaves the env var as the documented fallback. Config resolution is unchanged, so the CLI adds no
+consensus risk.
+
+```bash
+cargo run -q -p ubi2-cli --bin ubi -- --help          # or, after `cargo build`: ./target/debug/ubi --help
+```
+
+### `ubi node` — run a full node
+
+```bash
+ubi node --preset devnet          # plain single node (== ./scripts/devnet.sh)
+ubi node --preset lightnode       # single node the browser light node accepts (pinned genesis + gateway)
+ubi node --preset multi           # multi-node local network (== ./scripts/devnet-multi.sh)
+ubi node --rpc 127.0.0.1:9000 --block-ms 1000     # bare (no preset), just flags/env
+```
+
+| Flag | Overrides | Meaning |
+|---|---|---|
+| `--preset <devnet\|lightnode\|multi>` | — | Canned config (see below). Flags still override preset values. |
+| `--rpc <addr>` | `UBI2_RPC_ADDR` | JSON-RPC (HTTP+WS) listen address. Default `127.0.0.1:8545`. |
+| `--sync-gateway <addr>` | `UBI2_SYNC_ADDR` | Enable the WebSocket sync gateway (browser light node). |
+| `--genesis-time <unix>` | `UBI2_GENESIS_TIME` | Pinned genesis time (a shared value ⇒ matching genesis hashes). |
+| `--proposer-key <hex32>` | `UBI2_PROPOSER_KEY` | PoA block-author signing key (32-byte hex). |
+| `--block-ms <ms>` | `UBI2_BLOCK_MS` | Block interval. Default `2000`. |
+| `--data-dir <path>` | `UBI2_DATA_DIR` | Chain snapshot + oracle config dir. Default `./.ubi2-devnet`. |
+| `--p2p <addr>` | `UBI2_P2P_ADDR` | Enable libp2p on this listen multiaddr. |
+| `-n, --nodes <N>` | — | (`multi` only) number of nodes to launch. Default `3`. |
+
+**Presets:**
+
+- **`devnet`** — plain single node: RPC `127.0.0.1:8545`, 2s blocks, wall-clock genesis, no proposer
+  key, sync gateway off unless `--sync-gateway` is given. Identical to `./scripts/devnet.sh`.
+- **`lightnode`** — the single node the browser light node accepts: pinned `genesis_time=1700000000`,
+  Anvil acct #2 as the PoA proposer, RPC `127.0.0.1:8545`, sync gateway `127.0.0.1:8546`, 1s blocks,
+  isolated data dir `.devnet-lightnode-data`. Reproduces the pinned genesis anchor
+  `b24d054f…` / `state_root aa2c66cd…`.
+- **`multi`** — one designated proposer (Anvil acct #1) + N-1 followers over libp2p, pinned genesis,
+  full cross-bootstrap mesh (no mDNS — deterministic). The CLI launches the N processes itself and
+  stops them all on Ctrl-C. Identical to `./scripts/devnet-multi.sh` (which now delegates here).
+
+### `ubi genesis anchor` — print/verify the canonical genesis anchor
+
+```bash
+ubi genesis anchor --preset lightnode
+# genesis_time : 1700000000
+# genesis_hash : b24d054faa31dc8e98ada4955a101f49528b708546f45558c9f45f7a9913779c
+# state_root   : aa2c66cdd242eed1c3f1fa7511d60b9bc67099f6ffcaa1a8045bc25202bc1d0d
+# pin check    : OK (matches apps/light-node/src/config.ts PINNED_GENESIS_HASH/STATE_ROOT)
+```
+
+Recomputes the canonical devnet genesis from the SAME seeds the node applies (one shared function,
+no duplicated seed list) and — for the pinned `lightnode` genesis — asserts equality with the constants
+shipped in `apps/light-node/src/config.ts`, exiting non-zero on drift. Use it to regenerate or verify
+that pin.
+
+### `ubi keys` — the PUBLIC devnet accounts
+
+Prints the standard Hardhat/Anvil test accounts the presets use (the dev account, the 3 jurors, and the
+PoA proposers), with addresses, private keys, and roles. These are **public test keys** published in
+every EVM dev toolkit — never use them for real value.
+
+---
+
 ## The app (one on-ramp)
 
 - **Wallet** — your streaming balance (ticks live), transfers, and real-time **streams** to other
