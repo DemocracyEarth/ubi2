@@ -66,7 +66,14 @@ const DEV_ADDR: AlloyAddr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
 
 const SENDER2: AlloyAddr = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
 
-const PAYEE: AlloyAddr = address!("9965507D1a55bcC2695C58ba16FB37d819B0A4dc");
+// PAYEE must be a distinct address that is NEVER seeded as a verified human in either boot helper.
+// A verified account streams UBI (1 UBI/hour), and `eth_getBalance` reads the LIVE balance at
+// `now_secs()`, so a streaming payee makes the exact `payee_after - payee_before == 3 * UBI`
+// balance-delta assertion drift by `UBI * elapsed_secs / 3600` whenever a run straddles a wall-clock
+// second boundary (the intermittent `--test-threads=1` flake). Anvil acct #6 is unverified here, so
+// its balance is pure settled value — the transfer delta is exact and deterministic. It must NOT
+// equal any JUROR* (which `boot_with_interp` seeds verified + registers as jurors).
+const PAYEE: AlloyAddr = address!("976EA74026E726554dB657fA54763abd0C3a0aa9");
 
 const NON_APPLICANT: AlloyAddr = address!("15d34AAf54267DB7D7c367839AAf71A00a2C6A65");
 
@@ -420,18 +427,12 @@ async fn c6_cannot_afford_fee_rejected_at_submit_no_pending() {
     let genesis = now_secs() - 1000 * EMISSION_PERIOD_SECS;
     let (_chain, _handle) = boot_full(addr, genesis).await;
 
-    // PAYEE has no UBI (never seeded) — cannot afford a HumanityHub op fee.
     let vouch = vouchCall {
         vouchee: NON_APPLICANT,
     }
     .abi_encode();
-    // Use DEV_PRIVKEY but sign with a never-funded address representation...
-    // We sign with SENDER2 key but target an address known to be unfunded:
-    // Actually let's check PAYEE (address!("9965507D1a55bcC2695C58ba16FB37d819B0A4dc")) —
-    // it was seeded as JUROR3 in the boot helper but NOT in boot_full.
-    // PAYEE is never seeded in boot_full, so its balance is 0.
-    // Use a private key that controls a zero-balance address.
-    // Anvil acct #6: privkey 8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba
+    // Sign with a private key whose address is never seeded in boot_full, so its balance is 0 and it
+    // cannot afford a HumanityHub op fee — it must be rejected at submit.
     const POOR_KEY: [u8; 32] =
         hex32("8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba");
 
