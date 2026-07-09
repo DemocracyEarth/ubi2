@@ -216,6 +216,15 @@ evidence (§5.4).
 
 ## 5. Consensus — PoA round-robin (Stage B; EC-5, EC-6)
 
+> **Stage B is specified in full in [`08-distributed-block-production.md`](08-distributed-block-production.md)**
+> (decisions in [`adr/0007-distributed-block-production.md`](adr/0007-distributed-block-production.md)).
+> The subsections below are the original Stage-B *sketch*, retained for context; where they differ from
+> `08`, **`08` is authoritative.** Two deviations to note when reading §5.1/§5.2/§5.5: (a) the proposer
+> schedule is keyed on **`(height, view)`** — `proposer(h, v) = V[(h + v) mod N]` — **not** on a
+> timestamp-derived slot (the timestamp no longer selects the proposer); (b) the block header gains a
+> **`view`** field, and the fork-choice tiebreak becomes lowest tip `view`, then lowest tip `hash`. The
+> per-epoch shuffle mentioned in §2.1 is deferred to the BFT backlog.
+
 ### 5.1 Block validity
 
 A received block at height `n` is valid iff **all** hold (any failure ⇒ reject; do not apply, do not

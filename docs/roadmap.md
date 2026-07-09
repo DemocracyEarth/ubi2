@@ -5,6 +5,14 @@ smallest demoable step. Each must be demonstrable end-to-end.
 
 Legend: ✅ done · 🚧 in progress · ⬜ planned
 
+> **Freshness note (as of 2026-07-01):** refreshed against `main`. M6 (ZK-Passport PoH) and the
+> Browser/Mobile Light Node track — both listed below as ⬜ planned in the previous revision — have each
+> shipped their first two stages (M6 Stages A+B; light-node Stages 1+2). See each section for exactly
+> what shipped vs. what's still open. M5 Stage A also shipped; **M5 Stage B (rotating proposer + view
+> change) is the recommended next milestone-level priority** — it is also the last prerequisite, via
+> Stage C, for M6's cross-node ZK quorum (EC-7). See "Re-sequencing reality" in the sequencing rationale
+> below for how M6's crypto shipped ahead of that dependency without violating it.
+
 ---
 
 ## M0 — Bootstrap ✅
@@ -52,7 +60,7 @@ reusing the M3 tally (`ContractHub`), the `ClaudeInterpreter` (+ `MockInterprete
 consolidated **UBI app** (wallet + block explorer + social/PoH hub + contracts). All gates green; injection
 fails closed. Follow-ups: FU-9 (stranded-funds desync, before mainnet), FU-10/FU-11.
 
-## M5 — Network & Consensus 🚧 *(current)*
+## M5 — Network & Consensus 🚧 *(current — Stage A shipped, Stage B next)*
 **Goal:** multiple independent node processes form a real peer-to-peer network that gossips transactions
 and blocks, agrees on block production via distributed consensus, syncs state when a node joins, and
 keeps producing blocks when a node goes down. The AI proof-of-humanity and prompt-contract quorums are
@@ -82,19 +90,51 @@ risk and highest-leverage next step.
   agree byte-for-byte (I1).
 
 **Staged delivery:**
-- **Stage A** — networking transport + block sync (one proposer, N followers): tx gossip, block broadcast,
-  join-sync, `ubi_getPeers`. Closes FU-3 (persistence), FU-13.
-- **Stage B** — distributed block production: rotating proposer, fork choice, proposer timeout + view
-  change (crash-fault tolerant; BFT is backlog). Closes FU-8 (juror staking/rotation).
-- **Stage C** — real cross-node AI quorum: `crates/juror` daemon on each node runs its own AI backend
-  and submits signed verdict/effect txs independently. Closes FU-7.
-- **Stage D** — hardening + multi-host testnet: soak, partition tests, observability (FU-4), mempool
+- **Stage A ✅ *(shipped, PR #13)*** — networking transport + block sync (one proposer, N followers): tx
+  gossip, block broadcast, join-sync, `ubi_getPeers`. Verified live by the `m5_stage_a` multi-node
+  acceptance test, now a required CI job (`multinode`). Closed FU-3 (persistence), FU-13.
+- **Stage B ⬜ *(next — recommended next milestone-level priority)*** — distributed block production:
+  rotating proposer, fork choice, proposer timeout + view change (crash-fault tolerant; BFT is backlog).
+  Closes FU-8 (juror staking/rotation). **Spec:**
+  [`specs/08-distributed-block-production.md`](specs/08-distributed-block-production.md) +
+  [ADR-0007](specs/adr/0007-distributed-block-production.md).
+- **Stage C ⬜** — real cross-node AI quorum: `crates/juror` daemon on each node runs its own AI backend
+  and submits signed verdict/effect txs independently. Closes FU-7. Also the last prerequisite for M6's
+  EC-7 (the ZK-passport proof evaluated by a real cross-node quorum, not a single node — see the M6
+  section and "Re-sequencing reality" below).
+- **Stage D ⬜** — hardening + multi-host testnet: soak, partition tests, observability (FU-4), mempool
   hardening (FU-1), oracle-URL SSRF fix (FU-12), public testnet with faucet and docs.
 
-**Depends on:** M1–M4 (all shipped). FU-3 and FU-13 are prerequisites for Stage A.
+**Depends on:** M1–M4 (all shipped). FU-3 and FU-13 were prerequisites for Stage A (closed).
 **Milestone brief:** [`milestones/m5-p2p-network.md`](milestones/m5-p2p-network.md)
 
-## M6 — ZK-Passport Proof of Humanity ⬜ *(leads; next milestone)*
+## M6 — ZK-Passport Proof of Humanity 🚧 *(in progress — Stages A + B shipped, Stage C next)*
+
+**Shipped (as of 2026-07-01):** Stage A (ZK proof pipeline + CSCA registry) and Stage B (on-chain
+verifier + `submitZkPassportProof`) are both done: a **deterministic Groth16/BN254 verifier**
+(`crates/zkpoh`) behind a trait seam (`MockZkVerifier` is the consensus default; the real
+`Groth16Verifier` is opt-in and fixture-tested), fully wired into the chain (`submitZkPassportProof`, a
+nullifier registry, `STD`/`ENH`/`DUAL` assurance levels, a governance-gated CSCA registry, opaque
+Pedersen attribute commitments, `state_root` v2) — and, going beyond the original Stage A/B bar, the
+**real Self `vc_and_disclose` verifying key pinned at genesis**, with a **genuine Groth16 proof verifying
+at the real 20-signal public-input arity** (not a toy arity), plus a client SDK
+(`packages/sdk/src/passport.ts`) and a wallet "Verify with passport (ZK)" entry point. (PRs #21, #23.)
+
+**Remaining in this track:**
+- **Stage C** (app NFC flow) — today a developer pastes a proof bundle by hand; the real on-device NFC
+  scan → on-device proof generation isn't built. This is the point where this track converges with the
+  Browser/Mobile Light Node track's Stage 3.
+- **Stage D** (attribute verifier) — the over-18 verifier is scaffolded only; no real opening/range
+  circuit yet.
+- **Two pre-consensus prerequisites, tracked here so they aren't lost:** the `self_layout` slot-19
+  reconciliation against Self's actual production circuit layout, and Self's production ceremony `.zkey`
+  (today's genuine proof verifies under a pinned fixture VK; a proof under Self's real production
+  verifying key is not yet in the open repo).
+- **EC-7 (cross-node quorum) still depends on M5 Stage C.** Stages A/B prove the verifier is real,
+  deterministic, and correctly wired on a single node. They do not yet prove it as an independent
+  per-node quorum decision — that is exactly the property M5 Stage C exists to retire. See "Re-sequencing
+  reality" in the sequencing rationale below.
+
 **Goal:** harden sybil resistance with an optional, additive, privacy-preserving ZK proof path over
 government-issued e-passports, while keeping the existing social-vouching + AI-jury path fully intact
 and available for anyone without a passport.
@@ -129,26 +169,88 @@ assurance level. Full UBI eligibility is unchanged for all verified humans regar
   commits. Agreement commits; injected disagreement aborts deterministically.
 - A `verifyAttribute(address, 'over18')` call returns correct results without revealing the birth date.
 
-**Staged delivery:** Stage A (ZK proof pipeline + CSCA registry, off-chain) → Stage B (on-chain
-verifier + `submitZkPassportProof` op) → Stage C (app NFC flow) → Stage D (attribute verifier, over-18
-template). **Depends on:** M5.
+**Staged delivery:**
+- **Stage A ✅ *(shipped)*** — ZK proof pipeline + CSCA registry, off-chain.
+- **Stage B ✅ *(shipped, PRs #21/#23)*** — on-chain verifier + `submitZkPassportProof` op.
+- **Stage C ⬜ *(next in this track)*** — app NFC flow.
+- **Stage D ⬜** — attribute verifier, over-18 template.
+
+**Spec:** [`specs/06-zk-passport-poh.md`](specs/06-zk-passport-poh.md),
+[ADR-0005](specs/adr/0005-zk-passport-poh.md).
+**Depends on:** M5 Stage A (shipped — the substrate this track's chain integration sits on). EC-7
+specifically depends on M5 Stage C (not yet started); Stages A/B did not need to wait for it.
 
 ---
 
-## Browser/Mobile Light Node ⬜ *(parallel track, does not block M6 or M7)*
+## Browser/Mobile Light Node 🚧 *(in progress — Stages 1 + 2 shipped, Stage 3 next; parallel track, does not block M6 or M7)*
+
+**Shipped (as of 2026-07-01):** Stage 1 (browser light node: sync/verify/read/sign) and Stage 2
+(installable PWA) are both done. Delivered: `crates/runtime-wasm` (the WASM re-execution wrapper) + a WS
+sync gateway on full nodes + `packages/light-client` (Stage 1); a shared `crates/exec` re-execution
+kernel so the light client follows the **full chain** and matches `state_root` byte-for-byte
+("re-execute-and-match, trust no server" — not header-only sync); and a real, openable browser PWA
+(`apps/light-node`) with a **pinned, gateway-independent genesis anchor** and **always-on PoA proposer
+enforcement**. (PRs #20, #24.)
+
+**Remaining in this track:**
+- **Stage 3** (mobile wrapper + on-device NFC + on-device ZK proof generation) — this is the delivery
+  vehicle for M6 Stage C (see the M6 section above).
+- **A pre-existing WS-gateway DoS-hardening gap** (slowloris / oversized-frame) that the security gate
+  flagged and that is not yet fixed.
+
 **Goal:** a WASM-compiled light-node that runs in a browser or mobile app, syncs block headers,
 verifies state proofs, and generates ZK-passport proofs locally (so passport NFC data never leaves
 the device). This track is parallel: it can proceed alongside M6 and does not gate M7. Its primary
-deliverable for M6 is the on-device ZK proof generation (Stage A of the light-node track feeds M6
+deliverable for M6 is the on-device ZK proof generation (**Stage 3** of the light-node track feeds M6
 Stage C). Full light-node sync and verification are a standalone capability.
 
 **Exit criteria (light-node-specific):** a browser tab loads the WASM light node, syncs headers from
 a full node, and verifies an account balance against a state proof without running a full node. The
 ZK passport proof generator runs in-browser in under 60 seconds on a modern device.
 
-**Milestone brief:** [`milestones/browser-lightnode.md`](milestones/browser-lightnode.md) *(to be authored on the `feat/zkpoh-lightnode-design` branch)*.
-**Depends on:** M5 (for the header chain to sync against); WASM-compilable runtime (already enforced
-by the build-level dependency test).
+**Milestone brief:** [`milestones/browser-light-node.md`](milestones/browser-light-node.md). **Spec:**
+[`specs/07-browser-light-node.md`](specs/07-browser-light-node.md),
+[ADR-0006](specs/adr/0006-browser-light-node.md).
+**Depends on:** M5 Stage A (shipped — the sync protocol + WS RPC this track's Stage 1 connects to);
+WASM-compilable runtime (already enforced by the build-level dependency test).
+
+---
+
+### Gate discipline evidence (Stage-2 security pass, 2026-07-01)
+
+An adversarial security + reliability gate ran against the Stage-2 work above (M6 Stages A/B, light-node
+Stages 1/2) and confirmed by proof-of-concept, then the team fixed, three HIGH-severity issues before
+merge — not deferred to a follow-up:
+
+1. **M6 nullifier malleability.** The on-chain nullifier registry keyed on raw proof bytes rather than
+   the canonical mod-r field reduction, so one physical passport could be re-encoded to mint unlimited
+   "unique" humans. Fixed with a canonicality guard that rejects non-canonical nullifier encodings before
+   registry insert.
+2. **Light-node had no pinned genesis / no proposer enforcement.** A lying WS gateway could hand the
+   browser light node a fabricated genesis and proposer set, spoofing the whole chain to a user who
+   believed they were verifying independently.
+3. **Light-node couldn't reproduce a real seeded genesis against an honest gateway**
+   (`StateRootMismatch`), which would have made "trust no server" undemonstrable even in the good-faith
+   case.
+
+Findings 2 and 3 were fixed together, via the pinned gateway-independent genesis anchor + always-on PoA
+proposer enforcement now shipped in `apps/light-node`.
+
+**Why this belongs in the roadmap, not just a report:** this is direct evidence the gate discipline is
+retiring real risk, not rubber-stamping — first-pass Stage-2 code shipped with three exploitable bugs,
+and the process caught all three before they reached anyone relying on this chain. Treat that as a
+reason to expect (not merely tolerate) further findings in Stage C/D (NFC + mobile) and in M5 Stage B,
+and to keep funding the gate at the same rigor rather than relaxing it once the crypto "looks done."
+
+### Operator tooling (shipped)
+
+CI (`.github/workflows/ci.yml`) gates every push/PR on three required jobs: `chain` (fmt/clippy/build/
+test), `multinode` (the `m5_stage_a` multi-node acceptance test against a freshly built node binary —
+this is what actually catches multi-process regressions a plain `cargo test` would miss), and
+`interfaces` (pnpm build + typecheck across the TS packages/apps). The **`ubi` operator CLI** (CalVer
+versioned, e.g. `2026.07.01`) now ships `ubi node` (presets: `devnet` / `lightnode` / `multi`), `ubi
+genesis anchor`, and `ubi keys` — the reproducible harness the gates (and any operator) actually run,
+replacing ad hoc shell invocations.
 
 ---
 
@@ -182,6 +284,15 @@ on:** M5 Stage D (multi-host hardening), M6, M7.
 **M5 before M6 (ZK-Passport-PoH):** M6's EC-7 requires the real cross-node AI quorum (M5 Stage C).
 The ZK verifier must run on a real multi-node network. Running it on a single-node devnet would simulate
 the cross-node property rather than prove it, which is exactly the risk M5 exists to retire.
+
+**Re-sequencing reality (as of 2026-07-01):** in practice, M6's crypto core (Stages A + B) shipped
+*before* M5 Stage C — running ahead of the letter of the rule above. That is a legitimate exception, not
+a violation of it: the deterministic Groth16 verifier is pure, dependency-free cryptography, correctly
+tested and byte-reproducible on a single node exactly like the rest of `crates/runtime` — it needs no
+multi-node network to *be real*. What the rule actually protects is EC-7 specifically (the proof
+evaluated as an independent per-node quorum decision, not graded by one process alone), and EC-7 remains
+explicitly gated on M5 Stage C. The critical path is unchanged and explicit: **M5 Stage B → M5 Stage C →
+M6 EC-7 closes.** M5 Stage B is the recommended next milestone-level priority.
 
 **M6 (ZK-Passport-PoH) before M7 (DAOs):** DAOs gate membership on PoH quality and depend on attribute
 commitments that M6 delivers. Building DAOs before M6 yields membership lists with no cryptographic

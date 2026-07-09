@@ -133,16 +133,37 @@ required before cross-node snapshot comparison).
 
 ### Stage B — Distributed block production and consensus
 
-Goal: no single hardcoded proposer; the chain is live if a supermajority of nodes are live.
+Goal: no single hardcoded proposer; the chain is **crash-fault-tolerant (CFT)** — production rotates across
+a validator set and does not halt when a proposer goes down. **BFT (tolerating an actively-malicious
+proposer/majority) is explicitly out of scope and on the backlog** (Risk 3, below).
 
-Deliverables:
-- Leader election / proposer rotation (round-robin across peer set, or PBFT-lite timeout-based;
-  architect decides and documents as an ADR).
-- Fork choice rule: what a follower does when it receives two competing blocks at the same height.
-- Proposer timeout + view change: when the current proposer misses its slot, the next node takes over.
-- Updated CI: kills the proposer mid-run and asserts EC-5, EC-6.
-- FU-8 (juror staking/rotation) is a natural fit here: juror set can be managed by the same
-  membership mechanism as the proposer set.
+Specified in full in [`../specs/08-distributed-block-production.md`](../specs/08-distributed-block-production.md);
+load-bearing decisions in [`../specs/adr/0007-distributed-block-production.md`](../specs/adr/0007-distributed-block-production.md).
+The chosen mechanism (all deterministic — I1/I2 hold through rotation and view change; local clocks drive
+only liveness, never committed state):
+
+- **Validator set + round-robin schedule.** `V` = PoH-gated validators (registered validator ∧ `Verified`
+  human), sorted, snapshotted at epoch boundaries (committed to `state_root`). The scheduled proposer for a
+  block is the pure function `proposer(height, view) = V[(height + view) mod N]` — every node computes it
+  identically from on-chain state. Membership changes take effect at the next epoch boundary.
+- **Block header gains a `view` field** (the one consensus-relevant, minimal wire change; committed in the
+  header hash + signature). No BFT-style vote messages are added.
+- **Proposer timeout + view change.** A local per-height timer: if the scheduled proposer does not deliver
+  within `PROPOSER_TIMEOUT`, the node advances `view` and the next validator (`view+1`) becomes the
+  legitimate proposer — authorized purely because `(height, view)` makes it the scheduled proposer. A
+  minority partition stalls (a local "produce only when connected to a majority of `V`" guard) rather than
+  finalizing a divergent chain.
+- **Fork choice** = longest valid chain → lowest tip `view` → lowest tip `hash` (a deterministic total
+  order, so all honest nodes converge on one chain; a late original proposer re-converges via the
+  lowest-view tiebreak). **Commit/finality** is k-deep probabilistic (not BFT single-slot finality).
+- **FU-8 (validator/juror membership + rotation)** is delivered here, managed by the same epoch-snapshot
+  mechanism as the proposer set; equivocation is handled enough not to split honest nodes plus epoch
+  eviction (stake-slashing is backlog).
+- **CI** kills the current proposer mid-run (and restarts it) and asserts EC-5, EC-6 (plus the spec's
+  EC-B1…EC-B6 / EC-B-F3…F5), while the Stage-A `m5_stage_a` harness stays green (the single-proposer config
+  is the `N = 1` degenerate rotation — Stage A is Stage B with one validator).
+
+A single-validator config degenerates exactly to Stage A (one fixed proposer, no view changes).
 
 Exit: EC-5, EC-6 pass in addition to Stage A criteria.
 
