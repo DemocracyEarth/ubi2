@@ -532,3 +532,46 @@ export function parseProofBundle(json: string): { bundle: SelfProofBundle | null
   if (err) return { bundle: null, error: err };
   return { bundle: parsed as SelfProofBundle, error: null };
 }
+
+// ---------------------------------------------------------------------------
+// Self client flow (Stage C1, spec 06b §5) — the relay wire payload
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact wire shape the Self mobile app POSTs to the ubi2 relay endpoint after a user
+ * completes an in-app verification (spec 06b §5.2): `{ attestationId, proof, publicSignals,
+ * userContextData }`. `userContextData` echoes the `userDefinedData` the wallet passed into
+ * `SelfAppBuilder` (here, the connected ubi2 address) — an advisory cross-check only; the
+ * authoritative binding is on-chain (`publicSignals[20] == tx sender`, spec §4.4 step 4).
+ */
+export interface SelfRelayPayload {
+  attestationId: number | string;
+  proof: SelfProofBundle["proof"];
+  publicSignals: string[];
+  userContextData?: string;
+}
+
+/**
+ * Validate the shape of a Self relay payload (spec 06b §5.2 step 1) BEFORE encoding it.
+ * This is a shape check only — no cryptography — exactly like `validateProofBundle`. The relay
+ * is untrusted by design (§5.2): the runtime re-verifies the proof and re-binds every slot, so a
+ * relay that lies here can at worst produce a tx the chain rejects fail-closed.
+ */
+export function validateSelfRelayPayload(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== "object") return "Relay payload must be a JSON object.";
+  const p = parsed as Record<string, unknown>;
+  if (p.attestationId === undefined || p.attestationId === null)
+    return "Missing `attestationId`.";
+  return validateProofBundle({ proof: p.proof, publicSignals: p.publicSignals });
+}
+
+/**
+ * Encode a Self relay payload (the exact POST body the Self app sends, spec 06b §5.2) directly
+ * into `submitZkPassportProof` calldata — the ONE function the relay endpoint calls. It never
+ * inspects proof internals beyond arity/shape; cryptographic validity is decided exclusively by
+ * the runtime's re-verify (spec §5.2 "the relay is not trusted").
+ */
+export function encodeSelfRelayPayload(payload: SelfRelayPayload): Hex {
+  const bundle: SelfProofBundle = { proof: payload.proof, publicSignals: payload.publicSignals };
+  return encodeZkBundleAsCalldata(bundle);
+}

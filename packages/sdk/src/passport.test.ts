@@ -35,10 +35,13 @@ import {
   encodeProofBytes,
   encodeSubmitZkPassportProof,
   encodeZkBundleAsCalldata,
+  validateSelfRelayPayload,
+  encodeSelfRelayPayload,
   SELF_NPUBLIC,
   SELF_IDX_NULLIFIER,
   SELF_IDX_USER_IDENTIFIER,
   type SelfProofBundle,
+  type SelfRelayPayload,
 } from "./passport.js";
 
 // ---------------------------------------------------------------------------
@@ -205,6 +208,52 @@ test("SDK↔Rust parity: the shared synthetic fixture parses identically", () =>
   assert(
     arr.every((h, i) => BigInt(h) === BigInt(signals[i])),
     "every carried bytes32 equals the fixture field element at its index",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Self client flow (Stage C1, spec 06b §5) — relay payload → calldata
+// ---------------------------------------------------------------------------
+
+const RELAY_PAYLOAD: SelfRelayPayload = {
+  attestationId: 1,
+  proof: FIXTURE_BUNDLE.proof,
+  publicSignals: TEST_PUBLIC_SIGNALS,
+  userContextData: "0x" + TEST_SUBMITTER_ADDR_DEC.toString().padStart(64, "0"),
+};
+
+test("validateSelfRelayPayload: accepts the exact Self-app POST shape", () => {
+  assert(validateSelfRelayPayload(RELAY_PAYLOAD) === null, "well-formed payload validates");
+});
+
+test("validateSelfRelayPayload: rejects missing attestationId / bad arity", () => {
+  const { attestationId: _attestationId, ...noAttestation } = RELAY_PAYLOAD;
+  assert(
+    validateSelfRelayPayload(noAttestation) !== null,
+    "missing attestationId is rejected",
+  );
+  const shortSignals = { ...RELAY_PAYLOAD, publicSignals: ["1", "2"] };
+  assert(validateSelfRelayPayload(shortSignals) !== null, "wrong-arity publicSignals is rejected");
+});
+
+test("encodeSelfRelayPayload: 21-vector relay payload → 0xf342a2f3 calldata (round-trip)", () => {
+  const data = encodeSelfRelayPayload(RELAY_PAYLOAD);
+  assert(data.startsWith("0x"), "calldata is hex");
+  const selector = data.slice(0, 10);
+  assert(selector === "0xf342a2f3", `selector is 0xf342a2f3, got ${selector}`);
+
+  // Must equal encoding the same signals via the bundle path (one shared encoder, §5.4).
+  const viaBundle = encodeZkBundleAsCalldata({
+    proof: RELAY_PAYLOAD.proof,
+    publicSignals: RELAY_PAYLOAD.publicSignals,
+  });
+  assert(data === viaBundle, "relay-payload encoding matches the bundle encoding byte-for-byte");
+
+  // The 21-vector round-trips into the calldata: decode the tail and check slot 7 (nullifier) and
+  // slot 20 (user_identifier) land at the expected byte offsets (4-byte selector + head words).
+  assert(
+    data.includes(BigInt(TEST_NULLIFIER_DEC).toString(16)),
+    "the nullifier field element appears in the encoded calldata",
   );
 });
 

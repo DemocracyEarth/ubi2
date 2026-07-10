@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@selfxyz/qrcode": "1.0.24",
     "@ubi2/sdk": "workspace:*",
     "next": "15.2.4",
     "react": "^19.0.0",

@@ -34,3 +34,18 @@ export const NETWORK = {
   symbol: "UBI",
   decimals: 18,
 } as const;
+
+/**
+ * M6 Stage C1 (spec 06b §5.1) — the public URL of THIS app's `/api/self-verify` relay route, as
+ * seen by the Self mobile app. `SelfAppBuilder` hard-rejects `localhost`/`127.0.0.1` endpoints
+ * (the Self app runs on a phone, not this machine), so a real end-to-end run requires a publicly
+ * reachable URL here — a tunnel (ngrok/cloudflared) during dev, or the deployed wallet's own
+ * origin in production. Leave unset to keep the live-QR panel disabled with an honest message
+ * (the paste/upload + dev-fixture paths keep working regardless).
+ *
+ * Example (dev): `NEXT_PUBLIC_SELF_ENDPOINT=https://abcd1234.ngrok-free.app/api/self-verify pnpm dev`
+ */
+export const SELF_ENDPOINT = process.env.NEXT_PUBLIC_SELF_ENDPOINT ?? "";
+
+/** The canonical ubi2 Self scope seed (spec 06b §3) — one network-wide scope, never per-context. */
+export const UBI2_SELF_SCOPE_SEED = "ubi2-poh";

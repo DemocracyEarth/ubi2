@@ -34,8 +34,10 @@ import {
   type HumanRecord,
   type AttributeCommitments,
   type AssuranceLevel,
+  type SelfProofBundle,
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
+import { SelfLivePanel } from "./self-live-panel";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
@@ -133,7 +135,7 @@ function ZkExplainerBanner() {
         </span>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: "0.82rem", color: "var(--accent-2)", marginBottom: "0.3rem" }}>
-            ZK-passport verification — Stage 2 (proof bundle upload)
+            ZK-passport verification — Stage C (Self app, staging)
           </div>
           <div style={{ fontSize: "0.77rem", color: "var(--muted)", lineHeight: 1.55 }}>
             Submit a ZK-passport proof (from the Self app) to receive{" "}
@@ -188,9 +190,15 @@ function ZkExplainerBanner() {
             is metadata for optional features, never a gate on accrual.
           </p>
           <p style={{ margin: 0 }}>
-            <b style={{ color: "var(--ink)" }}>This stage.</b> Stage 2 (now) lets you paste or
-            upload a proof bundle exported from the Self app. Stage 3 (next milestone) will add
-            live in-app NFC scan via the Light-Node WASM prover.
+            <b style={{ color: "var(--ink)" }}>This stage (Stage C / C1 — honest status).</b> The
+            live QR/deeplink flow below builds a real `SelfAppBuilder` (V2) request against Self&apos;s{" "}
+            <b>staging</b> environment and submits through an untrusted relay that only encodes
+            calldata — the runtime always re-verifies. A genuine end-to-end run (a real phone,
+            Self&apos;s staging prover, and a pinned production verifying key) has not yet been
+            captured on this devnet; that capture is the EC-C7 gate (spec 06b §4.1/§9). Until then,
+            treat this as the wired plumbing, not a claim that a real passport has been verified
+            here. The dev-fixture and paste-bundle paths remain the reliable way to exercise the
+            on-chain submit + assurance flow today.
           </p>
           <p style={{ margin: 0 }}>
             <b style={{ color: "var(--ink)" }}>What goes on-chain:</b> a 32-byte nullifier
@@ -279,6 +287,8 @@ interface ProofInputPanelProps {
 function ProofInputPanel({ onBundle, disabled }: ProofInputPanelProps) {
   const [text, setText] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [fixtureErr, setFixtureErr] = useState<string | null>(null);
+  const [fixtureBusy, setFixtureBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleText = (v: string) => {
@@ -297,6 +307,29 @@ function ProofInputPanel({ onBundle, disabled }: ProofInputPanelProps) {
     };
     reader.readAsText(file);
   };
+
+  // M6 Stage C1 (spec 06b §5.3): load the shared arity-21 synthetic fixture
+  // (crates/zkpoh/fixtures/self_synthetic_{public,proof}.json) via the dev-fixture API route, so
+  // the full parse → encode → submit flow is exercisable without a live Self app or phone.
+  const loadDevFixture = useCallback(async () => {
+    setFixtureBusy(true);
+    setFixtureErr(null);
+    try {
+      const res = await fetch("/api/self-dev-fixture");
+      const json = (await res.json()) as { ok: boolean; bundle?: SelfProofBundle; error?: string };
+      if (!json.ok || !json.bundle) {
+        setFixtureErr(json.error ?? "Could not load the dev fixture.");
+        return;
+      }
+      const jsonStr = JSON.stringify(json.bundle, null, 2);
+      setText(jsonStr);
+      onBundle(jsonStr);
+    } catch (e) {
+      setFixtureErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFixtureBusy(false);
+    }
+  }, [onBundle]);
 
   return (
     <div
@@ -321,7 +354,8 @@ function ProofInputPanel({ onBundle, disabled }: ProofInputPanelProps) {
       }}
     >
       <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginBottom: "0.6rem" }}>
-        Paste your Self-app proof bundle JSON, or drop / upload a file:
+        Paste your Self-app proof bundle JSON, drop / upload a file, or load the dev/CI fixture
+        (dev-only — a synthetic non-production proof, spec 06b §5.3):
       </div>
 
       <textarea
@@ -355,6 +389,15 @@ function ProofInputPanel({ onBundle, disabled }: ProofInputPanelProps) {
         >
           Upload .json file
         </button>
+        <button
+          className="ghost"
+          disabled={disabled || fixtureBusy}
+          style={{ fontSize: "0.74rem", padding: "0.3rem 0.75rem" }}
+          onClick={loadDevFixture}
+          title="Load crates/zkpoh/fixtures/self_synthetic_{public,proof}.json — a synthetic, non-production bundle for dev/CI"
+        >
+          {fixtureBusy ? "Loading…" : "Use dev fixture"}
+        </button>
         {text && (
           <button
             className="ghost"
@@ -380,6 +423,11 @@ function ProofInputPanel({ onBundle, disabled }: ProofInputPanelProps) {
           }}
         />
       </div>
+      {fixtureErr && (
+        <div className="notice err" style={{ marginTop: "0.5rem", fontSize: "0.72rem" }}>
+          {fixtureErr}
+        </div>
+      )}
     </div>
   );
 }
@@ -755,9 +803,27 @@ export function ZkPassportSection({ account, human, onRefreshHuman }: ZkPassport
         </div>
       )}
 
+      {!isEnhanced && (
+        <div style={{ marginBottom: "1.1rem" }}>
+          <div className="label" style={{ marginBottom: "0.5rem" }}>
+            Verify with passport (ZK) — scan with the Self app
+          </div>
+          <SelfLivePanel account={account} human={human} onSuccess={handleSuccess} />
+        </div>
+      )}
+
+      {/* Separator */}
+      <div
+        style={{
+          height: "1px",
+          background: "linear-gradient(90deg, transparent, rgba(139,123,255,.2), transparent)",
+          margin: "1rem 0",
+        }}
+      />
+
       <div style={{ marginBottom: "0.5rem" }}>
         <div className="label" style={{ marginBottom: "0.5rem" }}>
-          Submit proof bundle from the Self app
+          Dev fallback — paste / upload / load a proof bundle directly
         </div>
         <ZkPassportSubmit
           account={account}
@@ -779,10 +845,13 @@ export function ZkPassportSection({ account, human, onRefreshHuman }: ZkPassport
           lineHeight: 1.55,
         }}
       >
-        <b style={{ color: "var(--muted)" }}>Stage 2 of 3.</b>{" "}
-        This stage: paste / upload a proof bundle exported from the Self app.
-        Stage 3 (next milestone): live in-app NFC scan via the Light-Node WASM prover
-        — scan your passport directly from this browser without a separate app.
+        <b style={{ color: "var(--muted)" }}>Stage C / C1 — the Self client flow.</b>{" "}
+        The QR/deeplink panel above builds a real <code>SelfAppBuilder</code> V2 request (scope{" "}
+        <code>ubi2-poh</code>) against Self&apos;s <b>staging</b> environment and relays through
+        this app&apos;s own untrusted <code>/api/self-verify</code> encoder — MetaMask signs the
+        final transaction, and the runtime is the sole authority on validity (spec 06b §4.4/§5.2).
+        The dev fallback below (paste, upload, or &quot;Use dev fixture&quot;) submits the identical
+        calldata path and is how CI and offline development exercise the flow without a phone.
         The Social vouching path (M3) remains available in parallel at all stages.
       </div>
     </section>
