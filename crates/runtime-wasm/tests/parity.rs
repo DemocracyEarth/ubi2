@@ -36,11 +36,8 @@ sol! {
     function vouch(address vouchee) external;
     function submitZkPassportProof(
         bytes proof,
-        bytes32 nullifier,
-        bytes32[3] attributeCommitments,
-        bytes32 cscaRegistryRoot,
-        uint8 schemeTag,
-        uint64 nowEpoch
+        bytes32[21] publicSignals,
+        uint8 schemeTag
     ) external;
 
     function deployContract(string text, address[] parties) external returns (uint256 id);
@@ -825,12 +822,16 @@ fn zk_passport_block_parity() {
     let proposer = std::sync::Arc::new(ProposerKey::from_bytes(&[15u8; 32]).unwrap());
     let chain = Chain::new(chain_id, genesis_time).with_proposer_key(proposer);
 
-    // Fund the submitter so it can pay the (non-exempt) ZK-PoH gas fee. We do NOT seed a CSCA anchor
-    // pre-anchor here: the `MockZkVerifier` (default confident accept) verifies by `(nullifier,
-    // submitter)`, so the proof binds the LIVE (empty-set) CSCA registry root the chain advertises, and
-    // both followers share the same (empty) CSCA set at the anchor. (A seeded CSCA would need the
-    // IndexedDB snapshot to carry the CSCA set — a Stage-1 snapshot-format follow-up, orthogonal to
-    // re-execution coverage; the proof verifies identically against the live root either way.)
+    // M6 Stage C: seed the Self-root anchors PRE-anchor so both followers share the accepted trust set
+    // (the genesis snapshot the light client imports now carries the Self-root registry — snapshot.rs).
+    // The proof's `merkle_root`/OFAC slots bind these; the `MockZkVerifier` (confident accept) then
+    // verifies the (nullifier, submitter) pair identically on both followers.
+    let identity_root = [0x5Eu8; 32];
+    let ofac_roots = [[0x0Fu8; 32], [0x1Fu8; 32], [0x2Fu8; 32]];
+    chain.seed_self_identity_root(identity_root);
+    for (kind, root) in ofac_roots.iter().enumerate() {
+        chain.seed_self_ofac_root(kind as u8, *root);
+    }
     let user_sk = SigningKey::from_slice(&[0x71; 32]).unwrap();
     let user = addr_of(&user_sk);
     chain.seed_verified_human(&user, genesis_time);
@@ -847,11 +848,28 @@ fn zk_passport_block_parity() {
     let mut light = build_light_at_anchor(&chain, chain_id, &anchor);
     assert_eq!(light.state_root(), anchor.state_root.0);
 
-    // Block A: submit a ZK-passport proof. `nowEpoch` MUST equal the block timestamp (the runtime binds
-    // it, I2); `cscaRegistryRoot` MUST equal the live registry root the chain advertises.
+    // Block A: submit a Self `vc_and_disclose` proof carrying the full 21-signal vector (spec 06b §4.3).
+    // The runtime binds every policy slot by index: attestation_id@8 = 1, merkle_root@9 ∈ the pinned
+    // identity roots, current_date@10..16 ≈ block time, OFAC@16..18 ∈ the pinned OFAC roots, scope@19 =
+    // UBI2_SELF_SCOPE, user_identifier@20 = the tx sender.
     let t1 = genesis_time + 10;
-    let root = chain.csca_registry_root();
     let proof = vec![0xABu8; 192]; // a non-empty, within-bound proof blob (Mock verifier accepts).
+    let mut signals = [alloy_primitives::FixedBytes::<32>::from([0u8; 32]); 21];
+    signals[0] = [1u8; 32].into();
+    signals[1] = [2u8; 32].into();
+    signals[2] = [3u8; 32].into();
+    signals[7] = [0x44u8; 32].into(); // nullifier
+    signals[8] = u64_bytes32(ubi2_runtime::SELF_ATTESTATION_ID_EPASSPORT).into(); // attestation_id = 1
+    signals[9] = identity_root.into(); // merkle_root
+                                       // current_date YYMMDD for 2023-11-14 (within the freshness window of t1 = 2023-11-14).
+    for (i, d) in [b'2', b'3', b'1', b'1', b'1', b'4'].iter().enumerate() {
+        signals[10 + i] = u64_bytes32(*d as u64).into();
+    }
+    signals[16] = ofac_roots[0].into();
+    signals[17] = ofac_roots[1].into();
+    signals[18] = ofac_roots[2].into();
+    signals[19] = ubi2_runtime::UBI2_SELF_SCOPE.into(); // scope
+    signals[20] = addr_to_bytes32(&user).into(); // user_identifier = tx sender
     chain
         .ingest_gossip_tx(&signed_tx(
             &user_sk,
@@ -860,11 +878,8 @@ fn zk_passport_block_parity() {
             0,
             submitZkPassportProofCall {
                 proof: proof.into(),
-                nullifier: [0x44u8; 32].into(),
-                attributeCommitments: [[1u8; 32].into(), [2u8; 32].into(), [3u8; 32].into()],
-                cscaRegistryRoot: root.into(),
+                publicSignals: signals,
                 schemeTag: 0,
-                nowEpoch: t1,
             }
             .abi_encode(),
             0,
@@ -937,6 +952,20 @@ fn build_light_at_anchor(chain: &Chain, chain_id: u64, anchor: &Block) -> LightC
 
 fn hex32(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A `u64` as a 32-byte big-endian value (for the integer-valued public signals).
+fn u64_bytes32(v: u64) -> [u8; 32] {
+    let mut h = [0u8; 32];
+    h[24..32].copy_from_slice(&v.to_be_bytes());
+    h
+}
+
+/// A 20-byte address zero-extended to 32 bytes (the `user_identifier` signal form).
+fn addr_to_bytes32(a: &[u8; 20]) -> [u8; 32] {
+    let mut h = [0u8; 32];
+    h[12..32].copy_from_slice(a);
+    h
 }
 
 /// The server's committed balances for `addrs` at `now`, captured at the CURRENT server height. Called

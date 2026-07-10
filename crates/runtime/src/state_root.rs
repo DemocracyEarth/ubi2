@@ -216,9 +216,10 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
 
     // A short domain header pins the encoding version, so a later format change is a new root (never a
     // silent reinterpretation of old bytes). Bumped to `/2` for the M6 additions (the `Human.assurance`
-    // tag + the nullifier/attribute/CSCA sections), and to `/3` for the M5-Stage-B addition: the
-    // committed `epoch_validators` snapshot (section 0x0e, spec 08 §2.1/§8).
-    h.bytes(b"ubi2/state-root/3");
+    // tag + the nullifier/attribute/CSCA sections), to `/3` for the M5-Stage-B addition: the committed
+    // `epoch_validators` snapshot (section 0x0e, spec 08 §2.1/§8), and to `/4` for the M6-Stage-C
+    // Self-root anchor registry (sections 0x10 identity roots + 0x11 OFAC roots, spec 06b §2.2/§13).
+    h.bytes(b"ubi2/state-root/4");
 
     // 1. Accounts — sorted by address.
     let mut accounts = state.accounts();
@@ -365,6 +366,27 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
         h.bytes(&e.pubkey);
         h.u64(e.added_at);
         h.u8(e.status.tag());
+    }
+
+    // 7d. (M6 Stage C §2.2/§13) Self-root anchor registry — the reconciliation crux. The accepted Self
+    //     identity roots (sorted by `root`) and OFAC SMT roots (sorted by `(kind, root)`) feed the ZK
+    //     verify path (a proof's `merkle_root`/OFAC slots must be members within the window), so which
+    //     roots are trusted is committed consensus state — a divergent pinned set is a divergent root
+    //     (out-voted, EC-C13). `State` returns them already sorted.
+    let self_ids = state.self_identity_roots();
+    h.u8(0x10);
+    h.u64(self_ids.len() as u64);
+    for e in &self_ids {
+        h.write(&e.root);
+        h.u64(e.pinned_at_block);
+    }
+    let self_ofac = state.self_ofac_roots();
+    h.u8(0x11);
+    h.u64(self_ofac.len() as u64);
+    for e in &self_ofac {
+        h.u8(e.kind);
+        h.write(&e.root);
+        h.u64(e.pinned_at_block);
     }
 
     // 8. Contracts — `State::contracts()` already returns sorted-by-id. `vars` is a HashMap; commit it

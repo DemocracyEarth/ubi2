@@ -57,22 +57,27 @@ sol! {
 
         // ---- M6: ZK-passport proof of humanity (spec 06 §4.1/§7.3) ----
 
-        /// Submit a ZK-passport proof for the tx signer (spec §4.1). `submitter_address` is NOT in
-        /// calldata — it is `ecrecover(tx.sig)` (the tx sender), so it cannot be forged (§4.3). `nowEpoch`
-        /// is the not-expired reference epoch the proof used; the runtime validates it == `block.timestamp`.
+        /// Submit a Self `vc_and_disclose` proof for the tx signer (spec 06b §4.3). Carries the Groth16
+        /// `proof` + the **full** 21-signal public vector (snarkjs order, §4.1) + the `schemeTag`. The
+        /// submitter address is NOT in calldata — it is `ecrecover(tx.sig)` (the tx sender), bound
+        /// against `publicSignals[user_identifier]` so it cannot be forged (§4.4). Every policy slot is
+        /// derived + bound on-chain by index.
         function submitZkPassportProof(
             bytes proof,
-            bytes32 nullifier,
-            bytes32[3] attributeCommitments,
-            bytes32 cscaRegistryRoot,
-            uint8 schemeTag,
-            uint64 nowEpoch
+            bytes32[21] publicSignals,
+            uint8 schemeTag
         ) external;
-        /// Register a CSCA trust anchor (governance-gated — spec §7.3, EC-10). `keyId` is the unique key
-        /// fingerprint; `pubkey` the raw CSCA public-key bytes; `countryCode` the ICAO 3-letter code.
+        /// Register a CSCA trust anchor (governance-gated — spec §7.3). RETAINED, reserved for the
+        /// own-stack milestone (O-C1); inactive on the Self verify path.
         function registerCsca(bytes3 countryCode, bytes32 keyId, bytes pubkey) external;
-        /// Revoke a CSCA trust anchor (governance-gated — spec §7.3/§7.4).
+        /// Revoke a CSCA trust anchor (governance-gated — spec §7.3/§7.4). RETAINED, reserved.
         function revokeCsca(bytes32 keyId) external;
+        /// Pin an accepted Self identity-commitment root (governance-gated — spec 06b §2.2).
+        function pinSelfIdentityRoot(bytes32 root) external;
+        /// Pin an accepted Self OFAC SMT root of `kind` (0=passportno,1=namedob,2=nameyob) (§2.2).
+        function pinSelfOfacRoot(uint8 kind, bytes32 root) external;
+        /// Retire a Self root from the accepted sets (governance-gated — spec 06b §2.2).
+        function retireSelfRoot(bytes32 root) external;
 
         /// Stage-D attribute verifier (read-only, `eth_call` — spec §4.4). Returns `true` iff `attrProof`
         /// is a valid Pedersen-opening + range proof that `subject`'s stored `attributeType` commitment
@@ -84,7 +89,8 @@ sol! {
 
 /// Re-export the generated call types so `lib.rs` can match on selectors without re-deriving them.
 pub use IHumanityHub::{
-    challengeCall, registerCscaCall, requestVerificationCall, revokeCscaCall, submitVerdictCall,
+    challengeCall, pinSelfIdentityRootCall, pinSelfOfacRootCall, registerCscaCall,
+    requestVerificationCall, retireSelfRootCall, revokeCscaCall, submitVerdictCall,
     submitZkPassportProofCall, verifyAttributeCall, vouchCall,
 };
 
@@ -96,6 +102,9 @@ pub fn over18_attribute_type() -> alloy_primitives::B256 {
 
 /// A decoded HumanityHub *write* op, parsed from a tx's calldata. The signer (recovered from the tx)
 /// is supplied separately as `from`/`caller` by the dispatcher in `lib.rs`.
+// `SubmitZkPassportProof` carries the full 21-element public vector inline (`[Hash;21]`, spec 06b §4.3);
+// this decoded-op enum is short-lived per-tx state, so the inline layout is intentional (no `Box`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HumanityOp {
     /// `requestVerification(livenessRef)` — open a registration for the tx signer.
@@ -114,24 +123,28 @@ pub enum HumanityOp {
     },
 
     // ---- M6: ZK-passport ops ----
-    /// `submitZkPassportProof(...)` — a ZK-passport proof for the tx signer (§4.1). The submitter
-    /// address is the tx sender (NOT in calldata) — supplied separately by the dispatcher (§4.3).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)` — a Self `vc_and_disclose` proof for
+    /// the tx signer (spec 06b §4.3). The submitter address is the tx sender (NOT in calldata) — supplied
+    /// separately by the dispatcher and bound against `publicSignals[user_identifier]` (§4.4).
     SubmitZkPassportProof {
         proof: Vec<u8>,
-        nullifier: Hash,
-        attribute_commitments: [Hash; 3],
-        csca_registry_root: Hash,
+        signals: [Hash; 21],
         scheme_tag: u8,
-        now_epoch: u64,
     },
-    /// `registerCsca(countryCode, keyId, pubkey)` — governance-gated CSCA add (§7.3).
+    /// `registerCsca(countryCode, keyId, pubkey)` — governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
         country_code: [u8; 3],
         key_id: Hash,
         pubkey: Vec<u8>,
     },
-    /// `revokeCsca(keyId)` — governance-gated CSCA revoke (§7.3/§7.4).
+    /// `revokeCsca(keyId)` — governance-gated CSCA revoke (§7.3/§7.4). RETAINED, reserved.
     RevokeCsca { key_id: Hash },
+    /// `pinSelfIdentityRoot(root)` — governance-gated pin of an accepted Self identity root (06b §2.2).
+    PinSelfIdentityRoot { root: Hash },
+    /// `pinSelfOfacRoot(kind, root)` — governance-gated pin of an accepted OFAC SMT root (06b §2.2).
+    PinSelfOfacRoot { kind: u8, root: Hash },
+    /// `retireSelfRoot(root)` — governance-gated retire of a Self root (06b §2.2).
+    RetireSelfRoot { root: Hash },
 }
 
 /// Why a HumanityHub calldata blob could not be turned into a [`HumanityOp`].
@@ -248,19 +261,15 @@ pub fn parse_calldata(data: &[u8]) -> Result<HumanityOp, CalldataError> {
             if proof.is_empty() || proof.len() > MAX_ZK_PROOF_BYTES {
                 return Err(CalldataError::BadProofLength(proof.len()));
             }
-            // `bytes32[3]` decodes to a fixed array of `B256`; copy into `[Hash; 3]`.
-            let attribute_commitments = [
-                call.attributeCommitments[0].0,
-                call.attributeCommitments[1].0,
-                call.attributeCommitments[2].0,
-            ];
+            // `bytes32[21]` decodes to a fixed array of `B256`; copy into `[Hash; 21]`.
+            let mut signals = [[0u8; 32]; 21];
+            for (i, sig) in call.publicSignals.iter().enumerate() {
+                signals[i] = sig.0;
+            }
             Ok(HumanityOp::SubmitZkPassportProof {
                 proof,
-                nullifier: call.nullifier.0,
-                attribute_commitments,
-                csca_registry_root: call.cscaRegistryRoot.0,
+                signals,
                 scheme_tag: call.schemeTag,
-                now_epoch: call.nowEpoch,
             })
         }
         s if s == registerCscaCall::SELECTOR => {
@@ -278,6 +287,24 @@ pub fn parse_calldata(data: &[u8]) -> Result<HumanityOp, CalldataError> {
             Ok(HumanityOp::RevokeCsca {
                 key_id: call.keyId.0,
             })
+        }
+        s if s == pinSelfIdentityRootCall::SELECTOR => {
+            let call = pinSelfIdentityRootCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            Ok(HumanityOp::PinSelfIdentityRoot { root: call.root.0 })
+        }
+        s if s == pinSelfOfacRootCall::SELECTOR => {
+            let call = pinSelfOfacRootCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            Ok(HumanityOp::PinSelfOfacRoot {
+                kind: call.kind,
+                root: call.root.0,
+            })
+        }
+        s if s == retireSelfRootCall::SELECTOR => {
+            let call = retireSelfRootCall::abi_decode(data, true)
+                .map_err(|e| CalldataError::BadArgs(e.to_string()))?;
+            Ok(HumanityOp::RetireSelfRoot { root: call.root.0 })
         }
         other => Err(CalldataError::UnknownSelector(other)),
     }
@@ -340,8 +367,7 @@ mod tests {
         );
         assert_eq!(
             &submitZkPassportProofCall::SELECTOR,
-            &keccak256(b"submitZkPassportProof(bytes,bytes32,bytes32[3],bytes32,uint8,uint64)")
-                [..4]
+            &keccak256(b"submitZkPassportProof(bytes,bytes32[21],uint8)")[..4]
         );
         assert_eq!(
             &registerCscaCall::SELECTOR,
@@ -351,48 +377,52 @@ mod tests {
             &revokeCscaCall::SELECTOR,
             &keccak256(b"revokeCsca(bytes32)")[..4]
         );
+        assert_eq!(
+            &pinSelfIdentityRootCall::SELECTOR,
+            &keccak256(b"pinSelfIdentityRoot(bytes32)")[..4]
+        );
+        assert_eq!(
+            &pinSelfOfacRootCall::SELECTOR,
+            &keccak256(b"pinSelfOfacRoot(uint8,bytes32)")[..4]
+        );
+        assert_eq!(
+            &retireSelfRootCall::SELECTOR,
+            &keccak256(b"retireSelfRoot(bytes32)")[..4]
+        );
     }
 
     #[test]
     fn parse_submit_zk_passport_proof_roundtrips() {
         use alloy_primitives::{Bytes, FixedBytes};
         let proof = Bytes::from(vec![0xAB; 192]);
-        let nullifier: Hash = [0x07; 32];
-        let attrs = [
-            FixedBytes::<32>::from([0x11; 32]),
-            FixedBytes::<32>::from([0x22; 32]),
-            FixedBytes::<32>::from([0x33; 32]),
-        ];
-        let root: Hash = [0xC5; 32];
+        let mut sig_bytes = [[0u8; 32]; 21];
+        let mut fixed = [FixedBytes::<32>::from([0u8; 32]); 21];
+        for i in 0..21 {
+            let mut b = [0u8; 32];
+            b[31] = i as u8;
+            sig_bytes[i] = b;
+            fixed[i] = FixedBytes::<32>::from(b);
+        }
         let data = submitZkPassportProofCall {
             proof: proof.clone(),
-            nullifier: nullifier.into(),
-            attributeCommitments: attrs,
-            cscaRegistryRoot: root.into(),
+            publicSignals: fixed,
             schemeTag: 0,
-            nowEpoch: 1_700_000_000,
         }
         .abi_encode();
         assert_eq!(
             parse_calldata(&data).unwrap(),
             HumanityOp::SubmitZkPassportProof {
                 proof: vec![0xAB; 192],
-                nullifier,
-                attribute_commitments: [[0x11; 32], [0x22; 32], [0x33; 32]],
-                csca_registry_root: root,
+                signals: sig_bytes,
                 scheme_tag: 0,
-                now_epoch: 1_700_000_000,
             }
         );
 
-        // An over-long proof blob is rejected at decode (bound-check, §4.2 step 1).
+        // An over-long proof blob is rejected at decode (bound-check, §4.4 step 1).
         let big = submitZkPassportProofCall {
             proof: Bytes::from(vec![0u8; MAX_ZK_PROOF_BYTES + 1]),
-            nullifier: nullifier.into(),
-            attributeCommitments: attrs,
-            cscaRegistryRoot: root.into(),
+            publicSignals: fixed,
             schemeTag: 0,
-            nowEpoch: 0,
         }
         .abi_encode();
         assert!(matches!(

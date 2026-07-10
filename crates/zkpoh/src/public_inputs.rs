@@ -27,106 +27,47 @@
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
 
-/// The number of public inputs in the M6 passport-proof statement (spec §3.5). Pinned: the verifying
-/// key encodes this arity, so a mismatch is a hard reject.
-pub const NUM_PUBLIC_INPUTS: usize = 8;
+use crate::self_layout::SELF_NPUBLIC;
 
-/// Index of `nullifier` in the canonical vector.
-pub const IDX_NULLIFIER: usize = 0;
-/// Index of `attr_commit[0]` (age-threshold commitment).
-pub const IDX_ATTR_AGE: usize = 1;
-/// Index of `attr_commit[1]` (nationality-bucket commitment).
-pub const IDX_ATTR_NATIONALITY: usize = 2;
-/// Index of `attr_commit[2]` (document-expiry commitment).
-pub const IDX_ATTR_EXPIRY: usize = 3;
-/// Index of `csca_registry_root`.
-pub const IDX_CSCA_ROOT: usize = 4;
-/// Index of `submitter_address` (zero-extended).
-pub const IDX_SUBMITTER: usize = 5;
-/// Index of `now_epoch`.
-pub const IDX_NOW_EPOCH: usize = 6;
-/// Index of `passport_scheme_tag` (zero-extended).
-pub const IDX_SCHEME_TAG: usize = 7;
-
-/// The canonical, ordered public-input vector for `submitZkPassportProof` (spec §3.5).
-///
-/// Every field is stored as a raw **32-byte big-endian** value (the on-chain `bytes32` / address /
-/// `uint64` representation the HumanityHub op carries). Conversion to BN254 field elements is done once,
-/// deterministically, in [`PublicInputs::to_field_elements`] — there is exactly one mapping, so two
-/// nodes that assemble the same bytes produce the same field vector and therefore the same verify
-/// result (I1/I2).
+/// The full Self `vc_and_disclose` public-signal vector as raw 32-byte big-endian values, ready for the
+/// single canonical field mapping (spec 06b §4.3). Built from [`ubi2_runtime::ZkPublicInputs`] — the raw
+/// 21-signal vector the runtime carries on-chain — and mapped to `[Fr; 21]` by
+/// [`PublicInputs::to_field_elements`]. There is exactly one mapping, so two nodes that assemble the same
+/// bytes produce the same field vector and therefore the same verify result (I1/I2). **No adapter, no
+/// zeroing** (the Stage-A/B mistake): every live signal is consumed verbatim.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicInputs {
-    /// `nullifier` — 32-byte field element (§3.3).
-    pub nullifier: [u8; 32],
-    /// The three Pedersen attribute commitments in fixed order: `[age, nationality, expiry]` (§3.4).
-    pub attribute_commitments: [[u8; 32]; 3],
-    /// `csca_registry_root` — commitment to the trusted CSCA set the proof verifies against (§7.2).
-    pub csca_registry_root: [u8; 32],
-    /// `submitter_address` — the 20-byte address, zero-extended to 32, the proof is bound to (§3.3).
-    pub submitter_address: [u8; 20],
-    /// `now_epoch` — the chain-supplied current time (the block timestamp) the not-expired check used.
-    pub now_epoch: u64,
-    /// `passport_scheme_tag` — 1-byte document-type/scheme discriminant (§2.4).
-    pub scheme_tag: u8,
+    /// The raw 21-element public vector (snarkjs order, §4.1), each a 32-byte big-endian field value.
+    pub signals: [[u8; 32]; SELF_NPUBLIC],
 }
 
 impl PublicInputs {
-    /// Assemble the canonical vector from its on-chain components (the shape `crates/runtime` hands the
-    /// verifier after re-deriving the bound fields). Pure: no clock, no allocation beyond the struct.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        nullifier: [u8; 32],
-        attribute_commitments: [[u8; 32]; 3],
-        csca_registry_root: [u8; 32],
-        submitter_address: [u8; 20],
-        now_epoch: u64,
-        scheme_tag: u8,
-    ) -> Self {
-        Self {
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
-            submitter_address,
-            now_epoch,
-            scheme_tag,
-        }
+    /// Wrap the raw 21-signal vector.
+    pub fn new(signals: [[u8; 32]; SELF_NPUBLIC]) -> Self {
+        Self { signals }
     }
 
-    /// Build this crate's field-mapping struct from the runtime's plain-bytes
-    /// [`ubi2_runtime::ZkPublicInputs`] (the wire shape the runtime assembles + binds, §4.2). A pure,
-    /// field-for-field copy: the runtime owns the *meaning* (it re-derives + binds `csca_registry_root`,
-    /// `submitter_address`, `now_epoch`); this crate owns the *field-element mapping*. The single seam.
+    /// Build from the runtime's plain-bytes [`ubi2_runtime::ZkPublicInputs`] (the on-chain wire shape).
+    /// The runtime owns the *meaning* (it binds the policy slots by index); this crate owns the
+    /// *field-element mapping*. The single seam — a pure, field-for-field copy.
     pub fn from_runtime(pi: &ubi2_runtime::ZkPublicInputs) -> Self {
         Self {
-            nullifier: pi.nullifier,
-            attribute_commitments: pi.attribute_commitments,
-            csca_registry_root: pi.csca_registry_root,
-            submitter_address: pi.submitter_address,
-            now_epoch: pi.now_epoch,
-            scheme_tag: pi.scheme_tag,
+            signals: pi.signals,
         }
     }
 
-    /// Convert to the ordered BN254 scalar-field vector the Groth16 verifier consumes (spec §3.5
-    /// order). This is the **single canonical mapping**; it is the function whose determinism makes the
-    /// whole verify reproducible across nodes.
+    /// Convert to the ordered `[Fr; 21]` vector the Groth16 verifier consumes (spec 06b §4.1 order). The
+    /// **single canonical mapping** whose determinism makes the whole verify reproducible across nodes.
     ///
-    /// `Fr::from_be_bytes_mod_order` reduces each 32-byte value modulo the scalar field order `r`. A
-    /// 32-byte value `≥ r` is folded into the field — the off-chain prover therefore commits to the
-    /// *reduced* value, and the runtime must reject any field that does not round-trip (a malleability
-    /// guard the caller enforces; documented as a binding obligation here so it is not lost).
-    pub fn to_field_elements(&self) -> [Fr; NUM_PUBLIC_INPUTS] {
-        let mut out = [Fr::from(0u64); NUM_PUBLIC_INPUTS];
-        out[IDX_NULLIFIER] = Fr::from_be_bytes_mod_order(&self.nullifier);
-        out[IDX_ATTR_AGE] = Fr::from_be_bytes_mod_order(&self.attribute_commitments[0]);
-        out[IDX_ATTR_NATIONALITY] = Fr::from_be_bytes_mod_order(&self.attribute_commitments[1]);
-        out[IDX_ATTR_EXPIRY] = Fr::from_be_bytes_mod_order(&self.attribute_commitments[2]);
-        out[IDX_CSCA_ROOT] = Fr::from_be_bytes_mod_order(&self.csca_registry_root);
-        // The 20-byte address is zero-extended to a field element (big-endian, left-padded by `from`).
-        out[IDX_SUBMITTER] = address_to_field(&self.submitter_address);
-        out[IDX_NOW_EPOCH] = Fr::from(self.now_epoch);
-        out[IDX_SCHEME_TAG] = Fr::from(self.scheme_tag as u64);
+    /// `Fr::from_be_bytes_mod_order` reduces each 32-byte value modulo the scalar order `r`; a genuine
+    /// proof's public signals are already canonical (< r). The runtime's nullifier canonicality guard
+    /// (§4.4) rejects the one slot whose raw bytes double as a registry key, so the `N, N+r, …` family
+    /// cannot mint duplicate humans.
+    pub fn to_field_elements(&self) -> [Fr; SELF_NPUBLIC] {
+        let mut out = [Fr::from(0u64); SELF_NPUBLIC];
+        for (o, s) in out.iter_mut().zip(self.signals.iter()) {
+            *o = Fr::from_be_bytes_mod_order(s);
+        }
         out
     }
 }
@@ -174,21 +115,19 @@ mod tests {
 
     #[test]
     fn field_vector_order_is_canonical_and_stable() {
-        let pi = PublicInputs::new(
-            [1u8; 32],
-            [[2u8; 32], [3u8; 32], [4u8; 32]],
-            [5u8; 32],
-            [6u8; 20],
-            1_700_000_000,
-            0,
-        );
+        let mut signals = [[0u8; 32]; SELF_NPUBLIC];
+        for (i, s) in signals.iter_mut().enumerate() {
+            s[31] = i as u8;
+        }
+        let pi = PublicInputs::new(signals);
         let a = pi.to_field_elements();
         let b = pi.to_field_elements();
         assert_eq!(a, b, "the field mapping is a pure function");
-        assert_eq!(a.len(), NUM_PUBLIC_INPUTS);
-        // now_epoch and scheme_tag map through the integer `From` impls.
-        assert_eq!(a[IDX_NOW_EPOCH], Fr::from(1_700_000_000u64));
-        assert_eq!(a[IDX_SCHEME_TAG], Fr::from(0u64));
+        assert_eq!(a.len(), SELF_NPUBLIC);
+        // Each signal maps to its integer value under the canonical BE reduction.
+        for (i, fr) in a.iter().enumerate() {
+            assert_eq!(*fr, Fr::from(i as u64));
+        }
     }
 
     #[test]

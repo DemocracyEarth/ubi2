@@ -154,7 +154,11 @@ fn gas_for_kind(kind: &PendingKind) -> u64 {
         // M6: the ZK-passport proof runs a pairing check — the heaviest HumanityHub op (NOT fee-exempt,
         // §4.1). The CSCA-governance ops pay the humanity tier (governance-gated, small surface).
         PendingKind::SubmitZkPassportProof { .. } => GAS_ZKPOH,
-        PendingKind::RegisterCsca { .. } | PendingKind::RevokeCsca { .. } => GAS_CSCA_GOV,
+        PendingKind::RegisterCsca { .. }
+        | PendingKind::RevokeCsca { .. }
+        | PendingKind::PinSelfIdentityRoot { .. }
+        | PendingKind::PinSelfOfacRoot { .. }
+        | PendingKind::RetireSelfRoot { .. } => GAS_CSCA_GOV,
         // Size-metered: base contract gas + per-byte surcharge on the stored UTF-8 text (the text is
         // already capped at submit, so the length is bounded; storing more costs more).
         PendingKind::DeployContract { text, .. } => gas_for_deploy(text.len()),
@@ -189,9 +193,11 @@ fn gas_for_call_obj(call: &Value) -> u64 {
             match parse_humanity_calldata(&data) {
                 Ok(HumanityOp::RequestVerification { .. }) => GAS_ONBOARD,
                 Ok(HumanityOp::SubmitZkPassportProof { .. }) => GAS_ZKPOH,
-                Ok(HumanityOp::RegisterCsca { .. }) | Ok(HumanityOp::RevokeCsca { .. }) => {
-                    GAS_CSCA_GOV
-                }
+                Ok(HumanityOp::RegisterCsca { .. })
+                | Ok(HumanityOp::RevokeCsca { .. })
+                | Ok(HumanityOp::PinSelfIdentityRoot { .. })
+                | Ok(HumanityOp::PinSelfOfacRoot { .. })
+                | Ok(HumanityOp::RetireSelfRoot { .. }) => GAS_CSCA_GOV,
                 _ => GAS_HUMANITY,
             }
         }
@@ -614,6 +620,9 @@ struct Inner {
 }
 
 /// What a queued tx will do when mined. M1 had only value transfers; M2 adds the two StreamHub ops.
+// `SubmitZkPassportProof` carries the full 21-element public vector inline (spec 06b §4.3); this queued
+// per-tx state is short-lived, so the inline layout is intentional (no `Box` indirection).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 enum PendingKind {
     /// Plain value transfer to `to`.
@@ -644,24 +653,28 @@ enum PendingKind {
     },
 
     // ---- M6: ZK-passport ops to HumanityHub ----
-    /// `submitZkPassportProof(...)`: verify a ZK-passport proof for the signer (§4.1). The submitter
-    /// address is the tx sender (NOT in calldata), so it cannot be forged (§4.3).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)`: verify a Self `vc_and_disclose`
+    /// proof for the signer (spec 06b §4.3). The submitter address is the tx sender (NOT in calldata),
+    /// bound against `publicSignals[user_identifier]` so it cannot be forged (§4.4).
     SubmitZkPassportProof {
         proof: Vec<u8>,
-        nullifier: [u8; 32],
-        attribute_commitments: [[u8; 32]; 3],
-        csca_registry_root: [u8; 32],
+        signals: [[u8; 32]; 21],
         scheme_tag: u8,
-        now_epoch: u64,
     },
-    /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3).
+    /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
         country_code: [u8; 3],
         key_id: [u8; 32],
         pubkey: Vec<u8>,
     },
-    /// `revokeCsca(keyId)`: governance-gated CSCA revoke (§7.3/§7.4).
+    /// `revokeCsca(keyId)`: governance-gated CSCA revoke (§7.3/§7.4). RETAINED, reserved.
     RevokeCsca { key_id: [u8; 32] },
+    /// `pinSelfIdentityRoot(root)`: governance-gated pin of an accepted Self identity root (06b §2.2).
+    PinSelfIdentityRoot { root: [u8; 32] },
+    /// `pinSelfOfacRoot(kind, root)`: governance-gated pin of an accepted OFAC SMT root (06b §2.2).
+    PinSelfOfacRoot { kind: u8, root: [u8; 32] },
+    /// `retireSelfRoot(root)`: governance-gated retire of a Self root (06b §2.2).
+    RetireSelfRoot { root: [u8; 32] },
 
     // ---- M4: prompt-contract ops to ContractHub ----
     /// `deployContract(text, parties)`: register an `Active` contract for the signer. Carries the
@@ -845,6 +858,21 @@ fn csca_registered_topic() -> B256 {
 /// Topic for `CscaRevoked(bytes32 indexed keyId)` — emitted on `revokeCsca`.
 fn csca_revoked_topic() -> B256 {
     keccak256(b"CscaRevoked(bytes32)")
+}
+
+/// Topic for `SelfIdentityRootPinned(bytes32 indexed root)` — emitted on `pinSelfIdentityRoot`.
+fn self_identity_root_pinned_topic() -> B256 {
+    keccak256(b"SelfIdentityRootPinned(bytes32)")
+}
+
+/// Topic for `SelfOfacRootPinned(bytes32 indexed root)` — emitted on `pinSelfOfacRoot`.
+fn self_ofac_root_pinned_topic() -> B256 {
+    keccak256(b"SelfOfacRootPinned(bytes32)")
+}
+
+/// Topic for `SelfRootRetired(bytes32 indexed root)` — emitted on `retireSelfRoot`.
+fn self_root_retired_topic() -> B256 {
+    keccak256(b"SelfRootRetired(bytes32)")
 }
 
 /// A `ZkPassportVerified(subject, assurance)` log for a successful ZK-passport proof (§4.2 step 5). The
@@ -1179,6 +1207,25 @@ fn build_op_logs(
         PendingKind::RevokeCsca { key_id } => vec![TxLog {
             address: HUMANITY_HUB,
             topics: vec![csca_revoked_topic(), B256::from(*key_id)],
+            data: Vec::new(),
+        }],
+        PendingKind::PinSelfIdentityRoot { root } => vec![TxLog {
+            address: HUMANITY_HUB,
+            topics: vec![self_identity_root_pinned_topic(), B256::from(*root)],
+            data: Vec::new(),
+        }],
+        PendingKind::PinSelfOfacRoot { kind, root } => vec![TxLog {
+            address: HUMANITY_HUB,
+            topics: vec![self_ofac_root_pinned_topic(), B256::from(*root)],
+            data: {
+                let mut d = [0u8; 32];
+                d[31] = *kind;
+                d.to_vec()
+            },
+        }],
+        PendingKind::RetireSelfRoot { root } => vec![TxLog {
+            address: HUMANITY_HUB,
+            topics: vec![self_root_retired_topic(), B256::from(*root)],
             data: Vec::new(),
         }],
         PendingKind::DeployContract { .. } => match result {
@@ -2324,6 +2371,27 @@ impl Chain {
     /// All CSCA entries, sorted by `key_id` (Active + Revoked). Pure read for `ubi_getCscaRegistry`.
     pub fn csca_entries(&self) -> Vec<CscaEntry> {
         self.inner.lock().unwrap().state.csca_entries()
+    }
+
+    /// M6 Stage C: seed a genesis Self identity-commitment root (spec 06b §2.2). Called by the node at
+    /// genesis; pinned at block 0 so the first proof carrying it is accepted.
+    pub fn seed_self_identity_root(&self, root: [u8; 32]) {
+        ubi2_runtime::seed_self_identity_root(&mut self.inner.lock().unwrap().state, root);
+    }
+
+    /// M6 Stage C: seed a genesis Self OFAC SMT root of `kind` (spec 06b §2.2). Pinned at block 0.
+    pub fn seed_self_ofac_root(&self, kind: u8, root: [u8; 32]) {
+        ubi2_runtime::seed_self_ofac_root(&mut self.inner.lock().unwrap().state, kind, root);
+    }
+
+    /// The live accepted Self identity roots, sorted by `root`. Pure read for `ubi_getSelfRoots`.
+    pub fn self_identity_roots(&self) -> Vec<ubi2_runtime::SelfIdentityRoot> {
+        self.inner.lock().unwrap().state.self_identity_roots()
+    }
+
+    /// The live accepted Self OFAC roots, sorted by `(kind, root)`. Pure read for `ubi_getSelfRoots`.
+    pub fn self_ofac_roots(&self) -> Vec<ubi2_runtime::SelfOfacRoot> {
+        self.inner.lock().unwrap().state.self_ofac_roots()
     }
 
     /// The three Pedersen attribute commitments stored for `addr` (`[age, nationality, expiry]`), or
@@ -3671,18 +3739,12 @@ fn pending_kind_from_kernel(k: ubi2_exec::KernelKind) -> PendingKind {
         K::SubmitVerdict { case_id, verdict } => PendingKind::SubmitVerdict { case_id, verdict },
         K::SubmitZkPassportProof {
             proof,
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
+            signals,
             scheme_tag,
-            now_epoch,
         } => PendingKind::SubmitZkPassportProof {
             proof,
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
+            signals,
             scheme_tag,
-            now_epoch,
         },
         K::RegisterCsca {
             country_code,
@@ -3694,6 +3756,9 @@ fn pending_kind_from_kernel(k: ubi2_exec::KernelKind) -> PendingKind {
             pubkey,
         },
         K::RevokeCsca { key_id } => PendingKind::RevokeCsca { key_id },
+        K::PinSelfIdentityRoot { root } => PendingKind::PinSelfIdentityRoot { root },
+        K::PinSelfOfacRoot { kind, root } => PendingKind::PinSelfOfacRoot { kind, root },
+        K::RetireSelfRoot { root } => PendingKind::RetireSelfRoot { root },
         K::DeployContract { text, parties } => PendingKind::DeployContract {
             text,
             parties: parties.into_iter().map(AlloyAddr::from).collect(),
@@ -3738,18 +3803,12 @@ fn kernel_tx_from_pending(p: &PendingTx) -> ubi2_exec::KernelTx {
         },
         PendingKind::SubmitZkPassportProof {
             proof,
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
+            signals,
             scheme_tag,
-            now_epoch,
         } => K::SubmitZkPassportProof {
             proof: proof.clone(),
-            nullifier: *nullifier,
-            attribute_commitments: *attribute_commitments,
-            csca_registry_root: *csca_registry_root,
+            signals: *signals,
             scheme_tag: *scheme_tag,
-            now_epoch: *now_epoch,
         },
         PendingKind::RegisterCsca {
             country_code,
@@ -3761,6 +3820,12 @@ fn kernel_tx_from_pending(p: &PendingTx) -> ubi2_exec::KernelTx {
             pubkey: pubkey.clone(),
         },
         PendingKind::RevokeCsca { key_id } => K::RevokeCsca { key_id: *key_id },
+        PendingKind::PinSelfIdentityRoot { root } => K::PinSelfIdentityRoot { root: *root },
+        PendingKind::PinSelfOfacRoot { kind, root } => K::PinSelfOfacRoot {
+            kind: *kind,
+            root: *root,
+        },
+        PendingKind::RetireSelfRoot { root } => K::RetireSelfRoot { root: *root },
         PendingKind::DeployContract { text, parties } => K::DeployContract {
             text: text.clone(),
             parties: parties.iter().map(|a| a.into_array()).collect(),
@@ -4424,6 +4489,9 @@ fn tx_kind_str(tx: &StoredTx) -> &'static str {
             Ok(HumanityOp::SubmitZkPassportProof { .. }) => "SubmitZkPassportProof",
             Ok(HumanityOp::RegisterCsca { .. }) => "RegisterCsca",
             Ok(HumanityOp::RevokeCsca { .. }) => "RevokeCsca",
+            Ok(HumanityOp::PinSelfIdentityRoot { .. }) => "PinSelfIdentityRoot",
+            Ok(HumanityOp::PinSelfOfacRoot { .. }) => "PinSelfOfacRoot",
+            Ok(HumanityOp::RetireSelfRoot { .. }) => "RetireSelfRoot",
             // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
             _ => "HumanitySystem",
         }
@@ -4549,22 +4617,16 @@ fn decode_call_json(tx: &StoredTx) -> Value {
             }),
             Ok(HumanityOp::SubmitZkPassportProof {
                 proof,
-                nullifier,
-                attribute_commitments,
-                csca_registry_root,
+                signals,
                 scheme_tag,
-                now_epoch,
             }) => json!({
                 "kind": "HubCall", "hub": "HumanityHub", "method": "submitZkPassportProof",
                 // The proof bytes are opaque; we surface only their length (I6 — no PII; the proof never
-                // contains plaintext). The nullifier + commitments + root are all on-chain commitments.
+                // contains plaintext). The 21 public signals are all on-chain commitments/scalars.
                 "args": {
                     "proof_len": proof.len(),
-                    "nullifier": hash_hex(&nullifier),
-                    "attribute_commitments": attribute_commitments.iter().map(hash_hex).collect::<Vec<_>>(),
-                    "csca_registry_root": hash_hex(&csca_registry_root),
+                    "public_signals": signals.iter().map(hash_hex).collect::<Vec<_>>(),
                     "scheme_tag": scheme_tag,
-                    "now_epoch": now_epoch,
                 },
             }),
             Ok(HumanityOp::RegisterCsca {
@@ -4582,6 +4644,18 @@ fn decode_call_json(tx: &StoredTx) -> Value {
             Ok(HumanityOp::RevokeCsca { key_id }) => json!({
                 "kind": "HubCall", "hub": "HumanityHub", "method": "revokeCsca",
                 "args": { "key_id": hash_hex(&key_id) },
+            }),
+            Ok(HumanityOp::PinSelfIdentityRoot { root }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "pinSelfIdentityRoot",
+                "args": { "root": hash_hex(&root) },
+            }),
+            Ok(HumanityOp::PinSelfOfacRoot { kind, root }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "pinSelfOfacRoot",
+                "args": { "kind": kind, "root": hash_hex(&root) },
+            }),
+            Ok(HumanityOp::RetireSelfRoot { root }) => json!({
+                "kind": "HubCall", "hub": "HumanityHub", "method": "retireSelfRoot",
+                "args": { "root": hash_hex(&root) },
             }),
             // The synthetic finalize/scan sweep tx is from==to==HumanityHub with empty input.
             _ => json!({ "kind": "System", "hub": "HumanityHub", "method": "finalizeSweep" }),
@@ -5182,6 +5256,29 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
         Ok::<_, ErrorObjectOwned>(json!({
             "root": hash_hex(&ctx.csca_registry_root()),
             "entries": entries,
+        }))
+    })
+    .unwrap();
+
+    // ubi_getSelfRoots() → the live pinned Self identity + OFAC roots + the freshness window (spec 06b
+    // §8), so a client can confirm the live trust set before requesting a proof (EC-C13).
+    m.register_method("ubi_getSelfRoots", |_, ctx, _| {
+        let identity_roots: Vec<Value> = ctx
+            .self_identity_roots()
+            .iter()
+            .map(|e| json!({ "root": hash_hex(&e.root), "pinnedAtBlock": e.pinned_at_block }))
+            .collect();
+        let ofac_roots: Vec<Value> = ctx
+            .self_ofac_roots()
+            .iter()
+            .map(|e| {
+                json!({ "kind": e.kind, "root": hash_hex(&e.root), "pinnedAtBlock": e.pinned_at_block })
+            })
+            .collect();
+        Ok::<_, ErrorObjectOwned>(json!({
+            "identityRoots": identity_roots,
+            "ofacRoots": ofac_roots,
+            "windowBlocks": ubi2_runtime::SELF_ROOT_WINDOW_BLOCKS,
         }))
     })
     .unwrap();

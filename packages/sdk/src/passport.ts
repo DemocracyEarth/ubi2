@@ -95,69 +95,83 @@ export interface SelfProofBundle {
 }
 
 // ---------------------------------------------------------------------------
-// Public-input layout (spec §3.5, Self arity-20 layout from crates/zkpoh)
+// Public-input layout — the CONFIRMED Self `vc_and_disclose` 21-signal layout
+// (spec 06b §4.1; SELF_NPUBLIC = 21, VK IC.len() == 22).
 // ---------------------------------------------------------------------------
 
 /**
- * The canonical public-input indices for the Self `vc_and_disclose` layout (SELF_NPUBLIC = 20).
- * These constants mirror `crates/zkpoh/src/self_layout.rs` exactly — if the layout changes,
- * the VK arity changes and this module must be updated in lock-step.
- *
- * Index 0:    nullifier (spec §3.3)
- * Index 1:    scope / chain-binding constant
- * Index 2:    attestation id
- * Index 3-15: revealed data slots (MRZ buckets; opaque, zero-padded if unused)
- * Index 16:   current_date (nowEpoch in YYYYMMDD form)
- * Index 17:   merkle_root = csca_registry_root (spec §7.2)
- * Index 18:   user_identifier = submitter_address (spec §4.3, anti-replay)
- * Index 19:   [reserved / attribute-commitment aggregate]
+ * The number of public signals the real Self `vc_and_disclose` statement carries (spec 06b §4.1).
+ * Mirrors `ubi2_runtime::SELF_NPUBLIC` (= 21). The full vector is carried on-chain verbatim
+ * (`bytes32[21]`, §4.3) and the runtime binds the policy slots BY INDEX — the SDK no longer
+ * extracts policy fields; it passes the whole vector.
  */
-const SELF_IDX_NULLIFIER = 0;
-const SELF_IDX_CSCA_ROOT = 17;   // merkle_root slot (our CSCA registry root)
-const SELF_IDX_SUBMITTER = 18;   // user_identifier slot (submitter address)
-// Attribute commitment slots: derived from revealed data (indices 3-15).
-// For the M6 calldata we pass the attribute slot field elements directly as commitments.
-const SELF_IDX_ATTR_BASE = 3;    // first of the 13 revealed-data slots
+export const SELF_NPUBLIC = 21;
 
 /**
- * Extract the `nullifier` (bytes32) from a Self proof bundle's publicSignals.
- * The nullifier is publicSignals[0] as a big-endian 32-byte hex string.
+ * The canonical public-input slot indices (spec 06b §4.1, CONFIRMED). These constants mirror
+ * `crates/runtime::SELF_IDX_*` / `crates/zkpoh::self_layout` exactly — the single shared source of
+ * truth (§4.2 GAP-4). circom orders public signals as OUTPUTS (declaration order) then public
+ * INPUTS in DECLARATION order, and `forbidden_countries_list_packed` is 4 elements.
+ *
+ *   0,1,2   revealedData_packed[3]                (opaque attribute commitments — I6)
+ *   3,4,5,6 forbidden_countries_list_packed[4]    (pass-through)
+ *   7       nullifier            = Poseidon(secret, scope)   ← the ONLY slot the SDK reads
+ *   8       attestation_id       (== 1 for E-Passport)
+ *   9       merkle_root          (∈ accepted Self identity roots)
+ *  10..15   current_date[6]      (YYMMDD ASCII)
+ *  16,17,18 ofac_*_smt_root
+ *  19       scope                (== UBI2_SELF_SCOPE)
+ *  20       user_identifier      (== submitter address)
+ */
+export const SELF_IDX_REVEALED_DATA = 0;
+export const SELF_IDX_FORBIDDEN_COUNTRIES = 3;
+export const SELF_IDX_NULLIFIER = 7;
+export const SELF_IDX_ATTESTATION_ID = 8;
+export const SELF_IDX_MERKLE_ROOT = 9;
+export const SELF_IDX_CURRENT_DATE = 10;
+export const SELF_IDX_OFAC_PASSPORTNO = 16;
+export const SELF_IDX_OFAC_NAMEDOB = 17;
+export const SELF_IDX_OFAC_NAMEYOB = 18;
+export const SELF_IDX_SCOPE = 19;
+export const SELF_IDX_USER_IDENTIFIER = 20;
+
+/**
+ * Extract the `nullifier` (bytes32) from a Self proof bundle's publicSignals — slot 7 (§4.1).
+ *
+ * This is the ONLY by-index read the SDK performs, and it is for the `ubi_isNullifierUsed`
+ * pre-check display ONLY (§4.2 GAP-4): the on-chain policy binding derives every slot itself from
+ * the full carried vector, so the SDK never extracts attribute-commitments / merkle-root / OFAC
+ * roots by index anymore. Returns the field element as a big-endian 32-byte hex string.
  */
 export function extractNullifier(bundle: SelfProofBundle): Hex {
   return fieldElementToBytes32(bundle.publicSignals[SELF_IDX_NULLIFIER]);
 }
 
 /**
- * Extract the three attribute commitments from a Self proof bundle.
- * Uses the first three revealed-data slots (indices 3, 4, 5) as the age / nationality / expiry
- * commitment stand-ins.  In a real Self circuit these encode the selective-disclosure outputs.
- */
-export function extractAttributeCommitments(bundle: SelfProofBundle): [Hex, Hex, Hex] {
-  return [
-    fieldElementToBytes32(bundle.publicSignals[SELF_IDX_ATTR_BASE]),
-    fieldElementToBytes32(bundle.publicSignals[SELF_IDX_ATTR_BASE + 1]),
-    fieldElementToBytes32(bundle.publicSignals[SELF_IDX_ATTR_BASE + 2]),
-  ];
-}
-
-/**
- * Extract the CSCA registry root from a Self proof bundle (merkle_root slot, index 17).
- * This is the trust-anchor commitment the proof was built against (spec §7.2).
- */
-export function extractCscaRegistryRoot(bundle: SelfProofBundle): Hex {
-  return fieldElementToBytes32(bundle.publicSignals[SELF_IDX_CSCA_ROOT]);
-}
-
-/**
- * Extract the submitter address from a Self proof bundle (user_identifier slot, index 18).
- * The proof binds to this address; the tx sender must match (anti-replay, spec §4.3).
- * Returns as a checksummed 0x hex string (40 hex chars, 20 bytes).
+ * Extract the submitter address bound into a Self proof bundle — `user_identifier` slot 20 (§4.1).
+ * The proof binds to this address; the tx sender must match on-chain (anti-replay, §4.4). This is a
+ * display / pre-check read only — the runtime re-binds `signals[20] == tx sender` itself.
+ * Returns a 0x-hex string (40 hex chars, 20 bytes).
  */
 export function extractSubmitterAddress(bundle: SelfProofBundle): string {
-  const raw = bundle.publicSignals[SELF_IDX_SUBMITTER];
+  const raw = bundle.publicSignals[SELF_IDX_USER_IDENTIFIER];
   // The field element is the address as a big-endian uint256; take the low 20 bytes.
   const hex32 = fieldElementToBytes32(raw);
   return "0x" + hex32.slice(2 + 24); // drop 0x + 24 leading zero nibbles = 20 bytes
+}
+
+/**
+ * Convert a proof bundle's full `publicSignals` vector to the `bytes32[21]` array the on-chain op
+ * carries (spec 06b §4.3). Each decimal field element → a big-endian 32-byte hex string, in order.
+ * Throws if the vector is not exactly [`SELF_NPUBLIC`] long (fail-closed shape check).
+ */
+export function publicSignalsToBytes32(bundle: SelfProofBundle): Hex[] {
+  if (bundle.publicSignals.length !== SELF_NPUBLIC) {
+    throw new Error(
+      `publicSignals has ${bundle.publicSignals.length} elements; the Self layout requires exactly ${SELF_NPUBLIC}.`,
+    );
+  }
+  return bundle.publicSignals.map(fieldElementToBytes32);
 }
 
 /**
@@ -223,6 +237,9 @@ function fieldElementToU8Array32(decimal: string): Uint8Array {
 // ABI: submitZkPassportProof calldata encoder
 // ---------------------------------------------------------------------------
 
+// The Stage-C op ABI (spec 06b §4.3): the FULL 21-element public vector is carried on-chain; the
+// runtime derives + binds every policy slot by index. Selector must match the Rust `sol!` decode:
+// keccak256("submitZkPassportProof(bytes,bytes32[21],uint8)")[0..4].
 const SUBMIT_ZK_PASSPORT_PROOF_ABI = [
   {
     type: "function",
@@ -230,59 +247,55 @@ const SUBMIT_ZK_PASSPORT_PROOF_ABI = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "proof", type: "bytes" },
-      { name: "nullifier", type: "bytes32" },
-      { name: "attributeCommitments", type: "bytes32[3]" },
-      { name: "cscaRegistryRoot", type: "bytes32" },
+      { name: "publicSignals", type: "bytes32[21]" },
       { name: "schemeTag", type: "uint8" },
-      { name: "nowEpoch", type: "uint64" },
     ],
     outputs: [],
   },
 ] as const;
 
-/** Parameters for `encodeSubmitZkPassportProof`. */
+/** A fixed 21-element `bytes32` tuple — the exact shape viem's `bytes32[21]` ABI arg expects. */
+type Bytes32x21 = readonly [
+  Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex, Hex,
+];
+
+/** Parameters for `encodeSubmitZkPassportProof` (spec 06b §4.3). */
 export interface ZkPassportProofParams {
   /** ABI-encoded proof bytes (use `encodeProofBytes` to convert a snarkjs JSON proof). */
   proofBytes: Uint8Array;
-  /** 32-byte nullifier (use `extractNullifier` to get it from a proof bundle). */
-  nullifier: Hex;
-  /** Three 32-byte Pedersen attribute commitments [age, nationality, expiry]. */
-  attributeCommitments: [Hex, Hex, Hex];
-  /** 32-byte CSCA registry root the proof was built against (spec §7.2). */
-  cscaRegistryRoot: Hex;
-  /** Scheme tag (0 = ICAO 9303 e-passport / Self / OpenPassport path). */
-  schemeTag?: number;
   /**
-   * The `nowEpoch` reference epoch the proof used (unix seconds).
-   * Must equal the block timestamp at submission (the runtime validates this).
-   * Default: the current unix timestamp (seconds).
+   * The FULL Self `vc_and_disclose` public vector as `bytes32[21]` (snarkjs order, §4.1). Use
+   * `publicSignalsToBytes32(bundle)`. The runtime binds every policy slot itself — no by-index
+   * extraction here (§4.2 GAP-4).
    */
-  nowEpoch?: bigint;
+  publicSignals: Hex[];
+  /** Scheme tag (0 = Self e-passport; the runtime binds `attestation_id == 1` for tag 0). */
+  schemeTag?: number;
 }
 
 /**
- * ABI-encode a `submitZkPassportProof(...)` calldata for HumanityHub.
+ * ABI-encode a `submitZkPassportProof(proof, publicSignals[21], schemeTag)` calldata for HumanityHub
+ * (spec 06b §4.3).
  *
- * Pass this as `data` to `sendHumanityTx` or `eth_sendTransaction`.
- * The submitter address is NOT in calldata — it is the tx sender (anti-replay, spec §4.3).
+ * Pass this as `data` to `sendHumanityTx` or `eth_sendTransaction`. The submitter address is NOT in
+ * calldata — it is the tx sender, bound against `publicSignals[20]` on-chain (anti-replay, §4.4).
  */
 export function encodeSubmitZkPassportProof(params: ZkPassportProofParams): Hex {
   const schemeTag = params.schemeTag ?? 0;
-  const nowEpoch = params.nowEpoch ?? BigInt(Math.floor(Date.now() / 1000));
+  if (params.publicSignals.length !== SELF_NPUBLIC) {
+    throw new Error(
+      `encodeSubmitZkPassportProof: publicSignals must be exactly ${SELF_NPUBLIC} bytes32 values, got ${params.publicSignals.length}.`,
+    );
+  }
   // viem encodeFunctionData for `bytes` type expects a 0x-prefixed hex string.
   const proofHex = u8ArrayToHex(params.proofBytes);
 
+  // viem types the arg as a fixed 21-tuple; we validated the length above, so the cast is safe.
+  const signals = params.publicSignals as unknown as Bytes32x21;
   return encodeFunctionData({
     abi: SUBMIT_ZK_PASSPORT_PROOF_ABI,
     functionName: "submitZkPassportProof",
-    args: [
-      proofHex,
-      params.nullifier,
-      params.attributeCommitments,
-      params.cscaRegistryRoot,
-      schemeTag,
-      nowEpoch,
-    ],
+    args: [proofHex, signals, schemeTag],
   });
 }
 
@@ -295,17 +308,16 @@ function u8ArrayToHex(arr: Uint8Array): Hex {
 }
 
 /**
- * One-shot helper: encode a Self proof bundle into `submitZkPassportProof` calldata.
+ * One-shot helper: encode a Self proof bundle into `submitZkPassportProof` calldata (spec 06b §4.3).
  *
- * Extracts the nullifier, attribute commitments, and CSCA root from the bundle's publicSignals,
- * encodes the proof bytes, and calls `encodeSubmitZkPassportProof`.
+ * Encodes the proof bytes and passes the FULL 21-element public vector through unmodified — no
+ * by-index policy extraction (the runtime binds every slot itself). The submitter address is the tx
+ * sender, bound against `publicSignals[20]` on-chain.
  */
 export function encodeZkBundleAsCalldata(bundle: SelfProofBundle): Hex {
   return encodeSubmitZkPassportProof({
     proofBytes: encodeProofBytes(bundle.proof),
-    nullifier: extractNullifier(bundle),
-    attributeCommitments: extractAttributeCommitments(bundle),
-    cscaRegistryRoot: extractCscaRegistryRoot(bundle),
+    publicSignals: publicSignalsToBytes32(bundle),
     schemeTag: 0,
   });
 }
@@ -499,8 +511,8 @@ export function validateProofBundle(parsed: unknown): string | null {
     return "Missing `publicSignals` array (public inputs vector).";
 
   const signals = p.publicSignals as unknown[];
-  if (signals.length < 19)
-    return `publicSignals has ${signals.length} elements; Self layout requires at least 19.`;
+  if (signals.length !== SELF_NPUBLIC)
+    return `publicSignals has ${signals.length} elements; the confirmed Self layout requires exactly ${SELF_NPUBLIC}.`;
 
   return null; // valid shape
 }

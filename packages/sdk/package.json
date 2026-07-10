@@ -12,6 +12,7 @@
     "test": "tsx src/passport.test.ts"
   },
   "devDependencies": {
+    "@types/node": "^22",
     "tsx": "^4.22.4",
     "typescript": "^5.5.0"
   },

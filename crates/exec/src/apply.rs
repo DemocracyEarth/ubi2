@@ -26,12 +26,14 @@ use alloy_primitives::keccak256;
 use ubi2_runtime::{
     apply_transfer, challenge as lc_challenge, charge_fee, deploy_contract as lc_deploy_contract,
     finalize_registration, fund_contract as lc_fund_contract,
-    invoke_contract as lc_invoke_contract, open_stream, register_csca as lc_register_csca,
-    request_verification, revoke_csca as lc_revoke_csca, stop_stream,
-    submit_effect as lc_submit_effect, submit_verdict, submit_zk_passport_proof as lc_submit_zk,
-    system_challenge as lc_system_challenge, vouch as lc_vouch, Account, Address, Assurance,
-    ContractInterpreter, HumanStatus, HumanityOracle, LivenessEvidence, State, Verdict,
-    ZkPassportVerifier, ZkProofSubmission,
+    invoke_contract as lc_invoke_contract, open_stream,
+    pin_self_identity_root as lc_pin_self_identity_root,
+    pin_self_ofac_root as lc_pin_self_ofac_root, register_csca as lc_register_csca,
+    request_verification, retire_self_root as lc_retire_self_root, revoke_csca as lc_revoke_csca,
+    stop_stream, submit_effect as lc_submit_effect, submit_verdict,
+    submit_zk_passport_proof as lc_submit_zk, system_challenge as lc_system_challenge,
+    vouch as lc_vouch, Account, Address, Assurance, ContractInterpreter, HumanStatus,
+    HumanityOracle, LivenessEvidence, State, Verdict, ZkPassportVerifier, ZkProofSubmission,
 };
 
 use crate::op::{KernelKind, KernelTx, HUMANITY_HUB};
@@ -322,21 +324,16 @@ fn apply_one(
 
         KernelKind::SubmitZkPassportProof {
             proof,
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
+            signals,
             scheme_tag,
-            now_epoch,
         } => consume_nonce(state, &tx.from, tx.nonce, timestamp).and_then(|()| {
             let submission = ZkProofSubmission {
                 proof: proof.clone(),
-                nullifier: *nullifier,
-                attribute_commitments: *attribute_commitments,
-                csca_registry_root: *csca_registry_root,
+                signals: *signals,
                 scheme_tag: *scheme_tag,
-                now_epoch: *now_epoch,
             };
-            lc_submit_zk(state, verifier, &tx.from, &submission, timestamp)
+            // `timestamp` = block time (freshness window); `number` = block height (root window).
+            lc_submit_zk(state, verifier, &tx.from, &submission, timestamp, number)
                 .map(OpResult::Assurance)
                 .map_err(|e| e.to_string())
         }),
@@ -361,6 +358,29 @@ fn apply_one(
         KernelKind::RevokeCsca { key_id } => consume_nonce(state, &tx.from, tx.nonce, timestamp)
             .and_then(|()| {
                 lc_revoke_csca(state, &tx.from, key_id)
+                    .map(|()| OpResult::None)
+                    .map_err(|e| e.to_string())
+            }),
+
+        KernelKind::PinSelfIdentityRoot { root } => {
+            consume_nonce(state, &tx.from, tx.nonce, timestamp).and_then(|()| {
+                lc_pin_self_identity_root(state, &tx.from, *root, number)
+                    .map(|()| OpResult::None)
+                    .map_err(|e| e.to_string())
+            })
+        }
+
+        KernelKind::PinSelfOfacRoot { kind, root } => {
+            consume_nonce(state, &tx.from, tx.nonce, timestamp).and_then(|()| {
+                lc_pin_self_ofac_root(state, &tx.from, *kind, *root, number)
+                    .map(|()| OpResult::None)
+                    .map_err(|e| e.to_string())
+            })
+        }
+
+        KernelKind::RetireSelfRoot { root } => consume_nonce(state, &tx.from, tx.nonce, timestamp)
+            .and_then(|()| {
+                lc_retire_self_root(state, &tx.from, root)
                     .map(|()| OpResult::None)
                     .map_err(|e| e.to_string())
             }),
