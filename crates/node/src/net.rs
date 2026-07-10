@@ -758,6 +758,17 @@ impl NetDriver {
         if me.is_none() || scheduled.is_none() || me != scheduled {
             return None;
         }
+        // Defense-in-depth (mirrors the §4 receiver `ViewOutOfRange` check on the producer side): never
+        // emit a block whose view the network would reject. A node escalating to `VIEW_MAX` is already
+        // badly wedged — stall rather than spam blocks that get rejected + penalized.
+        if self.current_view >= ubi2_runtime::VIEW_MAX {
+            tracing::warn!(
+                height = target,
+                view = self.current_view,
+                "view escalated to VIEW_MAX — stalling production (chain wedged; awaiting recovery)"
+            );
+            return None;
+        }
         // §5.3 production connectivity guard: only produce when connected to a majority of `V`.
         if !self.production_guard_ok() {
             tracing::debug!(
