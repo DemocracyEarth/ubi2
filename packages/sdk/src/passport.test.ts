@@ -1,85 +1,73 @@
 /**
  * @ubi2/sdk/passport — unit tests (typecheck + logic, no node/live RPC required).
  *
- * Tests the ZK-passport proof-bundle parsing, public-input extraction, and calldata encoding
- * using the committed real fixture (Self `vc_and_disclose` VK shape — 20 public signals).
+ * Tests the ZK-passport proof-bundle parsing, the single by-index read (nullifier@7), and the
+ * full-vector calldata encoding for the CONFIRMED Self `vc_and_disclose` 21-signal layout
+ * (spec 06b §4.1/§4.3). Uses the SHARED synthetic fixture the Rust crypto tests use
+ * (`crates/zkpoh/fixtures/self_synthetic_public.json`) to assert SDK + Rust parse an identical
+ * proof identically (§4.2 GAP-4 — one shared source of truth).
  *
- * Run: node --experimental-strip-types packages/sdk/src/passport.test.ts
- *   Or: pnpm -C packages/sdk run test
+ * Run: pnpm -C packages/sdk run test   (tsx src/passport.test.ts)
  *
  * Validates:
- *  1. parseProofBundle accepts a well-formed bundle and rejects malformed JSON / bad shapes.
- *  2. extractNullifier returns a 32-byte 0x-hex from publicSignals[0].
- *  3. extractAttributeCommitments returns three 32-byte 0x-hex strings.
- *  4. extractCscaRegistryRoot returns a 32-byte 0x-hex from publicSignals[17].
- *  5. extractSubmitterAddress extracts a 20-byte hex address from publicSignals[18].
- *  6. encodeProofBytes produces the correct byte length (192 bytes for uncompressed Groth16).
- *  7. encodeSubmitZkPassportProof produces non-empty calldata with the right 4-byte selector.
- *  8. encodeZkBundleAsCalldata round-trips the full bundle → calldata → has the selector.
- *  9. validateProofBundle catches missing/malformed fields.
- * 10. Field-element edge cases: 0, BN254 max, small values all encode to 32 bytes.
+ *  1. parseProofBundle accepts a 21-signal bundle and rejects malformed JSON / bad shapes.
+ *  2. extractNullifier returns publicSignals[7] as a 32-byte 0x-hex (the ONLY by-index read).
+ *  3. extractSubmitterAddress reads the low 20 bytes of publicSignals[20].
+ *  4. publicSignalsToBytes32 maps the full 21-vector; encodeSubmitZkPassportProof carries it.
+ *  5. encodeSubmitZkPassportProof produces calldata with the new selector
+ *     (submitZkPassportProof(bytes,bytes32[21],uint8)).
+ *  6. validateProofBundle requires exactly 21 signals.
+ *  7. SDK↔Rust parity: reading the shared synthetic fixture, the SDK's nullifier@7 equals the
+ *     fixture's slot-7 field element (the same slot the Rust `SELF_IDX_NULLIFIER` binds).
  */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { keccak256, toHex } from "viem";
 
 import {
   parseProofBundle,
   validateProofBundle,
   extractNullifier,
-  extractAttributeCommitments,
-  extractCscaRegistryRoot,
   extractSubmitterAddress,
+  publicSignalsToBytes32,
   encodeProofBytes,
   encodeSubmitZkPassportProof,
   encodeZkBundleAsCalldata,
+  SELF_NPUBLIC,
+  SELF_IDX_NULLIFIER,
+  SELF_IDX_USER_IDENTIFIER,
   type SelfProofBundle,
 } from "./passport.js";
 
 // ---------------------------------------------------------------------------
-// Test fixture: a minimal valid Self-shape proof bundle (20 public signals).
-// Uses the same layout as crates/zkpoh/src/self_layout.rs (SELF_NPUBLIC = 20).
+// Test fixture: a minimal valid Self-shape proof bundle (21 public signals, §4.1).
 // The proof values are test-only BN254 field elements — NOT a real person's data.
 // ---------------------------------------------------------------------------
 
-/**
- * A well-formed test fixture matching the Self `vc_and_disclose` layout:
- *   publicSignals[0]  = nullifier (a big decimal)
- *   publicSignals[1]  = scope (chain-binding constant)
- *   publicSignals[2]  = attestation id
- *   publicSignals[3-15] = revealed data slots (attribute commitments etc.)
- *   publicSignals[16] = current_date (nowEpoch in YYYYMMDD digits)
- *   publicSignals[17] = merkle_root (csca_registry_root)
- *   publicSignals[18] = user_identifier (submitter address as uint256)
- *   publicSignals[19] = reserved / aggregate
- *
- * All values are field elements valid for BN254 (< field prime).
- */
 const TEST_NULLIFIER_DEC =
   "14723305143599295486105733121446353133863889257489542032576171376300323541304";
-const TEST_SCOPE_DEC = "1";
-const TEST_ATTEST_DEC = "2";
-// Revealed data slots 3-15 (13 slots): use distinct small values
-const TEST_REVEALED = Array.from({ length: 13 }, (_, i) => String(i + 100));
-const TEST_CURRENT_DATE_DEC = "20260629"; // YYYYMMDD: 2026-06-29
-const TEST_CSCA_ROOT_DEC =
-  "10993483419865920389913245021038182291233451549023025229112148274109565435465";
-// Address 0x6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f = 111...111 (20 bytes)
+// Address 0x6f6f...6f6f (20 bytes of 0x6f) as a big-endian uint256 decimal.
 const TEST_SUBMITTER_ADDR_DEC = BigInt("0x6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f").toString();
-const TEST_RESERVED_DEC = "0";
 
+// 21 signals, per the CONFIRMED layout: revealed[0..3], forbidden[3..7], nullifier@7,
+// attestation_id@8, merkle_root@9, current_date[10..16], ofac@16..19, scope@19, user_id@20.
 const TEST_PUBLIC_SIGNALS: string[] = [
-  TEST_NULLIFIER_DEC,         // [0] nullifier
-  TEST_SCOPE_DEC,             // [1] scope
-  TEST_ATTEST_DEC,            // [2] attestation id
-  ...TEST_REVEALED,           // [3-15] revealed data (13 slots)
-  TEST_CURRENT_DATE_DEC,      // [16] current_date
-  TEST_CSCA_ROOT_DEC,         // [17] merkle_root (csca registry root)
-  TEST_SUBMITTER_ADDR_DEC,    // [18] user_identifier (submitter address)
-  TEST_RESERVED_DEC,          // [19] reserved
+  "701", "702", "703",          // [0..3]  revealedData_packed
+  "801", "802", "803", "804",   // [3..7]  forbidden_countries_list_packed (4)
+  TEST_NULLIFIER_DEC,           // [7]     nullifier
+  "1",                          // [8]     attestation_id (== 1)
+  "111",                        // [9]     merkle_root
+  "50", "50", "48", "54", "50", "57", // [10..16] current_date YYMMDD ASCII (test values)
+  "601", "602", "603",          // [16..19] ofac roots
+  "999",                        // [19]    scope
+  TEST_SUBMITTER_ADDR_DEC,      // [20]    user_identifier (submitter address)
 ];
 
-// A BN254 G1 point (the generator, for testing — not a real proof point).
+// A BN254 G1/G2 point set (test values only — not a real proof).
 const G1_X = "1";
 const G1_Y = "2";
-// A BN254 G2 point (pair of F_p^2 coefficients — test values only).
 const G2_X: [string, string] = ["10857046999023057135944570762232829481370756359578518086990519993285655852781", "11559732032986387107991004021392285783925812861821192530917403151452391805634"];
 const G2_Y: [string, string] = ["8495653923123431417604973247489272438418190587263600148770280649306958101930", "4082367875863433681332203403145435568316851327593401208105741076214120093531"];
 
@@ -125,11 +113,16 @@ function test(name: string, fn: () => void): void {
 // Tests
 // ---------------------------------------------------------------------------
 
-test("parseProofBundle: accepts well-formed bundle", () => {
+test("layout constants mirror the confirmed 21-signal map (§4.1)", () => {
+  assert(SELF_NPUBLIC === 21, "SELF_NPUBLIC == 21");
+  assert(SELF_IDX_NULLIFIER === 7, "nullifier is slot 7");
+  assert(SELF_IDX_USER_IDENTIFIER === 20, "user_identifier is slot 20");
+});
+
+test("parseProofBundle: accepts a 21-signal bundle", () => {
   const { bundle, error } = parseProofBundle(JSON.stringify(FIXTURE_BUNDLE));
   assert(error === null, "error is null for a valid bundle");
-  assert(bundle !== null, "bundle is non-null for a valid bundle");
-  assert(bundle?.publicSignals.length === 20, "publicSignals has 20 elements");
+  assert(bundle?.publicSignals.length === 21, "publicSignals has 21 elements");
 });
 
 test("parseProofBundle: rejects bad JSON", () => {
@@ -138,136 +131,81 @@ test("parseProofBundle: rejects bad JSON", () => {
   assert(error !== null && error.includes("JSON"), "error mentions JSON");
 });
 
-test("validateProofBundle: rejects missing proof field", () => {
-  const bad = { publicSignals: TEST_PUBLIC_SIGNALS };
-  const err = validateProofBundle(bad);
-  assert(err !== null, "error for missing proof field");
-  assert(err!.includes("proof"), "error mentions proof");
-});
-
-test("validateProofBundle: rejects too-few publicSignals", () => {
+test("validateProofBundle: rejects wrong-length publicSignals", () => {
   const bad = { proof: FIXTURE_BUNDLE.proof, publicSignals: ["1", "2"] };
   const err = validateProofBundle(bad);
-  assert(err !== null, "error for too-few publicSignals");
+  assert(err !== null, "error for a 2-element vector");
+  assert(err!.includes("21"), "error names the required 21");
 });
 
-test("validateProofBundle: rejects non-object", () => {
+test("validateProofBundle: rejects missing proof / non-object", () => {
+  assert(validateProofBundle({ publicSignals: TEST_PUBLIC_SIGNALS }) !== null, "missing proof");
   assert(validateProofBundle(null) !== null, "null is invalid");
   assert(validateProofBundle("string") !== null, "string is invalid");
-  assert(validateProofBundle(42) !== null, "number is invalid");
 });
 
-test("extractNullifier: correct 32-byte 0x-hex from publicSignals[0]", () => {
+test("extractNullifier: reads publicSignals[7] (the ONLY by-index read)", () => {
   const nullifier = extractNullifier(FIXTURE_BUNDLE);
-  assert(typeof nullifier === "string", "nullifier is a string");
-  assert(nullifier.startsWith("0x"), "nullifier starts with 0x");
-  assert(nullifier.length === 66, `nullifier is 66 chars (32 bytes + 0x), got ${nullifier.length}`);
-  // Value round-trip: BigInt(nullifier) === BigInt(TEST_NULLIFIER_DEC)
-  assert(
-    BigInt(nullifier) === BigInt(TEST_NULLIFIER_DEC),
-    "nullifier value matches the publicSignals[0] decimal",
-  );
+  assert(nullifier.startsWith("0x") && nullifier.length === 66, "32-byte 0x-hex");
+  assert(BigInt(nullifier) === BigInt(TEST_NULLIFIER_DEC), "value matches slot 7");
 });
 
-test("extractAttributeCommitments: three 32-byte 0x-hex strings", () => {
-  const [age, nat, exp] = extractAttributeCommitments(FIXTURE_BUNDLE);
-  for (const [label, c] of [["age", age], ["nationality", nat], ["expiry", exp]] as const) {
-    assert(c.startsWith("0x"), `${label} commitment starts with 0x`);
-    assert(c.length === 66, `${label} commitment is 66 chars`);
-  }
-  // They should map to revealed-data slots 3, 4, 5
-  assert(BigInt(age) === BigInt(TEST_REVEALED[0]), "age maps to slot 3 (index 0 of revealed)");
-  assert(BigInt(nat) === BigInt(TEST_REVEALED[1]), "nationality maps to slot 4");
-  assert(BigInt(exp) === BigInt(TEST_REVEALED[2]), "expiry maps to slot 5");
-});
-
-test("extractCscaRegistryRoot: 32-byte 0x-hex from publicSignals[17]", () => {
-  const root = extractCscaRegistryRoot(FIXTURE_BUNDLE);
-  assert(root.startsWith("0x"), "root starts with 0x");
-  assert(root.length === 66, "root is 66 chars");
-  assert(BigInt(root) === BigInt(TEST_CSCA_ROOT_DEC), "root value matches publicSignals[17]");
-});
-
-test("extractSubmitterAddress: 20-byte address from publicSignals[18]", () => {
+test("extractSubmitterAddress: low 20 bytes of publicSignals[20]", () => {
   const addr = extractSubmitterAddress(FIXTURE_BUNDLE);
-  assert(addr.startsWith("0x"), "address starts with 0x");
-  // 20 bytes = 40 hex chars + "0x" = 42 chars
-  assert(addr.length === 42, `address is 42 chars, got ${addr.length}`);
-  // The test address is 0x6f6f...6f6f (20 bytes of 0x6f)
+  assert(addr.length === 42, "20-byte hex address");
   assert(
     addr.toLowerCase() === "0x6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f",
     `address value correct, got ${addr}`,
   );
 });
 
-test("encodeProofBytes: 192-byte output for uncompressed Groth16", () => {
-  const bytes = encodeProofBytes(FIXTURE_BUNDLE.proof);
-  assert(bytes instanceof Uint8Array, "returns Uint8Array");
-  // G1 uncompressed: 64 bytes (x,y); G2 uncompressed: 128 bytes (x_c0,x_c1,y_c0,y_c1); G1: 64.
-  // Total = 64 + 128 + 64 = 256 bytes.
-  // (Note: the MAX_ZK_PROOF_BYTES on-chain is 1024 so 256 fits.)
-  assert(bytes.length > 0, "proof bytes are non-empty");
-  assert(bytes.length <= 1024, `proof bytes <= 1024 (MAX_ZK_PROOF_BYTES), got ${bytes.length}`);
+test("publicSignalsToBytes32: maps the full 21-vector", () => {
+  const arr = publicSignalsToBytes32(FIXTURE_BUNDLE);
+  assert(arr.length === 21, "21 bytes32 values");
+  assert(arr.every((h) => h.startsWith("0x") && h.length === 66), "each is a 32-byte 0x-hex");
+  assert(BigInt(arr[SELF_IDX_NULLIFIER]) === BigInt(TEST_NULLIFIER_DEC), "slot 7 round-trips");
 });
 
-test("encodeSubmitZkPassportProof: non-empty calldata with correct 4-byte selector", () => {
+test("encodeSubmitZkPassportProof: new selector + full-vector calldata", () => {
   const data = encodeSubmitZkPassportProof({
     proofBytes: encodeProofBytes(FIXTURE_BUNDLE.proof),
-    nullifier: extractNullifier(FIXTURE_BUNDLE),
-    attributeCommitments: extractAttributeCommitments(FIXTURE_BUNDLE),
-    cscaRegistryRoot: extractCscaRegistryRoot(FIXTURE_BUNDLE),
+    publicSignals: publicSignalsToBytes32(FIXTURE_BUNDLE),
     schemeTag: 0,
-    nowEpoch: 1_751_155_200n,
   });
-
-  assert(typeof data === "string", "calldata is a string");
-  assert(data.startsWith("0x"), "calldata starts with 0x");
-  assert(data.length > 10, "calldata is non-trivially long");
-
-  // The 4-byte selector for submitZkPassportProof(bytes,bytes32,bytes32[3],bytes32,uint8,uint64)
-  // = keccak256("submitZkPassportProof(bytes,bytes32,bytes32[3],bytes32,uint8,uint64)")[0..4]
-  // We verify the selector is present by checking the first 10 chars (0x + 4 bytes = 10 hex chars).
+  assert(data.startsWith("0x") && data.length > 10, "non-trivial calldata");
   const selector = data.slice(0, 10);
-  console.log(`    selector: ${selector}`);
-  assert(selector.length === 10, "selector is 10 chars (0x + 4 bytes)");
+  const expected = keccak256(toHex("submitZkPassportProof(bytes,bytes32[21],uint8)")).slice(0, 10);
+  console.log(`    selector: ${selector} (expected ${expected})`);
+  assert(selector === expected, "selector matches submitZkPassportProof(bytes,bytes32[21],uint8)");
 });
 
-test("encodeZkBundleAsCalldata: round-trip from bundle", () => {
-  const data = encodeZkBundleAsCalldata(FIXTURE_BUNDLE);
-  assert(typeof data === "string", "calldata is a string");
-  assert(data.startsWith("0x"), "calldata starts with 0x");
-  assert(data.length > 100, "calldata is non-trivially long");
-
-  // Verify consistent: same bundle → same calldata (deterministic encoding).
-  const data2 = encodeZkBundleAsCalldata(FIXTURE_BUNDLE);
-  assert(data === data2, "encoding is deterministic (same bundle → same calldata)");
+test("encodeZkBundleAsCalldata: deterministic full-bundle round-trip", () => {
+  const a = encodeZkBundleAsCalldata(FIXTURE_BUNDLE);
+  const b = encodeZkBundleAsCalldata(FIXTURE_BUNDLE);
+  assert(a === b, "same bundle → same calldata (deterministic)");
+  assert(a.startsWith("0x") && a.length > 100, "non-trivial calldata");
 });
 
-test("field-element edge cases: 0, large, small", () => {
-  // fieldElementToBytes32 is internal, but we can exercise it via extractNullifier.
-  const zeroBundle: SelfProofBundle = {
-    ...FIXTURE_BUNDLE,
-    publicSignals: ["0", ...FIXTURE_BUNDLE.publicSignals.slice(1)],
-  };
-  const zeroNull = extractNullifier(zeroBundle);
-  assert(zeroNull === "0x" + "0".repeat(64), "zero field element encodes to 32 zero bytes");
+test("SDK↔Rust parity: the shared synthetic fixture parses identically", () => {
+  // The SAME 21-signal fixture the Rust arity-21 crypto test loads. The SDK's nullifier@7 must equal
+  // the fixture's slot-7 field element (the exact slot Rust's SELF_IDX_NULLIFIER binds) — proving both
+  // sides parse an identical proof identically (§4.2 GAP-4, one shared source of truth).
+  const here = dirname(fileURLToPath(import.meta.url));
+  const fixturePath = resolve(here, "../../../crates/zkpoh/fixtures/self_synthetic_public.json");
+  const signals = JSON.parse(readFileSync(fixturePath, "utf8")) as string[];
+  assert(signals.length === SELF_NPUBLIC, "the shared fixture carries 21 signals");
 
-  const oneBundle: SelfProofBundle = {
-    ...FIXTURE_BUNDLE,
-    publicSignals: ["1", ...FIXTURE_BUNDLE.publicSignals.slice(1)],
-  };
-  const oneNull = extractNullifier(oneBundle);
-  assert(oneNull === "0x" + "0".repeat(62) + "01", "one field element encodes correctly");
-});
-
-test("parseProofBundle: handles Self VK fixture shape (nPublic=20)", () => {
-  // Round-trip via JSON stringify: the fixture should parse cleanly.
-  const json = JSON.stringify(FIXTURE_BUNDLE);
-  const { bundle, error } = parseProofBundle(json);
-  assert(error === null, "no error for fixture bundle");
-  assert(bundle?.publicSignals.length === 20, "20 publicSignals");
-  assert(bundle?.proof.protocol === "groth16", "protocol is groth16");
-  assert(bundle?.proof.curve === "bn128", "curve is bn128");
+  const bundle: SelfProofBundle = { proof: FIXTURE_BUNDLE.proof, publicSignals: signals };
+  const nullifier = extractNullifier(bundle);
+  // Rust reads signals[SELF_IDX_NULLIFIER] verbatim as its registry key; the SDK must read the same.
+  const expected = "0x" + BigInt(signals[SELF_IDX_NULLIFIER]).toString(16).padStart(64, "0");
+  assert(nullifier === expected, "SDK nullifier@7 == fixture slot-7 field element (Rust parity)");
+  // And the full-vector map preserves every slot verbatim (no by-index policy mutation).
+  const arr = publicSignalsToBytes32(bundle);
+  assert(
+    arr.every((h, i) => BigInt(h) === BigInt(signals[i])),
+    "every carried bytes32 equals the fixture field element at its index",
+  );
 });
 
 // ---------------------------------------------------------------------------

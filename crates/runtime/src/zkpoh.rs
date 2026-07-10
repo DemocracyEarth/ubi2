@@ -29,18 +29,93 @@ use std::collections::HashMap;
 // Constants (devnet starting values — spec §13 open items O-1/O-3; tunable at the gate).
 // ---------------------------------------------------------------------------------------------
 
-/// The number of public inputs in the M6 passport-proof statement (spec §3.5). Pinned: the verifying
-/// key encodes this arity. Mirrors `ubi2_zkpoh::NUM_PUBLIC_INPUTS`; kept here so the runtime can
-/// bound-check the assembled vector without depending on the crypto crate.
-pub const NUM_PUBLIC_INPUTS: usize = 8;
+/// The number of public signals in the **real** Self `vc_and_disclose` statement — CONFIRMED at 21
+/// (VK `IC.len() == 22`) by the Stage-C de-risk (spec 06b §4.1). The verifying key encodes this arity;
+/// a VK of any other arity is rejected fail-closed. Mirrors `ubi2_zkpoh::SELF_NPUBLIC`; kept here so the
+/// runtime can bound-check + index the carried vector without depending on the crypto crate.
+pub const SELF_NPUBLIC: usize = 21;
+
+// --- The CONFIRMED 21-signal `vc_and_disclose` slot map (spec 06b §4.1). circom orders public signals
+//     as OUTPUTS (declaration order) then public INPUTS in DECLARATION order — NOT the `public[...]`
+//     list order — and `forbidden_countries_list_packed` is 4 field elements. Six independent Self
+//     sources agree index-for-index. The runtime binds the policy-relevant slots BY INDEX (§4.4). ---
+
+/// `revealedData_packed[3]` — slots 0,1,2. Stored opaquely as the three attribute commitments (I6).
+pub const SELF_IDX_REVEALED_DATA: usize = 0;
+/// `forbidden_countries_list_packed[4]` — slots 3,4,5,6. Pass-through (proof-tied, not a policy key).
+pub const SELF_IDX_FORBIDDEN_COUNTRIES: usize = 3;
+/// `nullifier` = Poseidon(secret, scope) — slot 7. Canonicality guard + uniqueness registry key (§3).
+pub const SELF_IDX_NULLIFIER: usize = 7;
+/// `attestation_id` — slot 8. Bound `== 1` (E-Passport) for `schemeTag = 0`.
+pub const SELF_IDX_ATTESTATION_ID: usize = 8;
+/// `merkle_root` — slot 9. Bound ∈ accepted Self identity roots (§2.2) — NOT our CSCA root.
+pub const SELF_IDX_MERKLE_ROOT: usize = 9;
+/// `current_date[6]` (YYMMDD ASCII) — slots 10..=15. Freshness window vs `block.timestamp` (§4.4).
+pub const SELF_IDX_CURRENT_DATE: usize = 10;
+/// `ofac_passportno_smt_root` — slot 16. Bound ∈ accepted OFAC roots kind 0 (§2.2).
+pub const SELF_IDX_OFAC_PASSPORTNO: usize = 16;
+/// `ofac_namedob_smt_root` — slot 17. Bound ∈ accepted OFAC roots kind 1.
+pub const SELF_IDX_OFAC_NAMEDOB: usize = 17;
+/// `ofac_nameyob_smt_root` — slot 18. Bound ∈ accepted OFAC roots kind 2.
+pub const SELF_IDX_OFAC_NAMEYOB: usize = 18;
+/// `scope` — slot 19. Bound `== UBI2_SELF_SCOPE` (§3).
+pub const SELF_IDX_SCOPE: usize = 19;
+/// `user_identifier` — slot 20. Bound `== submitter address` (tx sender) — anti-replay (§4.4).
+pub const SELF_IDX_USER_IDENTIFIER: usize = 20;
 
 /// The number of Pedersen attribute commitments a passport proof emits (age, nationality, expiry —
-/// spec §3.4). Stored opaquely (I6); never plaintext.
+/// spec §3.4). Stored opaquely (I6); never plaintext. These are the `revealedData_packed` slots (0..3).
 pub const NUM_ATTRIBUTE_COMMITMENTS: usize = 3;
 
 /// The passport scheme/document-type discriminant for an ICAO-9303 e-passport (spec §2.4 forward-compat
-/// `scheme_tag`). M6 ships only this scheme; an unknown tag is rejected fail-closed (§4.2 step 1).
+/// `scheme_tag`). M6 ships only this scheme; an unknown tag is rejected fail-closed (§4.4 step 1).
 pub const SCHEME_TAG_PASSPORT: u8 = 0;
+
+/// The `attestation_id` a Self E-Passport disclosure proof carries (§4.1 slot 8). Bound `== 1`.
+pub const SELF_ATTESTATION_ID_EPASSPORT: u64 = 1;
+
+// ---------------------------------------------------------------------------------------------
+// The canonical ubi2 scope (spec 06b §3) — one network-wide scope so ONE passport ⇒ exactly ONE
+// nullifier on ubi2 (the Sybil key). Self's disclosure nullifier is `Poseidon(secret, scope)`:
+// scope-bound, so the same passport under the same scope yields the same nullifier and different scopes
+// are unlinkable. Uniqueness on ubi2 holds only if ubi2 uses exactly one scope network-wide.
+// ---------------------------------------------------------------------------------------------
+
+/// The human-readable scope seed the frontend passes as `SelfAppBuilder.scope` (spec 06b §3). The Self
+/// off-chain scope derivation maps this string to the exact field scalar the proof carries in slot 19.
+pub const UBI2_SELF_SCOPE_SEED: &str = "ubi2-poh";
+
+/// The pinned canonical ubi2 scope scalar (32-byte big-endian) the runtime binds `signals[19]` against
+/// (spec 06b §3, §4.4 step: scope). One scope network-wide ⇒ one-passport-one-human.
+///
+/// **PROVISIONAL (O-C5).** Self computes `scope` off-chain as a field element derived from the scope
+/// string/endpoint (NOT the on-chain `PoseidonT3(addressHash, scopeSeed)` form — we deploy no verifier
+/// contract). The exact scalar for [`UBI2_SELF_SCOPE_SEED`] is pinned from a real Self **staging** proof
+/// captured by the C1 SDK flow (the load-bearing EC-C7 prerequisite). Until then this holds a documented
+/// deterministic placeholder — the low-8-byte ASCII packing of the seed — so the binding mechanism, the
+/// SDK↔Rust parity, and every non-real-proof test are exercisable. Flipping the real verifier to the
+/// value-minting default is gated on replacing this with the fixture value (EC-C7). A change here is a
+/// consensus migration, never silent.
+pub const UBI2_SELF_SCOPE: Hash = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x75, 0x62, 0x69, 0x32, 0x2d, 0x70, 0x6f, 0x68,
+];
+
+/// The freshness window (in blocks) an accepted Self root stays valid for (spec 06b §2.2, O-C3). A
+/// pinned root is "∈ the accepted set" only while `now_block − pinned_at_block ≤` this. A single pinned
+/// root would reject valid fresh proofs; accept-any would lose revocation/OFAC guarantees — so the
+/// window is explicit and root updates are governance events. Devnet starting value (tuned at the gate).
+pub const SELF_ROOT_WINDOW_BLOCKS: u64 = 5_000_000;
+
+/// The proof-date freshness window (in seconds) `current_date` may deviate from `block.timestamp` by
+/// (spec 06b §4.4 step 5, O-C3). Ties the in-circuit not-expired reference to chain time deterministically.
+/// Devnet starting value (± ~2 days, so a proof produced within a couple of days of inclusion passes).
+pub const SELF_DATE_WINDOW_SECS: u64 = 172_800;
+
+/// The OFAC-root kinds (spec 06b §2.2) — the three Self OFAC SMT trees, one per slot 16/17/18.
+pub const OFAC_KIND_PASSPORTNO: u8 = 0;
+pub const OFAC_KIND_NAMEDOB: u8 = 1;
+pub const OFAC_KIND_NAMEYOB: u8 = 2;
 
 // ---------------------------------------------------------------------------------------------
 // Assurance level — the additive `Human.assurance` metadata (spec §5.1). NEVER gates UBI accrual.
@@ -135,60 +210,136 @@ impl ZkAttrType {
     }
 }
 
-/// The canonical, ordered public-input vector for `submitZkPassportProof` (spec §3.5), as **plain
-/// bytes**. The runtime assembles this from on-chain state + the tx + the block (re-deriving and
-/// binding `csca_registry_root`, `submitter_address`, `now_epoch` — §4.2) and hands it to the verifier;
-/// `crates/zkpoh` converts it to BN254 field elements through its single canonical mapping. No
-/// field-element math lives here (keeping the runtime crypto-free).
+/// The **full** Self `vc_and_disclose` public-signal vector for `submitZkPassportProof`, carried
+/// on-chain verbatim (spec 06b §4.3). Because a real proof's public vector is fixed by the circuit, the
+/// runtime cannot reconstruct it from a few domain fields — it must RECEIVE it. `crates/zkpoh` converts
+/// each of the 21 signals to a BN254 field element by the single canonical mapping and verifies against
+/// the pinned VK — no adapter, no zeroing. The runtime derives the policy fields BY INDEX (§4.4) and
+/// keeps no field-element math (staying crypto-free).
 ///
-/// ```text
-/// public_inputs = [
-///   nullifier,                  // 32-byte field element                          (§3.3)
-///   attribute_commitments[0],   // Pedersen commitment: age threshold             (§3.4 idx 0)
-///   attribute_commitments[1],   // Pedersen commitment: nationality bucket        (§3.4 idx 1)
-///   attribute_commitments[2],   // Pedersen commitment: document expiry           (§3.4 idx 2)
-///   csca_registry_root,         // commitment to the trusted CSCA set             (§7.2)
-///   submitter_address,          // 20-byte address (zero-extended) — anti-replay  (§3.3)
-///   now_epoch,                  // chain-supplied current time (block.timestamp)
-///   scheme_tag,                 // 1-byte document-type discriminant              (§2.4)
-/// ]
-/// ```
+/// Slot map (CONFIRMED, spec 06b §4.1): `revealedData_packed[0..3]`, `forbidden_countries_list_packed
+/// [3..7]`, `nullifier@7`, `attestation_id@8`, `merkle_root@9`, `current_date[10..16]`, OFAC roots
+/// `@16,17,18`, `scope@19`, `user_identifier@20`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZkPublicInputs {
-    /// `nullifier` — the one-passport-one-human scalar (§3.3).
-    pub nullifier: Hash,
-    /// The three Pedersen attribute commitments in fixed order `[age, nationality, expiry]` (§3.4).
-    pub attribute_commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
-    /// `csca_registry_root` — commitment to the trusted CSCA set the proof verifies against (§7.2).
-    pub csca_registry_root: Hash,
-    /// `submitter_address` — the 20-byte address the proof is bound to (anti-replay, §3.3).
-    pub submitter_address: Address,
-    /// `now_epoch` — the chain-supplied current time (the block timestamp) the not-expired check used.
-    pub now_epoch: u64,
-    /// `scheme_tag` — the 1-byte document-type/scheme discriminant (§2.4).
-    pub scheme_tag: u8,
+    /// The raw 21-element public vector (snarkjs order, §4.1), each a 32-byte big-endian field value.
+    pub signals: [Hash; SELF_NPUBLIC],
 }
 
 impl ZkPublicInputs {
-    /// Assemble the canonical vector from its on-chain components. Pure: no clock, no allocation beyond
-    /// the struct.
-    pub fn new(
-        nullifier: Hash,
-        attribute_commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
-        csca_registry_root: Hash,
-        submitter_address: Address,
-        now_epoch: u64,
-        scheme_tag: u8,
-    ) -> Self {
-        Self {
-            nullifier,
-            attribute_commitments,
-            csca_registry_root,
-            submitter_address,
-            now_epoch,
-            scheme_tag,
-        }
+    /// Wrap the raw 21-signal vector. Pure: no clock, no allocation beyond the struct.
+    pub fn new(signals: [Hash; SELF_NPUBLIC]) -> Self {
+        Self { signals }
     }
+
+    /// The `nullifier` (slot 7) — the one-passport-one-human registry key (§3.3, §4.1).
+    pub fn nullifier(&self) -> Hash {
+        self.signals[SELF_IDX_NULLIFIER]
+    }
+
+    /// The three `revealedData_packed` slots (0,1,2) — stored opaquely as attribute commitments (I6).
+    pub fn attribute_commitments(&self) -> [Hash; NUM_ATTRIBUTE_COMMITMENTS] {
+        [
+            self.signals[SELF_IDX_REVEALED_DATA],
+            self.signals[SELF_IDX_REVEALED_DATA + 1],
+            self.signals[SELF_IDX_REVEALED_DATA + 2],
+        ]
+    }
+
+    /// The `attestation_id` slot (8) — bound `== 1` (E-Passport) for `schemeTag = 0`.
+    pub fn attestation_id(&self) -> Hash {
+        self.signals[SELF_IDX_ATTESTATION_ID]
+    }
+
+    /// The `merkle_root` slot (9) — bound ∈ accepted Self identity roots (§2.2).
+    pub fn merkle_root(&self) -> Hash {
+        self.signals[SELF_IDX_MERKLE_ROOT]
+    }
+
+    /// The OFAC-root slot for `kind` (0→16, 1→17, 2→18) — bound ∈ accepted OFAC roots for that kind.
+    pub fn ofac_root(&self, kind: u8) -> Hash {
+        self.signals[SELF_IDX_OFAC_PASSPORTNO + kind as usize]
+    }
+
+    /// The six `current_date` slots (10..=15), each an ASCII-digit field element (YYMMDD).
+    pub fn current_date(&self) -> [Hash; 6] {
+        let mut out = [[0u8; 32]; 6];
+        out.copy_from_slice(&self.signals[SELF_IDX_CURRENT_DATE..SELF_IDX_CURRENT_DATE + 6]);
+        out
+    }
+
+    /// The `scope` slot (19) — bound `== UBI2_SELF_SCOPE` (§3).
+    pub fn scope(&self) -> Hash {
+        self.signals[SELF_IDX_SCOPE]
+    }
+
+    /// The `user_identifier` slot (20) — bound `== submitter address` (tx sender) — anti-replay (§4.4).
+    pub fn user_identifier(&self) -> Hash {
+        self.signals[SELF_IDX_USER_IDENTIFIER]
+    }
+
+    /// The `user_identifier` interpreted as a 20-byte ubi2 address (the low 20 bytes of slot 20). The
+    /// mock verifier keys on this + the nullifier, so the state machine is exercisable without pairing.
+    pub fn submitter_address(&self) -> Address {
+        let s = self.signals[SELF_IDX_USER_IDENTIFIER];
+        let mut a = [0u8; 20];
+        a.copy_from_slice(&s[12..32]);
+        a
+    }
+}
+
+/// Encode a `u64` as a 32-byte big-endian [`Hash`] (the on-chain `bytes32` form the runtime compares an
+/// integer-valued signal, e.g. `attestation_id`, against). Pure integer — no float, no crypto.
+pub fn u64_to_hash(v: u64) -> Hash {
+    let mut h = [0u8; 32];
+    h[24..32].copy_from_slice(&v.to_be_bytes());
+    h
+}
+
+/// Zero-extend a 20-byte address to a 32-byte big-endian [`Hash`] (the `user_identifier` slot form the
+/// runtime binds the tx sender against — spec 06b §4.4). Pure integer.
+pub fn address_to_hash(addr: &Address) -> Hash {
+    let mut h = [0u8; 32];
+    h[12..32].copy_from_slice(addr);
+    h
+}
+
+/// Decode the six `current_date` ASCII-digit signals (YYMMDD, each a 32-byte big-endian field value
+/// whose meaningful content is a single ASCII byte) into the unix-second timestamp of that civil day at
+/// 00:00 UTC, or `None` if any signal is not a `'0'..='9'` ASCII digit (fail-closed, spec 06b §4.4
+/// step 5). Assumes 20YY (2000..2099 — Self e-passport dates). Pure integer arithmetic (Howard Hinnant
+/// days-from-civil), so it is bit-reproducible across nodes (no chrono, no float, no clock).
+pub fn current_date_to_epoch(date: &[Hash; 6]) -> Option<u64> {
+    let mut digits = [0u8; 6];
+    for (i, sig) in date.iter().enumerate() {
+        // A valid current_date signal is a small integer (an ASCII digit code): all high bytes zero.
+        if sig[..31].iter().any(|&b| b != 0) {
+            return None;
+        }
+        let b = sig[31];
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        digits[i] = b - b'0';
+    }
+    let yy = digits[0] as i64 * 10 + digits[1] as i64;
+    let mm = digits[2] as i64 * 10 + digits[3] as i64;
+    let dd = digits[4] as i64 * 10 + digits[5] as i64;
+    if !(1..=12).contains(&mm) || !(1..=31).contains(&dd) {
+        return None;
+    }
+    let year = 2000 + yy;
+    // days_from_civil (Howard Hinnant): days since 1970-01-01 for `year-mm-dd`.
+    let y = if mm <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if mm > 2 { mm - 3 } else { mm + 9 }) + 2) / 5 + dd - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146_097 + doe - 719_468;
+    if days < 0 {
+        return None;
+    }
+    Some(days as u64 * 86_400)
 }
 
 /// The BN254 scalar-field order `r` (big-endian). `crates/zkpoh` reduces every 32-byte public input by
@@ -283,7 +434,9 @@ impl MockZkVerifier {
 
 impl ZkPassportVerifier for MockZkVerifier {
     fn verify_passport(&self, _proof: &[u8], public_inputs: &ZkPublicInputs) -> bool {
-        let key = (public_inputs.nullifier, public_inputs.submitter_address);
+        // The scripted key is `(nullifier@7, submitter/user_identifier@20)` — both derived from the
+        // full carried vector (spec 06b §4.3), so the mock exercises the state machine with no pairing.
+        let key = (public_inputs.nullifier(), public_inputs.submitter_address());
         self.passport
             .get(&key)
             .copied()
@@ -450,6 +603,94 @@ impl CscaSponge {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Self-root anchor registry (spec 06b §2) — the reconciliation crux. A real Self disclosure proof
+// commits to the root of Self's OWN identity-commitment registry (a Poseidon Lean-IMT root), NOT to our
+// CSCA sponge. To accept a real proof, ubi2 tracks + pins Self's identity root(s) + the three OFAC SMT
+// roots as external trust anchors, governance-gated + windowed. Deterministic, folded into state_root.
+// The CSCA registry above is RETAINED (reserved for the own-stack milestone, O-C1) but inactive on the
+// Self verify path.
+// ---------------------------------------------------------------------------------------------
+
+/// An accepted Self **identity-commitment** registry root (spec 06b §2.2). A real `vc_and_disclose`
+/// proof's `merkle_root` (slot 9) must be a member of this set AND still within
+/// [`SELF_ROOT_WINDOW_BLOCKS`] of the current height. Governance pins/retires these as Self's Lean-IMT
+/// root rotates. No PII — a registry root is a Poseidon hash, not a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfIdentityRoot {
+    /// The Poseidon Lean-IMT root Self's IdentityRegistry currently publishes (opaque 32-byte scalar).
+    pub root: Hash,
+    /// The block height governance pinned it at (the window clock — folded into `state_root`).
+    pub pinned_at_block: u64,
+}
+
+/// An accepted Self **OFAC SMT** root (spec 06b §2.2). Self's TEE-authorized OFAC updater rotates three
+/// SMT roots (passport-no / name+DOB / name+YOB); a proof's `signals[16..19]` must each be a member of
+/// the accepted set for its `kind`, within the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfOfacRoot {
+    /// `0 = passportno`, `1 = namedob`, `2 = nameyob` ([`OFAC_KIND_PASSPORTNO`] …).
+    pub kind: u8,
+    /// The OFAC SMT root (opaque 32-byte scalar).
+    pub root: Hash,
+    /// The block height governance pinned it at (folded into `state_root`).
+    pub pinned_at_block: u64,
+}
+
+/// Is `root` an accepted Self identity root at `now_block` — present AND still within the freshness
+/// window (spec 06b §2.2)? Pure function of state + height (no wall-clock). A stale set only fails
+/// *closed* (new proofs rejected until a fresh root is pinned) — never a safety break.
+pub fn self_identity_root_accepted(
+    roots: &[SelfIdentityRoot],
+    root: &Hash,
+    now_block: u64,
+) -> bool {
+    roots.iter().any(|e| {
+        &e.root == root && now_block.saturating_sub(e.pinned_at_block) <= SELF_ROOT_WINDOW_BLOCKS
+    })
+}
+
+/// Is `root` an accepted Self OFAC root of `kind` at `now_block`, within the freshness window? Pure.
+pub fn self_ofac_root_accepted(
+    roots: &[SelfOfacRoot],
+    kind: u8,
+    root: &Hash,
+    now_block: u64,
+) -> bool {
+    roots.iter().any(|e| {
+        e.kind == kind
+            && &e.root == root
+            && now_block.saturating_sub(e.pinned_at_block) <= SELF_ROOT_WINDOW_BLOCKS
+    })
+}
+
+/// The deterministic 32-byte commitment over the sorted Self-root registries (spec 06b §2, §13). Folded
+/// into `state_root` so all nodes agree on the trust set to the bit. Identity roots sorted by `root`;
+/// OFAC roots sorted by `(kind, root)`. Uses the same FNV-1a-256 sponge the CSCA root + `state_root` use
+/// (dependency-free, integer-only, no float). Provided for `ubi_getSelfRoots` and diagnostics; the
+/// state-root fold commits the same entries directly (see `state_root.rs`).
+pub fn self_root_registry_root(identity: &[SelfIdentityRoot], ofac: &[SelfOfacRoot]) -> Hash {
+    let mut ids: Vec<&SelfIdentityRoot> = identity.iter().collect();
+    ids.sort_by_key(|e| e.root);
+    let mut ofacs: Vec<&SelfOfacRoot> = ofac.iter().collect();
+    ofacs.sort_by_key(|e| (e.kind, e.root));
+
+    let mut h = CscaSponge::new();
+    h.bytes(b"ubi2/self-root/1");
+    h.u64(ids.len() as u64);
+    for e in &ids {
+        h.write(&e.root);
+        h.u64(e.pinned_at_block);
+    }
+    h.u64(ofacs.len() as u64);
+    for e in &ofacs {
+        h.u8(e.kind);
+        h.write(&e.root);
+        h.u64(e.pinned_at_block);
+    }
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +700,13 @@ mod tests {
     }
     fn addr(b: u8) -> Address {
         [b; 20]
+    }
+    /// Build a 21-signal vector carrying `nullifier@7` and `submitter@20` (the pair the mock keys on).
+    fn pi(nullifier: Hash, submitter: Address) -> ZkPublicInputs {
+        let mut s = [[0u8; 32]; SELF_NPUBLIC];
+        s[SELF_IDX_NULLIFIER] = nullifier;
+        s[SELF_IDX_USER_IDENTIFIER] = address_to_hash(&submitter);
+        ZkPublicInputs::new(s)
     }
 
     #[test]
@@ -475,11 +723,11 @@ mod tests {
     #[test]
     fn mock_default_passes_and_is_deterministic() {
         let v = MockZkVerifier::default();
-        let pi = ZkPublicInputs::new(h(1), [h(0); 3], h(9), addr(1), 1_700_000_000, 0);
-        assert!(v.verify_passport(b"ignored", &pi));
+        let p = pi(h(1), addr(1));
+        assert!(v.verify_passport(b"ignored", &p));
         assert_eq!(
-            v.verify_passport(b"x", &pi),
-            v.verify_passport(b"x", &pi),
+            v.verify_passport(b"x", &p),
+            v.verify_passport(b"x", &p),
             "same input ⇒ same bool (I1)"
         );
     }
@@ -487,16 +735,16 @@ mod tests {
     #[test]
     fn mock_scripts_per_nullifier_submitter() {
         let v = MockZkVerifier::new(false).with_passport(h(7), addr(3), true);
-        let ok = ZkPublicInputs::new(h(7), [h(0); 3], h(9), addr(3), 0, 0);
-        let wrong_sub = ZkPublicInputs::new(h(7), [h(0); 3], h(9), addr(4), 0, 0);
-        let wrong_null = ZkPublicInputs::new(h(8), [h(0); 3], h(9), addr(3), 0, 0);
-        assert!(v.verify_passport(b"", &ok), "scripted accept");
         assert!(
-            !v.verify_passport(b"", &wrong_sub),
+            v.verify_passport(b"", &pi(h(7), addr(3))),
+            "scripted accept"
+        );
+        assert!(
+            !v.verify_passport(b"", &pi(h(7), addr(4))),
             "different submitter ⇒ reject (F-4)"
         );
         assert!(
-            !v.verify_passport(b"", &wrong_null),
+            !v.verify_passport(b"", &pi(h(8), addr(3))),
             "different nullifier ⇒ reject"
         );
     }
@@ -506,10 +754,60 @@ mod tests {
         // EC-7: one node's verifier stubbed to the wrong answer — the divergence M5 fork choice out-votes.
         let honest = MockZkVerifier::always(true);
         let stubbed = MockZkVerifier::always(false);
-        let pi = ZkPublicInputs::new(h(1), [h(0); 3], h(9), addr(1), 0, 0);
+        let p = pi(h(1), addr(1));
         assert_ne!(
-            honest.verify_passport(b"", &pi),
-            stubbed.verify_passport(b"", &pi)
+            honest.verify_passport(b"", &p),
+            stubbed.verify_passport(b"", &p)
+        );
+    }
+
+    #[test]
+    fn current_date_decode_and_freshness() {
+        // 2023-11-14 as YYMMDD ASCII digits: '2','3','1','1','1','4'.
+        let mut date = [[0u8; 32]; 6];
+        for (i, b) in [b'2', b'3', b'1', b'1', b'1', b'4'].iter().enumerate() {
+            date[i] = u64_to_hash(*b as u64);
+        }
+        let epoch = current_date_to_epoch(&date).expect("valid YYMMDD");
+        // 2023-11-14 00:00 UTC = 1_699_920_000.
+        assert_eq!(epoch, 1_699_920_000);
+        // A non-digit signal fails closed.
+        let mut bad = date;
+        bad[0] = u64_to_hash(b'Z' as u64);
+        assert!(current_date_to_epoch(&bad).is_none());
+    }
+
+    #[test]
+    fn self_root_windowing_and_root_commitment() {
+        let ids = vec![SelfIdentityRoot {
+            root: h(0xAA),
+            pinned_at_block: 10,
+        }];
+        assert!(self_identity_root_accepted(&ids, &h(0xAA), 10));
+        assert!(self_identity_root_accepted(
+            &ids,
+            &h(0xAA),
+            10 + SELF_ROOT_WINDOW_BLOCKS
+        ));
+        assert!(!self_identity_root_accepted(
+            &ids,
+            &h(0xAA),
+            11 + SELF_ROOT_WINDOW_BLOCKS
+        ));
+        assert!(!self_identity_root_accepted(&ids, &h(0xBB), 10));
+        // The registry root is insertion-order independent + sensitive to content.
+        let ofac = vec![SelfOfacRoot {
+            kind: 0,
+            root: h(0x01),
+            pinned_at_block: 0,
+        }];
+        assert_eq!(
+            self_root_registry_root(&ids, &ofac),
+            self_root_registry_root(&ids, &ofac)
+        );
+        assert_ne!(
+            self_root_registry_root(&ids, &ofac),
+            self_root_registry_root(&[], &ofac)
         );
     }
 

@@ -30,17 +30,25 @@ pub use humanity::{
 
 pub mod lifecycle;
 pub use lifecycle::{
-    challenge, finalize_registration, register_csca, register_juror, request_verification, revoke,
-    revoke_csca, seed_csca, seed_verified_human, submit_verdict, submit_zk_passport_proof,
-    system_challenge, vouch, CscaGovError, LifecycleError, LivenessEvidence, ZkPohError,
-    ZkProofSubmission,
+    challenge, finalize_registration, pin_self_identity_root, pin_self_ofac_root, register_csca,
+    register_juror, request_verification, retire_self_root, revoke, revoke_csca, seed_csca,
+    seed_self_identity_root, seed_self_ofac_root, seed_verified_human, submit_verdict,
+    submit_zk_passport_proof, system_challenge, vouch, CscaGovError, LifecycleError,
+    LivenessEvidence, ZkPohError, ZkProofSubmission,
 };
 
 pub mod zkpoh;
 pub use zkpoh::{
-    csca_registry_root, Assurance, CscaEntry, CscaStatus, MockZkVerifier, ZkAttrType,
-    ZkPassportVerifier, ZkPublicInputs, NUM_ATTRIBUTE_COMMITMENTS, NUM_PUBLIC_INPUTS,
-    SCHEME_TAG_PASSPORT,
+    address_to_hash, csca_registry_root, current_date_to_epoch, self_identity_root_accepted,
+    self_ofac_root_accepted, self_root_registry_root, u64_to_hash, Assurance, CscaEntry,
+    CscaStatus, MockZkVerifier, SelfIdentityRoot, SelfOfacRoot, ZkAttrType, ZkPassportVerifier,
+    ZkPublicInputs, NUM_ATTRIBUTE_COMMITMENTS, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB,
+    OFAC_KIND_PASSPORTNO, SCHEME_TAG_PASSPORT, SELF_ATTESTATION_ID_EPASSPORT,
+    SELF_DATE_WINDOW_SECS, SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE,
+    SELF_IDX_FORBIDDEN_COUNTRIES, SELF_IDX_MERKLE_ROOT, SELF_IDX_NULLIFIER, SELF_IDX_OFAC_NAMEDOB,
+    SELF_IDX_OFAC_NAMEYOB, SELF_IDX_OFAC_PASSPORTNO, SELF_IDX_REVEALED_DATA, SELF_IDX_SCOPE,
+    SELF_IDX_USER_IDENTIFIER, SELF_NPUBLIC, SELF_ROOT_WINDOW_BLOCKS, UBI2_SELF_SCOPE,
+    UBI2_SELF_SCOPE_SEED,
 };
 
 pub mod state_root;
@@ -702,12 +710,34 @@ pub trait State: Send + Sync {
     /// All CSCA entries (Active **and** Revoked), **sorted by `key_id`** (the canonical order
     /// `state_root` folds and [`csca_registry_root`] filters/commits — §7.2). Pure read.
     fn csca_entries(&self) -> Vec<CscaEntry>;
-    /// Is `addr` the CSCA governance authority (spec §7.3, AC-10)? Gates `register_csca`/`revoke_csca`.
-    /// Default: no governance authority is set ⇒ every gated op is rejected (fail-closed). `MemState`
-    /// overrides with the configured authority (the node seeds it at genesis).
+    /// Is `addr` the CSCA governance authority (spec §7.3, AC-10)? Gates `register_csca`/`revoke_csca`
+    /// AND the Self-root governance ops (`pin_self_identity_root`/`pin_self_ofac_root`/`retire_self_root`
+    /// — spec 06b §2.2 reuses the same authority). Default: no governance authority is set ⇒ every gated
+    /// op is rejected (fail-closed). `MemState` overrides with the configured authority.
     fn is_csca_governance(&self, _addr: &Address) -> bool {
         false
     }
+
+    // ---- M6 Stage C: the Self-root anchor registry (spec 06b §2.2). Sorted accessors, same discipline
+    //      as `csca_entries()`, so the state-root fold is deterministic (I1). Default impls (empty /
+    //      no-op) keep non-`MemState` stores compiling; `MemState` overrides them. ----
+
+    /// All accepted Self identity-commitment roots, **sorted by `root`** (the canonical order
+    /// `state_root` folds — spec 06b §2.2). Pure read.
+    fn self_identity_roots(&self) -> Vec<SelfIdentityRoot> {
+        Vec::new()
+    }
+    /// Pin an accepted Self identity root (governance — `pinSelfIdentityRoot`). Active from this block.
+    fn put_self_identity_root(&mut self, _entry: SelfIdentityRoot) {}
+    /// All accepted Self OFAC SMT roots, **sorted by `(kind, root)`** (the canonical `state_root` order).
+    fn self_ofac_roots(&self) -> Vec<SelfOfacRoot> {
+        Vec::new()
+    }
+    /// Pin an accepted Self OFAC root (governance — `pinSelfOfacRoot`). Active from this block.
+    fn put_self_ofac_root(&mut self, _entry: SelfOfacRoot) {}
+    /// Drop `root` from BOTH the identity + OFAC accepted sets (governance — `retireSelfRoot`;
+    /// forward-invalidation, no retroactive nullifier purge — O-C2).
+    fn retire_self_root(&mut self, _root: &Hash) {}
 
     // ---- M5: id-counter peeks (read-only; for the deterministic state root) ----
     //
@@ -801,8 +831,13 @@ pub struct MemState {
     /// CSCA trust-anchor registry, keyed by `key_id` (Active + Revoked entries — §7.2).
     csca: HashMap<Hash, CscaEntry>,
     /// The CSCA governance authority (spec §7.3). `None` ⇒ no authority ⇒ every gated op fails-closed
-    /// (the devnet/node seeds a reserved governance address at genesis).
+    /// (the devnet/node seeds a reserved governance address at genesis). Also gates the Self-root ops.
     csca_governance: Option<Address>,
+    /// M6 Stage C: accepted Self identity-commitment roots, keyed by `root` (spec 06b §2.2). Sorted for
+    /// the `state_root` fold.
+    self_identity_roots: HashMap<Hash, SelfIdentityRoot>,
+    /// M6 Stage C: accepted Self OFAC SMT roots, keyed by `(kind, root)`. Sorted for the `state_root`.
+    self_ofac_roots: HashMap<(u8, Hash), SelfOfacRoot>,
 
     // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1) ----
     /// The validator set `V` snapshotted at the last epoch boundary — sorted ascending, deduped. It is
@@ -1076,6 +1111,27 @@ impl State for MemState {
     }
     fn is_csca_governance(&self, addr: &Address) -> bool {
         self.csca_governance == Some(*addr)
+    }
+
+    fn self_identity_roots(&self) -> Vec<SelfIdentityRoot> {
+        let mut v: Vec<SelfIdentityRoot> = self.self_identity_roots.values().copied().collect();
+        v.sort_by_key(|e| e.root);
+        v
+    }
+    fn put_self_identity_root(&mut self, entry: SelfIdentityRoot) {
+        self.self_identity_roots.insert(entry.root, entry);
+    }
+    fn self_ofac_roots(&self) -> Vec<SelfOfacRoot> {
+        let mut v: Vec<SelfOfacRoot> = self.self_ofac_roots.values().copied().collect();
+        v.sort_by_key(|e| (e.kind, e.root));
+        v
+    }
+    fn put_self_ofac_root(&mut self, entry: SelfOfacRoot) {
+        self.self_ofac_roots.insert((entry.kind, entry.root), entry);
+    }
+    fn retire_self_root(&mut self, root: &Hash) {
+        self.self_identity_roots.remove(root);
+        self.self_ofac_roots.retain(|(_, r), _| r != root);
     }
 
     fn peek_next_stream_id(&self) -> StreamId {

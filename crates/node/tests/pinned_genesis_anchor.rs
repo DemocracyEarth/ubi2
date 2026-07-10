@@ -28,7 +28,7 @@ const PROPOSER_SECRET: [u8; 32] =
 const PINNED_GENESIS_HASH: &str =
     "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
 const PINNED_GENESIS_STATE_ROOT: &str =
-    "2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
+    "fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
 
 const fn hex32(s: &str) -> [u8; 32] {
     let b = s.as_bytes();

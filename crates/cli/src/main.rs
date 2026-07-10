@@ -434,7 +434,7 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
 const PINNED_LIGHTNODE_HASH: &str =
     "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
 const PINNED_LIGHTNODE_STATE_ROOT: &str =
-    "2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
+    "fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
 
 fn genesis_anchor(args: AnchorArgs) -> anyhow::Result<()> {
     let genesis_time = args.genesis_time.unwrap_or(match args.preset {

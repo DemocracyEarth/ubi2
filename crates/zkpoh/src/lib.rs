@@ -50,15 +50,12 @@ mod verifier;
 
 pub use genesis_vk::{pinned_passport_vk, HAS_PINNED_PASSPORT_VK};
 pub use keys::{proof_from_canonical_bytes, proof_to_canonical_bytes, PinnedVerifyingKey};
-pub use public_inputs::{
-    address_to_field, address_to_field32, AttrType, PublicInputs, IDX_ATTR_AGE, IDX_ATTR_EXPIRY,
-    IDX_ATTR_NATIONALITY, IDX_CSCA_ROOT, IDX_NOW_EPOCH, IDX_NULLIFIER, IDX_SCHEME_TAG,
-    IDX_SUBMITTER, NUM_PUBLIC_INPUTS,
-};
+pub use public_inputs::{address_to_field, address_to_field32, AttrType, PublicInputs};
 pub use self_layout::{
-    now_epoch_to_date_digits, SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE, SELF_IDX_MERKLE_ROOT,
-    SELF_IDX_NULLIFIER, SELF_IDX_REVEALED_DATA, SELF_IDX_SCOPE, SELF_IDX_USER_IDENTIFIER,
-    SELF_NPUBLIC, SELF_SCOPE_CONST,
+    SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE, SELF_IDX_FORBIDDEN_COUNTRIES,
+    SELF_IDX_MERKLE_ROOT, SELF_IDX_NULLIFIER, SELF_IDX_OFAC_NAMEDOB, SELF_IDX_OFAC_NAMEYOB,
+    SELF_IDX_OFAC_PASSPORTNO, SELF_IDX_REVEALED_DATA, SELF_IDX_SCOPE, SELF_IDX_USER_IDENTIFIER,
+    SELF_NPUBLIC, UBI2_SELF_SCOPE, UBI2_SELF_SCOPE_SEED,
 };
 pub use snarkjs::{SnarkjsImportError, SnarkjsVk};
 pub use verifier::{Groth16Verifier, PassportLayout};

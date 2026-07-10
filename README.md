@@ -121,7 +121,7 @@ ubi node --rpc 127.0.0.1:9000 --block-ms 1000     # bare (no preset), just flags
 ubi genesis anchor --preset lightnode
 # genesis_time : 1700000000
 # genesis_hash : bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3
-# state_root   : 2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98
+# state_root   : fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac
 # pin check    : OK (matches apps/light-node/src/config.ts PINNED_GENESIS_HASH/STATE_ROOT)
 ```
 

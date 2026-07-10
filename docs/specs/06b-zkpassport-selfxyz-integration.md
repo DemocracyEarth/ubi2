@@ -201,44 +201,52 @@ UBI2_SELF_SCOPE      = <field element>     // the exact scalar the Self off-chai
 
 ---
 
-## 4. Public-input reconciliation — the real 20-signal layout, full-vector carriage, real verifier
+## 4. Public-input reconciliation — the real 21-signal layout, full-vector carriage, real verifier
 
-### 4.1 The real `vc_and_disclose` public-signal order (arkworks/snarkjs order)
+### 4.1 The real `vc_and_disclose` public-signal order — CONFIRMED (21 signals)
 
-We verify with arkworks against the VK, so the authoritative order is **snarkjs's**: circuit **outputs**
-in declaration order, then the **declared public inputs**. For `VC_AND_DISCLOSE` at nPublic = 20
-(`IC.len() == 21`), with `forbidden_countries_list_packed` = 3 field elements:
+**Confirmed against reality** (Stage-C de-risk, closes the layout half of O-C5): six independent Self
+sources agree index-for-index — the circom `main` in `circuits/disclose/vc_and_disclose.circom`, the
+deployed `Verifier_vc_and_disclose.sol` (`uint[21]`), `CircuitConstantsV2.sol` `getDiscloseIndices(E_PASSPORT)`,
+`IVcAndDiscloseCircuitVerifier`, and the active SDK constants — cross-checked with an empirically-compiled
+`.sym` and a snarkjs-verified proof over the same layout. **`SELF_NPUBLIC = 21`** (VK `IC.len() == 22`).
+The trap that produced the earlier guess: circom orders public signals as **outputs (declaration order),
+then public inputs in DECLARATION order** — NOT the `public[...]` list order — and
+`forbidden_countries_list_packed` is **4** field elements, not 3.
 
 | Slot | Signal | Bound by the runtime to… |
 |---|---|---|
-| 0,1,2 | `revealedData_packed[3]` | stored **opaquely** as our 3 attribute commitments (I6) — pass-through |
-| 3,4,5 | `forbidden_countries_list_packed[3]` | pass-through (proof-tied; not our policy key) |
-| **6** | `nullifier` | canonicality guard + uniqueness registry key (§3) |
-| **7** | `merkle_root` | **∈ accepted Self identity roots** (§2.2) — NOT our CSCA root |
-| **8** | `ofac_passportno_smt_root` | ∈ accepted OFAC roots kind 0 (§2.2) |
-| **9** | `ofac_namedob_smt_root` | ∈ accepted OFAC roots kind 1 |
-| **10** | `ofac_nameyob_smt_root` | ∈ accepted OFAC roots kind 2 |
-| **11** | `scope` | `== UBI2_SELF_SCOPE` (§3) |
-| **12** | `user_identifier` | `== submitter address` (tx sender) — anti-replay (§4.4) |
-| 13..18 | `current_date[6]` (YYMMDD ASCII) | freshness window around `block.timestamp` (§4.4) |
-| **19** | `attestation_id` | `== 1` (E-Passport) for `schemeTag = 0` |
+| 0,1,2 | `revealedData_packed[3]` | stored **opaquely** as attribute commitments (I6) — pass-through |
+| 3,4,5,6 | `forbidden_countries_list_packed[4]` | pass-through (proof-tied; not our policy key) |
+| **7** | `nullifier` = Poseidon(secret, scope) | canonicality guard + uniqueness registry key (§3) |
+| **8** | `attestation_id` | `== 1` (E-Passport) for `schemeTag = 0` |
+| **9** | `merkle_root` | **∈ accepted Self identity roots** (§2.2) — NOT our CSCA root |
+| 10..15 | `current_date[6]` (YYMMDD ASCII) | freshness window around `block.timestamp` (§4.4) |
+| **16** | `ofac_passportno_smt_root` | ∈ accepted OFAC roots kind 0 (§2.2) |
+| **17** | `ofac_namedob_smt_root` | ∈ accepted OFAC roots kind 1 |
+| **18** | `ofac_nameyob_smt_root` | ∈ accepted OFAC roots kind 2 |
+| **19** | `scope` | `== UBI2_SELF_SCOPE` (§3) |
+| **20** | `user_identifier` | `== submitter address` (tx sender) — anti-replay (§4.4) |
 
-> **This is provisional until a real staging proof confirms it (O-C5).** The 20-vs-21 count and the exact
-> per-slot order differ between Self's on-chain re-packed `pubSignals[21]` and the circuit's snarkjs
-> order, and shift by document type. The **pinned mechanism** is: derive the order from the compiled
-> circuit `.sym` **and** a genuine Self staging proof's `publicSignals`, and treat EC-C7 (a real proof
-> verifying end-to-end) as the test that actually validates it. Do not hardcode against the current
-> guess.
+> **VK STATUS (O-C5, updated — the half that stays open):** the VK pinned in Stage 1/2 is a genuine but
+> **STALE 20-signal legacy** artifact (byte-identical to Self's dead `vkey_vc_and_disclose` constant,
+> which has **zero usages** in their monorepo). It **cannot verify a real 21-signal proof.** The current
+> **production 21-signal VK is not obtainable from the repo** (Self's S3 returns 403; the ceremony `.zkey`
+> is uncommitted). Pinning it is a **hard pre-mainnet gate**, closed by capturing a genuine Self **staging**
+> proof via the live prover / a staging app run (which the C1 SDK flow enables) → `snarkjs zkey export
+> verificationkey`. Until then the real `Groth16Verifier` stays **staging/opt-in**, never the value-minting
+> default; `MockZkVerifier` remains the devnet consensus default. **EC-C7 = a genuine Self proof verifying
+> end-to-end** is the gate that flips it.
 
 ### 4.2 Fixes to the current code (the four audit gaps)
 
-- **GAP-2 (self_layout):** replace the off-by-one guessed indices with §4.1. Current
-  `NULLIFIER=7/MERKLE=8/SCOPE=12/USER=13/CURRENT_DATE=14/ATTESTATION_ID=19` collides `current_date[5]`
-  onto `attestation_id`; the corrected map (nullifier 6, merkle 7, ofac 8–10, scope 11, user 12,
-  current_date 13–18, attestation 19) has no collision.
-- **The zeroing bug:** the adapter zeroes slots 3,4,5 (forbidden countries) and 8,9,10 (OFAC roots). A
-  real proof carries **live nonzero** values there; zeroing them guarantees the MSM cannot match. The
-  runtime must consume the **actual** signal values (§4.3), not synthesize them.
+- **GAP-2 (self_layout):** the current 20-signal map is wrong from slot 8 on
+  (`merkle_root@8, scope@12, user_identifier@13, current_date@14, attestation_id@19` — only `revealed 0–2`
+  and `nullifier@7` happen to coincide). Rewrite ALL `SELF_IDX_*` to the confirmed §4.1 **21-signal** order
+  and set `SELF_NPUBLIC = 21` / VK arity `IC.len() == 22`.
+- **The zeroing bug:** the adapter zeroes the forbidden-countries slots (now 3–6) and the OFAC-root slots
+  (now 16–18). A real proof carries **live nonzero** values there; zeroing them guarantees the pairing
+  cannot match. The runtime must consume the **actual** signal values (§4.3), not synthesize them.
 - **GAP-3 (merkle_root):** §2 — bind slot 7 to Self-root membership, not our CSCA sponge.
 - **GAP-4 (SDK ↔ Rust divergence):** dissolved by §4.3 — the SDK no longer extracts policy fields by
   index; it passes the whole vector. The only index the SDK reads is `nullifier` (slot 6) for the
@@ -246,11 +254,11 @@ in declaration order, then the **declared public inputs**. For `VC_AND_DISCLOSE`
   (`packages/sdk` mirrors `crates/zkpoh::self_layout` constants; a fixture test asserts both parse an
   identical proof identically).
 
-### 4.3 Data-model change — carry the FULL `publicSignals[20]` on-chain
+### 4.3 Data-model change — carry the FULL `publicSignals[21]` on-chain
 
 Because a real proof's public vector is fixed by the circuit, the runtime cannot reconstruct it from six
 domain fields; it must receive it. The `submitZkPassportProof` calldata becomes **proof + the full
-20-element public vector**; the runtime derives the policy fields by index and binds them:
+21-element public vector**; the runtime derives the policy fields by index and binds them:
 
 ```solidity
 // supersedes the Stage-B op shape (devnet-only; no mainnet nullifiers exist yet — clean replacement,

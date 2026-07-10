@@ -49,14 +49,14 @@ alloy_sol_types::sol! {
     function submitVerdict(uint256 caseId, uint8 verdict, uint8 confidence) external;
     function submitZkPassportProof(
         bytes proof,
-        bytes32 nullifier,
-        bytes32[3] attributeCommitments,
-        bytes32 cscaRegistryRoot,
-        uint8 schemeTag,
-        uint64 nowEpoch
+        bytes32[21] publicSignals,
+        uint8 schemeTag
     ) external;
     function registerCsca(bytes3 countryCode, bytes32 keyId, bytes pubkey) external;
     function revokeCsca(bytes32 keyId) external;
+    function pinSelfIdentityRoot(bytes32 root) external;
+    function pinSelfOfacRoot(uint8 kind, bytes32 root) external;
+    function retireSelfRoot(bytes32 root) external;
 
     // ContractHub (spec 04).
     function deployContract(string text, address[] parties) external returns (uint256 id);
@@ -73,6 +73,10 @@ alloy_sol_types::sol! {
 
 /// What a decoded tx does when applied — the kernel's op model. Mirrors `crates/rpc::PendingKind`
 /// field-for-field (the rpc enum maps 1:1 to this), so the shared apply path is the one source of truth.
+// `SubmitZkPassportProof` carries the full 21-element public vector inline (`[[u8;32];21]`, spec 06b
+// §4.3 full-vector carriage), making it the dominant variant; the enum is short-lived per-tx decode
+// state, so the inline layout is intentional over a `Box` indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelKind {
     /// Plain value transfer to `to`.
@@ -103,23 +107,27 @@ pub enum KernelKind {
     },
 
     // ---- M6: ZK-passport ops ----
-    /// `submitZkPassportProof(...)`: verify a ZK-passport proof for the signer (§4.1).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)`: verify a Self `vc_and_disclose`
+    /// proof for the signer, carrying the full 21-signal vector (spec 06b §4.3).
     SubmitZkPassportProof {
         proof: Vec<u8>,
-        nullifier: [u8; 32],
-        attribute_commitments: [[u8; 32]; 3],
-        csca_registry_root: [u8; 32],
+        signals: [[u8; 32]; 21],
         scheme_tag: u8,
-        now_epoch: u64,
     },
-    /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3).
+    /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
         country_code: [u8; 3],
         key_id: [u8; 32],
         pubkey: Vec<u8>,
     },
-    /// `revokeCsca(keyId)`: governance-gated CSCA revoke (§7.3/§7.4).
+    /// `revokeCsca(keyId)`: governance-gated CSCA revoke (§7.3/§7.4). RETAINED, reserved.
     RevokeCsca { key_id: [u8; 32] },
+    /// `pinSelfIdentityRoot(root)`: governance-gated pin of an accepted Self identity root (06b §2.2).
+    PinSelfIdentityRoot { root: [u8; 32] },
+    /// `pinSelfOfacRoot(kind, root)`: governance-gated pin of an accepted OFAC SMT root (06b §2.2).
+    PinSelfOfacRoot { kind: u8, root: [u8; 32] },
+    /// `retireSelfRoot(root)`: governance-gated retire of a Self root (06b §2.2).
+    RetireSelfRoot { root: [u8; 32] },
 
     // ---- M4: prompt-contract ops ----
     /// `deployContract(text, parties)`: register an `Active` contract for the signer.
@@ -154,7 +162,11 @@ impl KernelKind {
             | KernelKind::Challenge { .. }
             | KernelKind::SubmitVerdict { .. } => GAS_HUMANITY,
             KernelKind::SubmitZkPassportProof { .. } => GAS_ZKPOH,
-            KernelKind::RegisterCsca { .. } | KernelKind::RevokeCsca { .. } => GAS_CSCA_GOV,
+            KernelKind::RegisterCsca { .. }
+            | KernelKind::RevokeCsca { .. }
+            | KernelKind::PinSelfIdentityRoot { .. }
+            | KernelKind::PinSelfOfacRoot { .. }
+            | KernelKind::RetireSelfRoot { .. } => GAS_CSCA_GOV,
             KernelKind::DeployContract { text, .. } => gas_for_deploy(text.len()),
             KernelKind::FundContract { .. }
             | KernelKind::InvokeContract { .. }
@@ -372,18 +384,14 @@ fn parse_humanity(data: &[u8]) -> Result<KernelKind, DecodeError> {
                 proof.len()
             )));
         }
-        let attribute_commitments = [
-            call.attributeCommitments[0].0,
-            call.attributeCommitments[1].0,
-            call.attributeCommitments[2].0,
-        ];
+        let mut signals = [[0u8; 32]; 21];
+        for (i, s) in call.publicSignals.iter().enumerate() {
+            signals[i] = s.0;
+        }
         Ok(KernelKind::SubmitZkPassportProof {
             proof,
-            nullifier: call.nullifier.0,
-            attribute_commitments,
-            csca_registry_root: call.cscaRegistryRoot.0,
+            signals,
             scheme_tag: call.schemeTag,
-            now_epoch: call.nowEpoch,
         })
     } else if selector == registerCscaCall::SELECTOR {
         let call = registerCscaCall::abi_decode(data, true)
@@ -399,6 +407,21 @@ fn parse_humanity(data: &[u8]) -> Result<KernelKind, DecodeError> {
         Ok(KernelKind::RevokeCsca {
             key_id: call.keyId.0,
         })
+    } else if selector == pinSelfIdentityRootCall::SELECTOR {
+        let call = pinSelfIdentityRootCall::abi_decode(data, true)
+            .map_err(|e| DecodeError::BadCalldata(format!("pinSelfIdentityRoot: {e}")))?;
+        Ok(KernelKind::PinSelfIdentityRoot { root: call.root.0 })
+    } else if selector == pinSelfOfacRootCall::SELECTOR {
+        let call = pinSelfOfacRootCall::abi_decode(data, true)
+            .map_err(|e| DecodeError::BadCalldata(format!("pinSelfOfacRoot: {e}")))?;
+        Ok(KernelKind::PinSelfOfacRoot {
+            kind: call.kind,
+            root: call.root.0,
+        })
+    } else if selector == retireSelfRootCall::SELECTOR {
+        let call = retireSelfRootCall::abi_decode(data, true)
+            .map_err(|e| DecodeError::BadCalldata(format!("retireSelfRoot: {e}")))?;
+        Ok(KernelKind::RetireSelfRoot { root: call.root.0 })
     } else {
         Err(DecodeError::BadCalldata(format!(
             "unknown HumanityHub selector 0x{}",

@@ -68,12 +68,14 @@ pub const DEVNET_JURORS: [AlloyAddr; 3] = [
     address!("90F79bf6EB2c4f870365E785982E1f101E93b906"),
 ];
 
-/// M6: a single curated devnet CSCA trust anchor `key_id` (spec §7.3 — a static genesis set). A fixed,
-/// documented, NON-SECRET devnet constant — NOT a real ICAO CSCA key. Stage-1 uses the deterministic
-/// `MockZkVerifier`, so the registry need only be non-empty for a proof to bind a valid `cscaRegistryRoot`.
-const DEVNET_CSCA_KEY_ID: [u8; 32] = [0xC5; 32];
-/// The raw `pubkey` bytes for the devnet CSCA (opaque to the runtime). Fixed devnet constant.
-const DEVNET_CSCA_PUBKEY: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBE];
+/// M6 Stage C: a curated devnet Self identity-commitment root (spec 06b §2.2 — a static genesis anchor).
+/// A fixed, documented, NON-SECRET devnet constant — NOT a real Self Lean-IMT root. The devnet ships the
+/// deterministic `MockZkVerifier` on the consensus path, so the registry need only be non-empty for a
+/// proof's `merkle_root` to bind an accepted, in-window root.
+const DEVNET_SELF_IDENTITY_ROOT: [u8; 32] = [0x5E; 32];
+/// M6 Stage C: the three curated devnet Self OFAC SMT roots (kinds 0/1/2 — passportno/namedob/nameyob),
+/// so a proof's OFAC slots (16/17/18) each bind an accepted root. Fixed NON-SECRET devnet constants.
+const DEVNET_OFAC_ROOTS: [[u8; 32]; 3] = [[0x0F; 32], [0x1F; 32], [0x2F; 32]];
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -91,8 +93,8 @@ fn now_secs() -> u64 {
 ///   1. the pre-verified dev account (streams 1 UBI/hour from genesis),
 ///   2. the dev account as a `Verified` human in the proof-of-humanity registry,
 ///   3. the 3 devnet jurors (the deterministic verifier/interpreter quorum),
-///   4. the CSCA governance authority (the dev account on devnet),
-///   5. a single curated devnet CSCA trust anchor (so a proof can bind a non-empty registry root).
+///   4. the governance authority (the dev account on devnet) — gates CSCA + the Self-root ops,
+///   5. a curated devnet Self identity root + the 3 OFAC roots (so a proof can bind accepted anchors).
 ///
 /// Does NOT seal the anchor — the caller seals (so a fresh boot and a FU-3 restore can seal from the
 /// appropriate state). `state_root` sorts, so the seed insertion order does not affect the root.
@@ -110,7 +112,12 @@ pub fn seed_canonical_devnet_genesis(chain: &Chain, genesis_time: u64) {
         chain.register_juror(&juror.into_array(), 0);
     }
     chain.set_csca_governance(&DEV_ADDR.into_array());
-    chain.seed_csca(*b"USA", DEVNET_CSCA_KEY_ID, DEVNET_CSCA_PUBKEY.to_vec());
+    // M6 Stage C: pin the devnet Self identity root + the 3 OFAC roots (spec 06b §2.2). The CSCA
+    // registry is retained in the codebase but no longer seeded (inactive on the Self verify path).
+    chain.seed_self_identity_root(DEVNET_SELF_IDENTITY_ROOT);
+    for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
+        chain.seed_self_ofac_root(kind as u8, *root);
+    }
 }
 
 /// M5 Stage B (spec 08 §13 setup): seed the multi-validator devnet's validator set into genesis. Each
@@ -221,12 +228,10 @@ fn build_genesis_state(dev_addr: &[u8; 20], genesis_time: u64) -> MemState {
         ubi2_runtime::register_juror(&mut s, &juror.into_array(), 0);
     }
     s.set_csca_governance(*dev_addr);
-    ubi2_runtime::seed_csca(
-        &mut s,
-        *b"USA",
-        DEVNET_CSCA_KEY_ID,
-        DEVNET_CSCA_PUBKEY.to_vec(),
-    );
+    ubi2_runtime::seed_self_identity_root(&mut s, DEVNET_SELF_IDENTITY_ROOT);
+    for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
+        ubi2_runtime::seed_self_ofac_root(&mut s, kind as u8, *root);
+    }
     s
 }
 
@@ -623,7 +628,7 @@ mod tests {
     #[test]
     fn canonical_anchor_matches_pinned_lightnode_constants() {
         let pinned_hash = "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
-        let pinned_root = "2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
+        let pinned_root = "fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
 
         let (hash_no_key, root_no_key) = canonical_devnet_genesis(1_700_000_000, None);
         assert_eq!(hash_no_key, pinned_hash);

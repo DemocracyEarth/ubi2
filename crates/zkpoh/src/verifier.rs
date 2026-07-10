@@ -18,21 +18,17 @@ use ark_groth16::Groth16;
 use ubi2_runtime::{ZkAttrType, ZkPassportVerifier, ZkPublicInputs};
 
 use crate::keys::{proof_from_canonical_bytes, PinnedVerifyingKey};
-use crate::public_inputs::{AttrType, PublicInputs, NUM_PUBLIC_INPUTS};
+use crate::public_inputs::{AttrType, PublicInputs};
 use crate::self_layout::SELF_NPUBLIC;
 
-/// Which public-input layout the pinned passport VK is sized for (chosen by its arity at load).
-///
-/// Stage 1 pinned the **domain** layout (`NUM_PUBLIC_INPUTS = 8`, spec §3.5). Stage 2 adds the **real**
-/// Self / OpenPassport `vc_and_disclose` layout (`SELF_NPUBLIC = 20`): a proof generated against the real
-/// circuit verifies with the runtime's domain inputs mapped onto the 20-signal vector by the documented
-/// adapter ([`PublicInputs::to_self_field_elements`]). The verifier selects the mapping from the VK's
-/// arity so the same code path serves both — fail-closed for any other arity.
+/// The public-input layout the passport VK is sized for. Stage C collapses this to the single
+/// **CONFIRMED** Self `vc_and_disclose` layout (`SELF_NPUBLIC = 21`, VK `IC.len() == 22`, spec 06b §4.1):
+/// a real proof's full 21-signal vector is carried on-chain and mapped 1:1 to `[Fr; 21]`. Any other arity
+/// is a foreign circuit and is rejected fail-closed at VK load (the stale Stage-A/B 20-signal VK no longer
+/// loads — the arity gate rejects it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassportLayout {
-    /// Our pinned 8-field domain vector (spec §3.5). [`PublicInputs::to_field_elements`].
-    Domain,
-    /// The real Self `vc_and_disclose` 20-signal layout. [`PublicInputs::to_self_field_elements`].
+    /// The confirmed Self `vc_and_disclose` 21-signal layout. [`PublicInputs::to_field_elements`].
     SelfDisclose,
 }
 
@@ -67,36 +63,28 @@ impl Groth16Verifier {
     /// (`over18`) VK is absent until wired via [`Groth16Verifier::with_over18_vk`] — until then
     /// `verify_attribute` fails closed.
     pub fn new(passport_vk: PinnedVerifyingKey) -> Self {
-        // Default-construct from a VK already known to be a supported arity (the `from_vk_bytes` path
-        // guards this). Choose the layout from the arity; default to Domain for the 8-field case.
-        let layout = if passport_vk.num_public_inputs() == SELF_NPUBLIC {
-            PassportLayout::SelfDisclose
-        } else {
-            PassportLayout::Domain
-        };
+        // The confirmed layout is the only supported one; `from_vk_bytes`/`from_pinned` guard the arity.
         Self {
             passport_vk,
-            layout,
+            layout: PassportLayout::SelfDisclose,
             over18_vk: None,
         }
     }
 
-    /// Build directly from the canonical compressed VK bytes (the genesis-pinned form, §5.3), selecting
-    /// the public-input layout from the VK's arity. Returns `None` if the bytes are not a canonical VK or
-    /// the arity is neither the **domain** (`NUM_PUBLIC_INPUTS = 8`, spec §3.5) nor the **real Self**
-    /// (`SELF_NPUBLIC = 20`) layout — the node fails closed at startup rather than running with a VK from
-    /// an unrecognized circuit (spec §3.5 / §6.2).
+    /// Build directly from the canonical compressed VK bytes (the genesis-pinned form, §5.3). Returns
+    /// `None` if the bytes are not a canonical VK or the arity is not the **confirmed Self**
+    /// (`SELF_NPUBLIC = 21`, VK `IC.len() == 22`) layout — the node fails closed at startup rather than
+    /// running with a VK from an unrecognized circuit. In particular the stale Stage-A/B **20-signal** VK
+    /// is rejected here (spec 06b §4.1 VK-status).
     pub fn from_vk_bytes(vk_bytes: &[u8]) -> Option<Self> {
         let vk = PinnedVerifyingKey::from_canonical_bytes(vk_bytes).ok()?;
-        let layout = match vk.num_public_inputs() {
-            NUM_PUBLIC_INPUTS => PassportLayout::Domain,
-            SELF_NPUBLIC => PassportLayout::SelfDisclose,
-            // Any other arity is a foreign circuit — rejected, not silently mis-applied.
-            _ => return None,
-        };
+        if vk.num_public_inputs() != SELF_NPUBLIC {
+            // Any other arity (including the stale 20-signal VK) is a foreign circuit — rejected.
+            return None;
+        }
         Some(Self {
             passport_vk: vk,
-            layout,
+            layout: PassportLayout::SelfDisclose,
             over18_vk: None,
         })
     }
@@ -106,21 +94,19 @@ impl Groth16Verifier {
         self.layout
     }
 
-    /// Construct the verifier from the **genesis-pinned** passport VK (the real Self `vc_and_disclose`
-    /// VK, [`crate::pinned_passport_vk`]). Returns `None` if no VK is pinned in this build
-    /// ([`crate::HAS_PINNED_PASSPORT_VK`] is `false`) — fail-closed. This is the constructor `crates/node`
-    /// uses to wire the real verifier at genesis.
+    /// Construct the verifier from the **genesis-pinned** passport VK ([`crate::pinned_passport_vk`]).
+    /// Returns `None` if no VK is pinned ([`crate::HAS_PINNED_PASSPORT_VK`] is `false`) or its arity is
+    /// not the confirmed 21-signal layout — fail-closed. This is the constructor `crates/node` uses to
+    /// wire the real verifier as a **staging/opt-in** option (via `Chain::with_verifier`); the
+    /// `MockZkVerifier` stays the shipped consensus default until EC-C7 flips it (spec 06b §4.5 O-C6).
     pub fn from_pinned() -> Option<Self> {
         let vk = crate::pinned_passport_vk()?;
-        // The pinned VK's arity must be a recognized layout (it is the real Self 20-signal layout).
-        let layout = match vk.num_public_inputs() {
-            NUM_PUBLIC_INPUTS => PassportLayout::Domain,
-            SELF_NPUBLIC => PassportLayout::SelfDisclose,
-            _ => return None,
-        };
+        if vk.num_public_inputs() != SELF_NPUBLIC {
+            return None;
+        }
         Some(Self {
             passport_vk: vk,
-            layout,
+            layout: PassportLayout::SelfDisclose,
             over18_vk: None,
         })
     }
@@ -149,28 +135,12 @@ impl ZkPassportVerifier for Groth16Verifier {
         //    the pinned **domain** vector (§3.5, 8 fields) or the **real Self** 20-signal vector via the
         //    documented adapter. The verify equation is otherwise identical.
         let pi = PublicInputs::from_runtime(public_inputs);
-        // 3. The Groth16 verify equation against the prepared, genesis-pinned VK. Deterministic; any
-        //    internal error (e.g. a pairing failure) maps to false — fail closed.
-        match self.layout {
-            PassportLayout::Domain => {
-                let inputs = pi.to_field_elements();
-                Groth16::<ark_bn254::Bn254>::verify_proof(
-                    self.passport_vk.prepared(),
-                    &proof,
-                    &inputs,
-                )
-                .unwrap_or(false)
-            }
-            PassportLayout::SelfDisclose => {
-                let inputs = pi.to_self_field_elements();
-                Groth16::<ark_bn254::Bn254>::verify_proof(
-                    self.passport_vk.prepared(),
-                    &proof,
-                    &inputs,
-                )
-                .unwrap_or(false)
-            }
-        }
+        // 3. Map the raw 21-signal vector to `[Fr; 21]` (the single canonical mapping — no adapter, no
+        //    zeroing) and run the Groth16 verify equation against the prepared, genesis-pinned VK.
+        //    Deterministic; any internal error (e.g. a pairing failure / arity mismatch) maps to false.
+        let inputs = pi.to_field_elements();
+        Groth16::<ark_bn254::Bn254>::verify_proof(self.passport_vk.prepared(), &proof, &inputs)
+            .unwrap_or(false)
     }
 
     fn verify_attribute(
@@ -204,14 +174,10 @@ mod tests {
     use ubi2_runtime::MockZkVerifier;
 
     fn pi(nullifier: u8, submitter: u8) -> ZkPublicInputs {
-        ZkPublicInputs::new(
-            [nullifier; 32],
-            [[0u8; 32]; 3],
-            [9u8; 32],
-            [submitter; 20],
-            1_700_000_000,
-            0,
-        )
+        let mut s = [[0u8; 32]; ubi2_runtime::SELF_NPUBLIC];
+        s[ubi2_runtime::SELF_IDX_NULLIFIER] = [nullifier; 32];
+        s[ubi2_runtime::SELF_IDX_USER_IDENTIFIER] = ubi2_runtime::address_to_hash(&[submitter; 20]);
+        ZkPublicInputs::new(s)
     }
 
     #[test]

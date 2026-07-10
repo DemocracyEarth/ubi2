@@ -138,6 +138,22 @@ struct CscaDto {
     status: u8,
 }
 
+/// M6 Stage C: an accepted Self identity root (spec 06b §2.2) — mirrors `rpc::persist::SelfIdentityRootDto`
+/// so a server-served snapshot re-derives to the SAME `state_root` (which folds the Self-root registry).
+#[derive(Serialize, Deserialize)]
+struct SelfIdentityRootDto {
+    root: String,
+    pinned_at_block: u64,
+}
+
+/// M6 Stage C: an accepted Self OFAC SMT root (spec 06b §2.2) — mirrors `rpc::persist::SelfOfacRootDto`.
+#[derive(Serialize, Deserialize)]
+struct SelfOfacRootDto {
+    kind: u8,
+    root: String,
+    pinned_at_block: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct CaseDto {
     id: u64,
@@ -231,6 +247,11 @@ struct StateDto {
     csca: Vec<CscaDto>,
     #[serde(default)]
     csca_governance: Option<String>,
+    // ---- M6 Stage C: the Self-root anchor registry (spec 06b §2.2), folded into `state_root`. ----
+    #[serde(default)]
+    self_identity_roots: Vec<SelfIdentityRootDto>,
+    #[serde(default)]
+    self_ofac_roots: Vec<SelfOfacRootDto>,
     // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1), folded into `state_root`
     //      (§8). Mirrors `rpc::persist::StateDto` so a server-served snapshot re-derives to the SAME
     //      root the light client verifies. `#[serde(default)]` keeps a pre-Stage-B snapshot loadable. ----
@@ -565,6 +586,24 @@ fn export_state(state: &MemState) -> StateDto {
             })
             .collect(),
         csca_governance: state.csca_governance().map(|a| hex20(&a)),
+        // M6 Stage C: the Self-root anchor registry (sorted by the runtime accessors).
+        self_identity_roots: state
+            .self_identity_roots()
+            .iter()
+            .map(|e| SelfIdentityRootDto {
+                root: hex32(&e.root),
+                pinned_at_block: e.pinned_at_block,
+            })
+            .collect(),
+        self_ofac_roots: state
+            .self_ofac_roots()
+            .iter()
+            .map(|e| SelfOfacRootDto {
+                kind: e.kind,
+                root: hex32(&e.root),
+                pinned_at_block: e.pinned_at_block,
+            })
+            .collect(),
         // Stage B: the epoch validator snapshot (sorted by the runtime accessor).
         epoch_validators: state.epoch_validators().iter().map(hex20).collect(),
     }
@@ -744,6 +783,20 @@ fn import_state(dto: &StateDto) -> MemState {
     }
     if let Some(gov) = &dto.csca_governance {
         s.set_csca_governance(unhex20(gov));
+    }
+    // M6 Stage C: restore the Self-root anchor registry (spec 06b §2.2).
+    for e in &dto.self_identity_roots {
+        s.put_self_identity_root(ubi2_runtime::SelfIdentityRoot {
+            root: unhex32(&e.root),
+            pinned_at_block: e.pinned_at_block,
+        });
+    }
+    for e in &dto.self_ofac_roots {
+        s.put_self_ofac_root(ubi2_runtime::SelfOfacRoot {
+            kind: e.kind,
+            root: unhex32(&e.root),
+            pinned_at_block: e.pinned_at_block,
+        });
     }
     // Stage B: restore the epoch validator snapshot (the setter re-sorts + dedups).
     s.set_epoch_validators(dto.epoch_validators.iter().map(|a| unhex20(a)).collect());

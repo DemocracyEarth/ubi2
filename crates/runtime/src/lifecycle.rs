@@ -668,22 +668,31 @@ pub fn seed_verified_human(state: &mut dyn State, addr: &Address, verified_at: u
 // =============================================================================================
 
 use crate::zkpoh::{
-    csca_registry_root, Assurance, CscaEntry, CscaStatus, ZkPassportVerifier, ZkPublicInputs,
-    NUM_ATTRIBUTE_COMMITMENTS, SCHEME_TAG_PASSPORT,
+    address_to_hash, current_date_to_epoch, self_identity_root_accepted, self_ofac_root_accepted,
+    u64_to_hash, Assurance, CscaEntry, CscaStatus, SelfIdentityRoot, SelfOfacRoot,
+    ZkPassportVerifier, ZkPublicInputs, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO,
+    SCHEME_TAG_PASSPORT, SELF_ATTESTATION_ID_EPASSPORT, SELF_DATE_WINDOW_SECS, SELF_NPUBLIC,
+    UBI2_SELF_SCOPE,
 };
 
 /// Why a `submitZkPassportProof` op was rejected (spec §4.2; AC-2/3, AC-F1…F6/F9). Deterministic so two
 /// nodes reject identically (I1/I4). Every variant is a clean fail-closed abort — **no partial state**.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkPohError {
-    /// The `scheme_tag` is not a known document scheme (spec §4.2 step 1 bound-check).
+    /// The `scheme_tag` is not a known document scheme (spec 06b §4.4 step 1 bound-check).
     UnknownScheme(u8),
-    /// `submitter_address` in the public inputs ≠ the tx sender (`ecrecover`) — anti-replay (F-4).
+    /// `attestation_id` (slot 8) ≠ 1 (E-Passport) — the proof is not for the expected document (§4.4).
+    UnexpectedAttestation,
+    /// `scope` (slot 19) ≠ `UBI2_SELF_SCOPE` — a different-app nullifier, would break Sybil-uniqueness.
+    WrongScope,
+    /// `user_identifier` (slot 20) ≠ the tx sender — a copied/relayed proof (anti-replay / front-run, F-4).
     SubmitterMismatch,
-    /// `now_epoch` in the public inputs ≠ the block timestamp (I2 — the only clock execution sees).
-    StaleNowEpoch { got: u64, expected: u64 },
-    /// `cscaRegistryRoot` ∉ the live CSCA registry (untrusted/stale trust anchor — EC-3, F-2).
-    UntrustedCscaRoot,
+    /// `current_date` (slots 10..16) is outside the freshness window around `block.timestamp` (§4.4 step 5).
+    StaleProofDate,
+    /// `merkle_root` (slot 9) ∉ the accepted Self identity-root set / outside its window (EC-C2, F-2).
+    UntrustedSelfRoot,
+    /// One of the OFAC roots (slots 16..19) ∉ the accepted OFAC set for its kind / outside window (F-2).
+    UntrustedOfacRoot,
     /// The `nullifier` is already spent (one-passport-one-human; cheap pre-check before pairing — F-5).
     NullifierAlreadyUsed,
     /// The SNARK verifier returned `false` (tampered/forged/expired proof — F-1/F-3).
@@ -703,11 +712,12 @@ impl std::fmt::Display for ZkPohError {
         use ZkPohError::*;
         match self {
             UnknownScheme(t) => write!(f, "unknown passport scheme tag {t}"),
-            SubmitterMismatch => write!(f, "submitter address does not match the tx sender"),
-            StaleNowEpoch { got, expected } => {
-                write!(f, "nowEpoch {got} != block timestamp {expected}")
-            }
-            UntrustedCscaRoot => write!(f, "cscaRegistryRoot is not the live registry root"),
+            UnexpectedAttestation => write!(f, "attestation_id is not 1 (E-Passport)"),
+            WrongScope => write!(f, "scope is not the canonical UBI2_SELF_SCOPE"),
+            SubmitterMismatch => write!(f, "user_identifier does not match the tx sender"),
+            StaleProofDate => write!(f, "current_date is outside the freshness window"),
+            UntrustedSelfRoot => write!(f, "merkle_root is not an accepted Self identity root"),
+            UntrustedOfacRoot => write!(f, "an OFAC root is not in the accepted OFAC set"),
             NullifierAlreadyUsed => write!(f, "nullifier already used (one passport, one human)"),
             InvalidProof => write!(f, "ZK proof verification failed"),
             AlreadyEnhanced(a) => write!(f, "human already ZK-enhanced ({})", a.as_str()),
@@ -721,23 +731,19 @@ impl std::fmt::Display for ZkPohError {
 
 impl std::error::Error for ZkPohError {}
 
-/// The decoded `submitZkPassportProof` calldata the runtime hands the lifecycle (spec §4.1). The
-/// `submitter_address` is NOT carried here — it is the tx sender, supplied separately (`subject`) so it
-/// cannot be forged (§4.3). `now_epoch` is the block timestamp the dispatcher passes as `now`.
+/// The decoded `submitZkPassportProof` calldata the runtime hands the lifecycle (spec 06b §4.3). Carries
+/// the Groth16 `proof` + the **full** 21-element public vector + the `scheme_tag`. The submitter address
+/// is NOT carried here — it is the tx sender, supplied separately (`subject`) and bound against
+/// `signals[user_identifier]` so it cannot be forged (§4.4). The runtime derives every policy field by
+/// index; nothing is passed separately (removing the cross-check surface).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZkProofSubmission {
     /// The ~200-byte Groth16 proof (canonical-decoded by the verifier; opaque here).
     pub proof: Vec<u8>,
-    /// The one-passport-one-human nullifier (§3.3).
-    pub nullifier: Hash,
-    /// The three Pedersen attribute commitments `[age, nationality, expiry]` (§3.4) — stored opaque (I6).
-    pub attribute_commitments: [Hash; NUM_ATTRIBUTE_COMMITMENTS],
-    /// The CSCA-registry root the proof was built against (§7.2) — re-derived + bound (§4.2 step 2).
-    pub csca_registry_root: Hash,
-    /// The 1-byte document/scheme discriminant (§2.4).
+    /// The raw `vc_and_disclose` 21-signal public vector (snarkjs order, §4.1).
+    pub signals: [Hash; SELF_NPUBLIC],
+    /// The 1-byte document/scheme discriminant (§2.4); `0` = Self e-passport (attestation_id must be 1).
     pub scheme_tag: u8,
-    /// The not-expired reference epoch the proof used — must equal `block.timestamp` (§4.2 step 2).
-    pub now_epoch: u64,
 }
 
 /// Verify + commit a ZK-passport proof for `subject` (the tx sender) at block timestamp `now`
@@ -763,31 +769,60 @@ pub fn submit_zk_passport_proof(
     subject: &Address,
     submission: &ZkProofSubmission,
     now: u64,
+    now_block: u64,
 ) -> Result<Assurance, ZkPohError> {
-    // --- (1) bound-check the scheme tag. ---
+    let pi = ZkPublicInputs::new(submission.signals);
+
+    // --- (1) bound-check the scheme tag (the vector length is enforced by the typed array). ---
     if submission.scheme_tag != SCHEME_TAG_PASSPORT {
         return Err(ZkPohError::UnknownScheme(submission.scheme_tag));
     }
 
-    // --- (2) bind the chain-supplied public inputs (anti-replay + trust-anchor, §4.2 step 2). ---
-    // `now_epoch` must equal the block timestamp — the only clock execution sees (I2). This also ties
-    // the in-circuit not-expired check (which used `now_epoch`) to block time deterministically (F-1).
-    if submission.now_epoch != now {
-        return Err(ZkPohError::StaleNowEpoch {
-            got: submission.now_epoch,
-            expected: now,
-        });
+    // --- (2) attestation_id (slot 8) == 1 (E-Passport) for schemeTag 0 (§4.4 step: attestation). ---
+    if pi.attestation_id() != u64_to_hash(SELF_ATTESTATION_ID_EPASSPORT) {
+        return Err(ZkPohError::UnexpectedAttestation);
     }
-    // `cscaRegistryRoot` must equal the current live root (§7.2). A proof against an untrusted/stale
-    // CSCA set is rejected (EC-3 / F-2). Recomputed deterministically from the sorted Active set.
-    let live_root = csca_registry_root(&state.csca_entries());
-    if submission.csca_registry_root != live_root {
-        return Err(ZkPohError::UntrustedCscaRoot);
+
+    // --- (3) scope (slot 19) == UBI2_SELF_SCOPE — one scope network-wide ⇒ one-passport-one-human. ---
+    if pi.scope() != UBI2_SELF_SCOPE {
+        return Err(ZkPohError::WrongScope);
+    }
+
+    // --- (4) submitter binding: user_identifier (slot 20) == the tx sender (anti-replay, F-4). The
+    //     Self proof was requested with `userId = the ubi2 address`, so a copied/relayed proof from any
+    //     other account is rejected here (§4.4 step: submitter). ---
+    if pi.user_identifier() != address_to_hash(subject) {
+        return Err(ZkPohError::SubmitterMismatch);
+    }
+
+    // --- (5) freshness: decode current_date (slots 10..16, YYMMDD) and require it within
+    //     ±SELF_DATE_WINDOW_SECS of `block.timestamp` — a deterministic block-time window (§4.4 step 5).
+    //     Ties the in-circuit not-expired check to chain time; no wall-clock. ---
+    let date = pi.current_date();
+    let date_epoch = current_date_to_epoch(&date).ok_or(ZkPohError::StaleProofDate)?;
+    let lo = now.saturating_sub(SELF_DATE_WINDOW_SECS);
+    let hi = now.saturating_add(SELF_DATE_WINDOW_SECS);
+    if date_epoch < lo || date_epoch > hi {
+        return Err(ZkPohError::StaleProofDate);
+    }
+
+    // --- (6) trust anchors: merkle_root (slot 9) ∈ accepted Self identity roots, AND each OFAC root
+    //     (slots 16,17,18) ∈ its accepted set — each within the freshness window (§2.2, §4.4 step 6). ---
+    let identity_roots = state.self_identity_roots();
+    if !self_identity_root_accepted(&identity_roots, &pi.merkle_root(), now_block) {
+        return Err(ZkPohError::UntrustedSelfRoot);
+    }
+    let ofac_roots = state.self_ofac_roots();
+    for kind in [OFAC_KIND_PASSPORTNO, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB] {
+        if !self_ofac_root_accepted(&ofac_roots, kind, &pi.ofac_root(kind), now_block) {
+            return Err(ZkPohError::UntrustedOfacRoot);
+        }
     }
 
     // --- pre-state idempotency / status guard (before any mutation). ---
     // An existing record's assurance gates a re-submit: `Enh`/`Dual` ⇒ already enhanced (F-9); `Revoked`
     // ⇒ rejected (a revoked human does not re-bootstrap via ZK in M6 — §5.2 revocation interaction).
+    let nullifier = pi.nullifier();
     if let Some(h) = state.get_human(subject) {
         if h.status == HumanStatus::Revoked {
             return Err(ZkPohError::SubjectRevoked);
@@ -797,42 +832,32 @@ pub fn submit_zk_passport_proof(
         }
     }
 
-    // --- (2b) nullifier canonicality guard (§3.5 round-trip obligation) — BEFORE the registry key. ---
+    // --- (7) nullifier canonicality guard (§3.5 round-trip obligation) — BEFORE the registry key. ---
     // The nullifier is the one-passport-one-human registry key, stored + compared as RAW bytes, while the
     // verifier reduces it mod the BN254 order `r`. A non-canonical value (≥ r) reduces to a DIFFERENT
     // element, so `N`, `N+r`, `N+2r`… are distinct registry keys that all satisfy the SAME proof — minting
-    // unlimited humans (and UBI) from ONE passport. Require the nullifier to be canonical (< r) so the raw
-    // registry key == the element the proof commits to. A genuine proof's nullifier is always canonical.
-    // (Attribute commitments are intentionally NOT constrained — they are opaque, never a uniqueness key;
-    // `csca_registry_root` is pinned to the live root above, not attacker-free.)
-    if !crate::zkpoh::is_canonical_scalar(&submission.nullifier) {
+    // unlimited humans (and UBI) from ONE passport. A genuine proof's nullifier is always canonical.
+    if !crate::zkpoh::is_canonical_scalar(&nullifier) {
         return Err(ZkPohError::NonCanonicalNullifier);
     }
 
-    // --- (3) nullifier-uniqueness pre-check (cheap fail-closed BEFORE the pairing — F-5). ---
-    if state.nullifier_used(&submission.nullifier) {
+    // --- (8) nullifier-uniqueness pre-check (cheap fail-closed BEFORE the pairing — F-5). ---
+    if state.nullifier_used(&nullifier) {
         return Err(ZkPohError::NullifierAlreadyUsed);
     }
 
-    // --- (4) the SNARK verify (the pure crypto). `false` ⇒ reject; NO partial state (F-1/F-3). ---
-    // The submitter address is bound into the public-input vector the proof commits to (§4.3): a copied
-    // proof verifies `false` for any other sender. We assemble the canonical vector (§3.5) and verify.
-    let public_inputs = ZkPublicInputs::new(
-        submission.nullifier,
-        submission.attribute_commitments,
-        submission.csca_registry_root,
-        *subject,
-        submission.now_epoch,
-        submission.scheme_tag,
-    );
-    if !verifier.verify_passport(&submission.proof, &public_inputs) {
+    // --- (10) the SNARK verify (the pure crypto). `false` ⇒ reject; NO partial state (F-1/F-3). ---
+    // The full 21-signal vector the proof commits to is verified verbatim (no adapter, no zeroing): a
+    // copied proof or a tampered slot verifies `false`.
+    if !verifier.verify_passport(&submission.proof, &pi) {
         return Err(ZkPohError::InvalidProof);
     }
 
-    // --- (5) commit atomically (success only). ---
+    // --- (11) commit atomically (success only). ---
     // Insert the now-permanently-spent nullifier and the opaque attribute commitments (I6).
-    state.put_nullifier(submission.nullifier);
-    state.put_attribute_commitments(subject, submission.attribute_commitments);
+    let attribute_commitments = pi.attribute_commitments();
+    state.put_nullifier(nullifier);
+    state.put_attribute_commitments(subject, attribute_commitments);
 
     // Set the assurance level + status. Two routes (spec §5.2):
     //   * existing `Std`-Verified human  → `Dual` (balance + verified_at UNTOUCHED — the hard rule);
@@ -923,7 +948,83 @@ pub fn revoke_csca(
 }
 
 /// Seed a genesis CSCA trust anchor directly (the curated static genesis set, spec §7.3). Governance
-/// bypass for genesis wiring only — like `seed_verified_human`. `Active` from genesis.
+/// bypass for genesis wiring only — like `seed_verified_human`. `Active` from genesis. RETAINED but
+/// inactive on the Self verify path (reserved for the own-stack milestone, O-C1).
 pub fn seed_csca(state: &mut dyn State, country_code: [u8; 3], key_id: Hash, pubkey: Vec<u8>) {
     state.put_csca(CscaEntry::active(country_code, key_id, pubkey, 0));
+}
+
+// ---------------------------------------------------------------------------------------------
+// M6 Stage C — Self-root anchor registry governance (spec 06b §2.2). Gated by the SAME authority M6
+// uses for `registerCsca` (mirrors M5's validator-set authority; re-pointed at the DAO in M7). A newly
+// pinned root is IMMEDIATELY usable by the next proof (EC-C13). Fail-closed.
+// ---------------------------------------------------------------------------------------------
+
+/// Pin an accepted Self identity-commitment root (`pinSelfIdentityRoot`), gated by governance (§2.2).
+/// Active from `now_block`; a proof carrying it is accepted while within `SELF_ROOT_WINDOW_BLOCKS`.
+pub fn pin_self_identity_root(
+    state: &mut dyn State,
+    caller: &Address,
+    root: Hash,
+    now_block: u64,
+) -> Result<(), CscaGovError> {
+    if !state.is_csca_governance(caller) {
+        return Err(CscaGovError::NotGovernance);
+    }
+    state.put_self_identity_root(SelfIdentityRoot {
+        root,
+        pinned_at_block: now_block,
+    });
+    Ok(())
+}
+
+/// Pin an accepted Self OFAC SMT root of `kind` (`pinSelfOfacRoot`), gated by governance (§2.2).
+pub fn pin_self_ofac_root(
+    state: &mut dyn State,
+    caller: &Address,
+    kind: u8,
+    root: Hash,
+    now_block: u64,
+) -> Result<(), CscaGovError> {
+    if !state.is_csca_governance(caller) {
+        return Err(CscaGovError::NotGovernance);
+    }
+    state.put_self_ofac_root(SelfOfacRoot {
+        kind,
+        root,
+        pinned_at_block: now_block,
+    });
+    Ok(())
+}
+
+/// Retire a Self root (`retireSelfRoot`) from BOTH the identity + OFAC accepted sets, gated by
+/// governance (§2.2). Forward-invalidation only — already-spent nullifiers are NOT purged (O-C2).
+pub fn retire_self_root(
+    state: &mut dyn State,
+    caller: &Address,
+    root: &Hash,
+) -> Result<(), CscaGovError> {
+    if !state.is_csca_governance(caller) {
+        return Err(CscaGovError::NotGovernance);
+    }
+    state.retire_self_root(root);
+    Ok(())
+}
+
+/// Seed a genesis Self identity root directly (governance bypass for genesis wiring only). Pinned at
+/// block 0 — usable from the first proof.
+pub fn seed_self_identity_root(state: &mut dyn State, root: Hash) {
+    state.put_self_identity_root(SelfIdentityRoot {
+        root,
+        pinned_at_block: 0,
+    });
+}
+
+/// Seed a genesis Self OFAC root of `kind` directly (genesis wiring only). Pinned at block 0.
+pub fn seed_self_ofac_root(state: &mut dyn State, kind: u8, root: Hash) {
+    state.put_self_ofac_root(SelfOfacRoot {
+        kind,
+        root,
+        pinned_at_block: 0,
+    });
 }
