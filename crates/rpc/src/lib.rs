@@ -49,13 +49,14 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use ubi2_runtime::{
-    csca_registry_root, fee_for_gas, finalize_registration, gas_for_deploy,
-    system_challenge as lc_system_challenge, Account, Address, Assurance, CanonicalEffect, Case,
-    CaseKind, CaseStatus, Confidence, ContractInterpreter, ContractStatus, CscaEntry, CscaStatus,
-    ExecCase, ExecStatus, Human, HumanStatus, HumanityOracle, Juror, MemState, MockZkVerifier, Op,
-    PromptContract, State, Stream, StreamStatus, Verdict, ZkAttrType, ZkPassportVerifier,
-    GAS_CONTRACT, GAS_CSCA_GOV, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI,
-    GAS_STREAM, GAS_TRANSFER, GAS_ZKPOH,
+    csca_registry_root, fee_for_gas, finalize_registration, gas_for_deploy, proposer_index,
+    refresh_epoch_validators, system_challenge as lc_system_challenge, validator_set, Account,
+    Address, Assurance, CanonicalEffect, Case, CaseKind, CaseStatus, Confidence,
+    ContractInterpreter, ContractStatus, CscaEntry, CscaStatus, ExecCase, ExecStatus, Human,
+    HumanStatus, HumanityOracle, Juror, MemState, MockZkVerifier, Op, PromptContract, State,
+    Stream, StreamStatus, Verdict, ZkAttrType, ZkPassportVerifier, EPOCH_BLOCKS, GAS_CONTRACT,
+    GAS_CSCA_GOV, GAS_HUMANITY, GAS_ONBOARD, GAS_PRICE_WEI as RT_GAS_PRICE_WEI, GAS_STREAM,
+    GAS_TRANSFER, GAS_ZKPOH, VIEW_MAX,
 };
 
 pub mod persist;
@@ -94,6 +95,36 @@ pub use oracle_admin::{
 
 /// Default devnet chain id (0x5542 / 21826). Spec §M1-T1.3.
 pub const DEVNET_CHAIN_ID: u64 = 0x5542;
+
+/// M5 Stage B (spec 08 §6.3/§12): k-deep finality depth. A block is final once the head is
+/// `FINALITY_DEPTH` beyond it; no reorg may cross a finalized block, and the reorg bound is
+/// `< FINALITY_DEPTH`. Devnet default `k = 6` (matches `NetStatus::finality_depth`).
+pub const FINALITY_DEPTH: u64 = 6;
+
+/// M5 Stage B (spec 08 §5.4/§6.1): cap on the bounded SIDE STORE of valid non-canonical fork blocks
+/// ([`Chain::consider_competing_block`]). Generous versus the handful of concurrent forks a CFT
+/// round-robin ever produces (an original-vs-successor tip race is at most a couple of blocks wide),
+/// but a hard bound so a hostile flood of authenticated-but-off-chain blocks cannot grow it unbounded.
+const MAX_FORK_STORE: usize = 256;
+
+/// Fork-choice tip comparison (spec 08 §6.1): is tip `a` canonical-preferred over tip `b`? The total
+/// order on `(height, view, hash)` is: (1) greater height, ties → (2) lower view, ties → (3) lower hash.
+/// Two distinct equal-height valid chains have distinct tip hashes, so rule 3 always terminates — the
+/// order is total, and every honest node selects the same head (I1). Pure; reads no clock, no arrival
+/// order. This refines the Stage-A "longest, then lowest hash" by inserting the `view` tiebreak.
+pub fn fork_choice_prefers(a: (u64, u32, B256), b: (u64, u32, B256)) -> bool {
+    let (ah, av, ahash) = a;
+    let (bh, bv, bhash) = b;
+    match ah.cmp(&bh) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match av.cmp(&bv) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => ahash < bhash,
+        },
+    }
+}
 
 /// Flat devnet gas price (1 gwei), as a `u64` for the JSON quantity helpers. Sourced from the runtime
 /// constant ([`RT_GAS_PRICE_WEI`]) so the price the RPC advertises (`eth_gasPrice`) is exactly the
@@ -322,6 +353,10 @@ pub struct Block {
     pub hash: B256,
     pub parent_hash: B256,
     pub timestamp: u64,
+    /// M5 Stage B (spec 08 §2.2): the view (rotation offset) at which this block was produced. `0` for
+    /// the height's first-scheduled proposer; `k > 0` for the `k`-th view-change successor (§5). Committed
+    /// in the header pre-image (after `timestamp`, before `txs_root`), so the hash + signature cover it.
+    pub view: u32,
     /// M5: commitment over the canonical, ordered tx list (the included tx hashes). Pure function of
     /// the block's txs (EC-4/EC-10).
     pub txs_root: B256,
@@ -345,14 +380,17 @@ impl Block {
         number: u64,
         parent_hash: B256,
         timestamp: u64,
+        view: u32,
         txs_root: B256,
         state_root: B256,
         proposer: &AlloyAddr,
     ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(8 + 32 + 8 + 32 + 32 + 20);
+        let mut buf = Vec::with_capacity(8 + 32 + 8 + 4 + 32 + 32 + 20);
         buf.extend_from_slice(&number.to_be_bytes());
         buf.extend_from_slice(parent_hash.as_slice());
         buf.extend_from_slice(&timestamp.to_be_bytes());
+        // Stage B (§2.2): `view` is inserted after `timestamp`, before `txs_root`, as a 4-byte BE int.
+        buf.extend_from_slice(&view.to_be_bytes());
         buf.extend_from_slice(txs_root.as_slice());
         buf.extend_from_slice(state_root.as_slice());
         buf.extend_from_slice(proposer.as_slice());
@@ -360,12 +398,13 @@ impl Block {
     }
 
     /// The M5 block hash: `keccak256(header_preimage)` (spec §2.2). For the genesis block (and any
-    /// pre-M5 caller) the extra fields are zero, so this reduces to a stable commitment over the
-    /// original `(number, parent_hash, timestamp)` plus three zero roots/address.
+    /// pre-M5 caller) the extra fields are zero (`view = 0`), so this reduces to a stable commitment over
+    /// the original `(number, parent_hash, timestamp)` plus `view` and three zero roots/address.
     fn compute_hash(
         number: u64,
         parent_hash: B256,
         timestamp: u64,
+        view: u32,
         txs_root: B256,
         state_root: B256,
         proposer: &AlloyAddr,
@@ -374,6 +413,7 @@ impl Block {
             number,
             parent_hash,
             timestamp,
+            view,
             txs_root,
             state_root,
             proposer,
@@ -407,10 +447,15 @@ pub enum BlockError {
     WrongParent,
     /// `timestamp` is not strictly greater than the parent's (§5.1(4)).
     BadTimestamp,
-    /// The block's `proposer` is not the Stage-A designated proposer (AC-F3).
+    /// The block's `proposer` is not the scheduled proposer `V[(h+view) mod N]` (AC-F3 / §4 check 3).
     WrongProposer,
     /// `ecrecover(proposer_sig)` does not equal `proposer` (forged/unsigned authorship).
     BadSignature,
+    /// Stage B (§4 check 3): the effective validator set `V` is empty (`N == 0`) — no one is scheduled,
+    /// so no block can be authorized. Fail-closed.
+    NoValidatorSet,
+    /// Stage B (§4 check 2): the block's `view` is `>= VIEW_MAX` — an absurd/garbage view is rejected.
+    ViewOutOfRange { view: u32 },
     /// A raw tx in the block did not decode (malformed/forged block).
     UndecodableTx,
     /// Re-execution produced a different `state_root`/`txs_root`/`hash` than the header claims — the
@@ -426,9 +471,15 @@ impl std::fmt::Display for BlockError {
             }
             BlockError::WrongParent => write!(f, "wrong parent hash"),
             BlockError::BadTimestamp => write!(f, "timestamp not greater than parent"),
-            BlockError::WrongProposer => write!(f, "block proposer is not the designated proposer"),
+            BlockError::WrongProposer => write!(f, "block proposer is not the scheduled proposer"),
             BlockError::BadSignature => {
                 write!(f, "proposer signature does not recover to proposer")
+            }
+            BlockError::NoValidatorSet => {
+                write!(f, "no validator set (N == 0): no proposer is scheduled")
+            }
+            BlockError::ViewOutOfRange { view } => {
+                write!(f, "view {view} out of range (>= VIEW_MAX)")
             }
             BlockError::UndecodableTx => write!(f, "block contains an undecodable tx"),
             BlockError::StateRootMismatch { expected, got } => {
@@ -446,6 +497,97 @@ impl std::error::Error for BlockError {}
 // ---------------------------------------------------------------------------------------------
 // Chain state
 // ---------------------------------------------------------------------------------------------
+
+/// M5 Stage B (spec 08 §5.4/§6.1/§6.3): a VALID-but-non-canonical fork block retained in the bounded
+/// side store ([`Chain`]`.fork_store`). It carries exactly the header fields + the ordered raw user-tx
+/// bytes needed to (a) walk a fork branch's ancestry by `parent_hash` and (b) deterministically
+/// re-execute the branch on a reorg (`< FINALITY_DEPTH` deep). The `hash` is the committed block hash
+/// (the store key), so a later-arriving child that names this block as its parent completes the branch
+/// and can trigger a bounded general reorg (the h1@view1→h2@view1 race in §5.4). Authenticated on
+/// entry (signature recovers to `proposer`) but its schedule/state-root is only fully re-checked when
+/// it is actually re-executed during a reorg — a forged branch fails there and is rolled back.
+#[derive(Clone)]
+struct ForkBlockEntry {
+    number: u64,
+    parent_hash: B256,
+    timestamp: u64,
+    view: u32,
+    txs_root: B256,
+    state_root: B256,
+    proposer: AlloyAddr,
+    proposer_sig: Vec<u8>,
+    raw_txs: Vec<Vec<u8>>,
+    hash: B256,
+}
+
+/// M5 Stage B (spec 08 §6.1): a fork-choice tip key `(height, view, hash)` — the total-order comparison
+/// key over competing chain tips ([`fork_choice_prefers`]).
+type TipKey = (u64, u32, B256);
+
+/// M5 Stage B (spec 08 §6.1/§6.3): a complete, reorg-ready fork branch — the ascending winning blocks
+/// (`ca+1 … tip`), the common-ancestor height they reattach at, and the fork-choice tip key.
+struct ReorgCandidate {
+    branch: Vec<ForkBlockEntry>,
+    ca_height: u64,
+    tip: TipKey,
+}
+
+/// M5 Stage B (spec 08 §6.1/§6.3): assemble the complete fork branch ending at `tip` by walking
+/// `parent_hash` back through the retained fork blocks (`fmap`) until a **canonical common ancestor**
+/// (a block already in `inner.blocks_by_hash`) is reached. Returns the branch as an ascending list
+/// (`ca+1 … tip`) plus the common-ancestor height, or `None` if the branch is:
+/// - **incomplete** (an ancestor is neither canonical nor retained — a missing parent, wait for it),
+/// - **non-contiguous** (a height gap in the fork chain — malformed), or
+/// - **finality-bounded** (the common ancestor is below the finalized frontier — a reorg here would
+///   revert finalized history, §6.3, which is REFUSED).
+///
+/// Pure: reads only the retained headers + canonical index, no clock, no arrival order (I1).
+fn assemble_fork_branch(
+    tip: &ForkBlockEntry,
+    fmap: &HashMap<B256, ForkBlockEntry>,
+    inner: &Inner,
+    finalized: u64,
+) -> Option<(Vec<ForkBlockEntry>, u64)> {
+    let mut chain: Vec<ForkBlockEntry> = Vec::new();
+    let mut cur = tip.clone();
+    let mut guard = 0usize;
+    loop {
+        guard += 1;
+        // Defensive walk bound (no real keccak hash cycle can form): a branch reverting more than the
+        // whole finality window is not a bounded reorg — abandon it.
+        if guard > (FINALITY_DEPTH as usize + 2) * 8 {
+            return None;
+        }
+        // Is `cur`'s parent a canonical block? Then it is the common ancestor (the fork point).
+        if let Some(&idx) = inner.blocks_by_hash.get(&cur.parent_hash) {
+            let ca_number = inner.blocks[idx].number;
+            // Height contiguity: the branch's lowest block must sit exactly on the canonical ancestor.
+            if cur.number != ca_number + 1 {
+                return None;
+            }
+            // Finality bound (§6.3): the lowest reverted block is `ca_number + 1`; it must be ABOVE the
+            // finalized frontier (`ca_number >= finalized`). A deeper fork would revert finalized
+            // history — REFUSE (never reorg across the finalized frontier).
+            if ca_number < finalized {
+                return None;
+            }
+            chain.push(cur);
+            chain.reverse();
+            return Some((chain, ca_number));
+        }
+        // Else the parent must be another retained fork block; continue walking upward.
+        match fmap.get(&cur.parent_hash) {
+            Some(parent) => {
+                if cur.number != parent.number + 1 {
+                    return None; // non-contiguous fork branch (a height gap)
+                }
+                chain.push(cur.clone());
+                cur = parent.clone();
+            }
+            None => return None, // missing ancestor — the branch is incomplete for now
+        }
+    }
+}
 
 /// Clone so the follower's [`Chain::validate_and_apply_block`] can snapshot-and-restore on a rejected
 /// block (fail-closed: a divergent block applies no state change). All fields are cheaply clonable.
@@ -1300,6 +1442,22 @@ pub struct Chain {
     /// browser light client over the sync gateway so it can reproduce a REAL seeded-genesis chain. `None`
     /// until sealed; a chain with no seeding (an empty genesis) seals to the empty-state root.
     genesis_anchor: Arc<Mutex<Option<GenesisAnchor>>>,
+    /// M5 Stage B (fork choice / reorg, spec 08 §5.4/§6): a bounded ring of the committed `MemState`
+    /// **before** each recent block was applied — `parent_height → parent state`. It lets the follower
+    /// reorg a bounded distance (`< FINALITY_DEPTH`) when a lower-view competitor at the tip height
+    /// arrives after a higher-view block (§5.4 re-convergence): restore the parent state, drop the loser,
+    /// re-execute the winner. Pruned to the last `FINALITY_DEPTH + 1` heights, so it never grows
+    /// unbounded and never lets a reorg cross the finalized frontier. Kept OUTSIDE `Inner` (which is
+    /// cloned as the trial-execution backup) so it is not churned by the trial/rollback dance.
+    recent_states: Arc<Mutex<std::collections::BTreeMap<u64, MemState>>>,
+    /// M5 Stage B (spec 08 §5.4/§6.1/§6.3): the bounded SIDE STORE of valid non-canonical fork blocks,
+    /// keyed by block hash. When a node is on a losing tip-race branch and the winning branch's blocks
+    /// arrive non-contiguously (a child of a block this node does not hold as canonical), they are
+    /// retained here so a later block that completes the branch back to a common ancestor triggers a
+    /// bounded general reorg. Pruned to blocks above the finalized frontier and capped at
+    /// [`MAX_FORK_STORE`]; kept OUTSIDE `Inner` (not churned by the trial/rollback clone), like
+    /// `recent_states`. Purely a local reconciliation aid — it never feeds a committed value (I1/I2).
+    fork_store: Arc<Mutex<HashMap<B256, ForkBlockEntry>>>,
 }
 
 /// The seeded genesis anchor served to a light client (spec 07 §3.4). Holds the canonical genesis state
@@ -1353,6 +1511,18 @@ pub struct NetStatus {
     pub designated_proposer: Option<AlloyAddr>,
     /// k-deep finality depth (devnet default 6); `head − FINALITY_DEPTH` is the finalized height.
     pub finality_depth: u64,
+    /// Stage B (§11): the current epoch validator snapshot `V`, sorted ascending. The node publishes it
+    /// from the on-chain snapshot (multi-validator mode) or `[designated]` (Stage-A override mode).
+    pub validator_set: Vec<AlloyAddr>,
+    /// Stage B (§11): this node's LOCAL view for the height it is extending (a local liveness value,
+    /// labeled as such — never a committed value). `0` until the node's view timer sets it.
+    pub current_view: u32,
+    /// M5 Stage B (spec 08 §5.3): the number of distinct `V`-members this node currently considers
+    /// **reachable** (self + ping-live bound-validator peers), as counted by the production connectivity
+    /// guard. A LOCAL liveness signal (never committed): when it drops below `N/2 + 1` this node stalls
+    /// production (the partition-safe-finality guard). Surfaced on `ubi_consensusStatus` so a partition
+    /// test can observe the minority side converge below majority within a bound (Blocker-2).
+    pub reachable_validators: u32,
 }
 
 /// M5: a proposer's secp256k1 signing key + its derived EVM address. Used to sign block headers so a
@@ -1441,6 +1611,7 @@ impl Chain {
             0,
             B256::ZERO,
             genesis_time,
+            0, // genesis view is 0 (Stage-A block == Stage-B block with view 0)
             genesis_txs_root,
             genesis_state_root,
             &genesis_proposer,
@@ -1450,6 +1621,7 @@ impl Chain {
             hash: genesis_hash,
             parent_hash: B256::ZERO,
             timestamp: genesis_time,
+            view: 0,
             txs_root: genesis_txs_root,
             state_root: genesis_state_root,
             proposer: genesis_proposer,
@@ -1489,6 +1661,8 @@ impl Chain {
                 ..Default::default()
             })),
             genesis_anchor: Arc::new(Mutex::new(None)),
+            recent_states: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            fork_store: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1504,6 +1678,49 @@ impl Chain {
         let mut s = self.net_status.lock().unwrap();
         s.is_proposer = is_proposer;
         s.designated_proposer = designated;
+    }
+
+    /// M5 (Stage B, §11): publish the effective validator set `V` + this node's local `current_view`
+    /// for `ubi_consensusStatus`. The node computes `V` (on-chain snapshot or the Stage-A override) and
+    /// its local view in `crates/node` and pushes it here; the RPC handler renders it. Read-only (I6).
+    pub fn set_consensus_status(
+        &self,
+        validator_set: Vec<AlloyAddr>,
+        current_view: u32,
+        reachable_validators: u32,
+    ) {
+        let mut s = self.net_status.lock().unwrap();
+        s.validator_set = validator_set;
+        s.current_view = current_view;
+        s.reachable_validators = reachable_validators;
+    }
+
+    /// M5 Stage B (spec 08 §2.1): ensure the genesis (height-0) epoch validator snapshot is seeded. The
+    /// snapshot is normally installed during `execute_block` at block #1, but the follower's schedule read
+    /// (`validate_and_apply_block`) happens BEFORE that first execution — so a fresh follower would see an
+    /// empty `V` for block #1. This idempotent, deterministic helper seeds it over the seeded genesis
+    /// state on first use (only while the head is still genesis). It re-derives the same sorted membership
+    /// every node computes, so it introduces no divergence (§8); a chain with no seeded validators seeds
+    /// an empty `V`, unchanged.
+    fn ensure_epoch_validators_seeded(&self) {
+        let mut g = self.inner.lock().unwrap();
+        let head = g.blocks.last().expect("genesis present").number;
+        if head == 0 && g.state.epoch_validators().is_empty() {
+            refresh_epoch_validators(&mut g.state, 0);
+        }
+    }
+
+    /// M5 (Stage B): the on-chain epoch validator snapshot `V` at the current head (spec 08 §2.1),
+    /// sorted ascending, as `AlloyAddr`. Pure read of committed state — the authoritative multi-validator
+    /// set (before the Stage-A single-proposer override, which the node applies). Empty until genesis
+    /// seeds it (or in a single-proposer devnet that seeds no jurors).
+    pub fn validator_set(&self) -> Vec<AlloyAddr> {
+        self.ensure_epoch_validators_seeded();
+        let g = self.inner.lock().unwrap();
+        validator_set(&g.state)
+            .into_iter()
+            .map(AlloyAddr::from)
+            .collect()
     }
 
     /// Snapshot of the live network status (for the RPC handlers + tests). Pure read.
@@ -1544,16 +1761,19 @@ impl Chain {
         number: u64,
         parent_hash: B256,
         timestamp: u64,
+        view: u32,
         claimed_txs_root: B256,
         claimed_state_root: B256,
         proposer: AlloyAddr,
         proposer_sig: &[u8],
         raw_txs: &[Vec<u8>],
-        expected_proposer: Option<AlloyAddr>,
+        validator_override: Option<AlloyAddr>,
     ) -> Result<Block, BlockError> {
+        // Stage B: seed the genesis epoch snapshot on first use so block #1's schedule read sees `V`.
+        self.ensure_epoch_validators_seeded();
         // ---- Cheap header checks (no state mutation), in fail-fast order ----
-        // §5.1(2) parent + height + §5.1(4) timestamp sanity FIRST: a block off our chain is the most
-        // meaningful rejection (fork / behind-or-ahead) and is cheaper than the ecrecover below.
+        // §4(1) parent + height + timestamp sanity FIRST: a block off our chain is the most meaningful
+        // rejection (fork / behind-or-ahead) and is cheaper than the ecrecover below.
         {
             let g = self.inner.lock().unwrap();
             let head = g.blocks.last().expect("genesis present");
@@ -1571,27 +1791,50 @@ impl Chain {
             }
         }
 
+        // §4(2) view in range: an absurd view is rejected before any expensive work.
+        if view >= VIEW_MAX {
+            return Err(BlockError::ViewOutOfRange { view });
+        }
+
+        // §4(3) author = scheduled proposer. Resolve the effective `V` (§3.3): a `validator_override`
+        // (the Stage-A single designated proposer) pins `V = [override]` (`N = 1`) and takes PRECEDENCE
+        // over any on-chain snapshot; otherwise `V = validator_set(parent_state)` (the epoch snapshot).
+        // The parent state is the current committed state (this block is not yet applied), so its
+        // snapshot is exactly the one the schedule reads (§2.1). `N >= 1` required (`NoValidatorSet`).
+        let expected = {
+            let g = self.inner.lock().unwrap();
+            let v: Vec<AlloyAddr> = match validator_override {
+                Some(a) => vec![a],
+                None => validator_set(&g.state)
+                    .into_iter()
+                    .map(AlloyAddr::from)
+                    .collect(),
+            };
+            let n = v.len();
+            if n == 0 {
+                return Err(BlockError::NoValidatorSet);
+            }
+            v[proposer_index(number, view, n)]
+        };
+        if proposer != expected {
+            return Err(BlockError::WrongProposer);
+        }
+
         let claimed_hash = Block::compute_hash(
             number,
             parent_hash,
             timestamp,
+            view,
             claimed_txs_root,
             claimed_state_root,
             &proposer,
         );
 
-        // §5.1(1) author: the block must be signed by the slot's scheduled proposer. In Stage A that is
-        // the single designated proposer the node configured. A non-empty signature must recover to the
-        // claimed proposer; an empty signature is only accepted in the unsigned single-node devnet
-        // (expected_proposer == None) — a networked follower always supplies the expected proposer.
-        if let Some(exp) = expected_proposer {
-            if proposer != exp {
-                return Err(BlockError::WrongProposer);
-            }
-            match recover_proposer(&claimed_hash, proposer_sig) {
-                Some(recovered) if recovered == proposer => {}
-                _ => return Err(BlockError::BadSignature),
-            }
+        // §4(4) signature recovers to the author. The header hash now commits `view` (§2.2), so a
+        // follower cannot alter a block's view without breaking the signature.
+        match recover_proposer(&claimed_hash, proposer_sig) {
+            Some(recovered) if recovered == proposer => {}
+            _ => return Err(BlockError::BadSignature),
         }
 
         // Decode the ordered raw user txs into `PendingTx` (same structural decode the proposer used —
@@ -1605,13 +1848,17 @@ impl Chain {
             }
         }
 
-        // ---- §5.1(3) deterministic state transition (the I1/I2 cross-node check) ----
+        // ---- §4(5) deterministic state transition (the I1/I2 cross-node check) ----
         // Snapshot the inner state so a state-root mismatch rolls back to a no-op (fail-closed). Then
-        // re-execute the committed tx order via the SAME routine the proposer ran, stamping the block's
-        // original proposer + signature so the recomputed header is byte-identical.
+        // re-execute the committed tx order via the SAME routine the proposer ran, at the block's `view`,
+        // stamping the block's original proposer + signature so the recomputed header is byte-identical.
         let backup = self.inner.lock().unwrap().clone();
-        let produced =
-            self.execute_block(pending, timestamp, Some((proposer, proposer_sig.to_vec())));
+        let produced = self.execute_block(
+            pending,
+            timestamp,
+            view,
+            Some((proposer, proposer_sig.to_vec())),
+        );
 
         if produced.state_root != claimed_state_root
             || produced.txs_root != claimed_txs_root
@@ -1652,6 +1899,318 @@ impl Chain {
             g.mempool = kept;
         }
         Ok(produced)
+    }
+
+    /// M5 Stage B (spec 08 §5.4/§6.1/§6.3): consider a VALID block that competes with — but does not
+    /// cleanly extend — the local canonical chain, and perform a **bounded GENERAL reorg** to the
+    /// fork-choice-best branch it completes. This generalises the earlier depth-1 tip-swap: it handles
+    /// not only a same-height, shared-parent competitor (a late `view 0` original vs an adopted `view 1`
+    /// successor, §5.4) but also a **taller** honest branch whose ancestry does not extend our tip
+    /// (the h1@view1 → h2@view1 race that would otherwise leave a node on `h1@view0` PERMANENTLY stuck
+    /// and finalizing a conflicting chain — spec §5.4/§7, EC-B-F5).
+    ///
+    /// Mechanics:
+    /// - The block is authenticated up front (view in range, hash + signature recover to `proposer`)
+    ///   and RETAINED in the bounded side store (`fork_store`), keyed by hash, so a later-arriving child
+    ///   that names it as parent can complete the branch.
+    /// - We then walk `parent_hash` back through the side store + our canonical blocks to the **common
+    ///   ancestor**. If that ancestor is at/below the finalized frontier we REFUSE (never revert
+    ///   finalized history, §6.3); otherwise we truncate the losing suffix, restore the ancestor state,
+    ///   and deterministically re-execute the winning branch (each block re-validated + state-root
+    ///   matched). The displaced canonical suffix is moved into the side store so a still-better branch
+    ///   can later win it back — fork choice is a total order, so this converges (I1).
+    ///
+    /// Returns `Ok(Some(new_tip))` if a reorg happened, `Ok(None)` if the block was valid but no reorg
+    /// applied (the current chain is still preferred, the branch is incomplete, or its ancestor is
+    /// finalized-bounded — all BENIGN, do not penalize), `Err(e)` only if the block is GENUINELY invalid
+    /// (`ViewOutOfRange` / `BadSignature`, or — on re-execution — `WrongProposer` / `StateRootMismatch`),
+    /// which the caller may penalize. Fail-closed: an invalid branch applies no state change.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consider_competing_block(
+        &self,
+        number: u64,
+        parent_hash: B256,
+        timestamp: u64,
+        view: u32,
+        claimed_txs_root: B256,
+        claimed_state_root: B256,
+        proposer: AlloyAddr,
+        proposer_sig: &[u8],
+        raw_txs: &[Vec<u8>],
+        validator_override: Option<AlloyAddr>,
+    ) -> Result<Option<Block>, BlockError> {
+        self.ensure_epoch_validators_seeded();
+        // §4(2) view in range — reject an absurd/garbage view before any retention or work.
+        if view >= VIEW_MAX {
+            return Err(BlockError::ViewOutOfRange { view });
+        }
+        // §4(4) authenticate: the hash + signature must recover to the claimed author. This is what
+        // makes it safe to RETAIN the block (only a signed-by-a-real-key block enters the side store);
+        // its schedule + state-root are fully re-checked when the branch is re-executed on a reorg.
+        let hash = Block::compute_hash(
+            number,
+            parent_hash,
+            timestamp,
+            view,
+            claimed_txs_root,
+            claimed_state_root,
+            &proposer,
+        );
+        match recover_proposer(&hash, proposer_sig) {
+            Some(recovered) if recovered == proposer => {}
+            _ => return Err(BlockError::BadSignature),
+        }
+
+        // Snapshot the tip + finalized frontier (short lock).
+        let (current_tip, finalized, already_canonical) = {
+            let g = self.inner.lock().unwrap();
+            let tip = g.blocks.last().expect("genesis present");
+            let finalized = tip.number.saturating_sub(FINALITY_DEPTH);
+            let canon = g.blocks_by_hash.contains_key(&hash);
+            ((tip.number, tip.view, tip.hash), finalized, canon)
+        };
+        // Already canonical (our tip or an interior block) — nothing to reconcile.
+        if already_canonical || hash == current_tip.2 {
+            return Ok(None);
+        }
+        // At/below the finalized frontier a competing block can never win a bounded reorg — never
+        // retained, never reorged (a reorg here would cross finalized history, §6.3).
+        if number <= finalized {
+            return Ok(None);
+        }
+
+        // Retain the authenticated fork block so a later child can complete its branch (§5.4).
+        self.store_fork_block(
+            ForkBlockEntry {
+                number,
+                parent_hash,
+                timestamp,
+                view,
+                txs_root: claimed_txs_root,
+                state_root: claimed_state_root,
+                proposer,
+                proposer_sig: proposer_sig.to_vec(),
+                raw_txs: raw_txs.to_vec(),
+                hash,
+            },
+            finalized,
+        );
+
+        // Assemble the fork-choice-best COMPLETE branch and reorg to it iff it beats our tip (§6.1).
+        self.maybe_reorg_to_best_branch(current_tip, finalized, validator_override)
+    }
+
+    /// Insert a fork block into the bounded side store (keyed by hash) and prune it: drop anything at or
+    /// below the finalized frontier (it can never win a bounded reorg, §6.3), then, if still over
+    /// [`MAX_FORK_STORE`], evict the lowest-height entries (a hostile flood cannot grow it unbounded).
+    fn store_fork_block(&self, entry: ForkBlockEntry, finalized: u64) {
+        let mut store = self.fork_store.lock().unwrap();
+        store.insert(entry.hash, entry);
+        store.retain(|_, e| e.number > finalized);
+        if store.len() > MAX_FORK_STORE {
+            // Evict lowest-height entries first (oldest forks are least likely to still win).
+            let mut by_height: Vec<(u64, B256)> =
+                store.iter().map(|(h, e)| (e.number, *h)).collect();
+            by_height.sort();
+            let excess = store.len() - MAX_FORK_STORE;
+            for (_, h) in by_height.into_iter().take(excess) {
+                store.remove(&h);
+            }
+        }
+    }
+
+    /// M5 Stage B (spec 08 §6.1): find the fork-choice-best COMPLETE branch among the retained fork
+    /// blocks (each walked back to a canonical common ancestor above the finalized frontier) and, if its
+    /// tip beats the current canonical tip, perform the bounded general reorg. Pure of any clock/rand —
+    /// the decision + re-execution read only `(state, headers)`, so every honest node converges (I1).
+    fn maybe_reorg_to_best_branch(
+        &self,
+        current_tip: TipKey,
+        finalized: u64,
+        validator_override: Option<AlloyAddr>,
+    ) -> Result<Option<Block>, BlockError> {
+        // Snapshot the side store (short lock) so the walk holds no lock on `inner`/`recent_states`.
+        let fmap: HashMap<B256, ForkBlockEntry> = self.fork_store.lock().unwrap().clone();
+        if fmap.is_empty() {
+            return Ok(None);
+        }
+        // Find the best complete branch: for each retained block treated as a branch tip, walk to a
+        // canonical ancestor and keep the fork-choice-best whose tip beats our current tip.
+        let mut best: Option<ReorgCandidate> = None;
+        {
+            let g = self.inner.lock().unwrap();
+            for tip_entry in fmap.values() {
+                let tip: TipKey = (tip_entry.number, tip_entry.view, tip_entry.hash);
+                if !fork_choice_prefers(tip, current_tip) {
+                    continue; // this branch tip does not beat our canonical tip
+                }
+                if let Some((branch, ca_height)) =
+                    assemble_fork_branch(tip_entry, &fmap, &g, finalized)
+                {
+                    let better = best
+                        .as_ref()
+                        .map(|b| fork_choice_prefers(tip, b.tip))
+                        .unwrap_or(true);
+                    if better {
+                        best = Some(ReorgCandidate {
+                            branch,
+                            ca_height,
+                            tip,
+                        });
+                    }
+                }
+            }
+        }
+        let candidate = match best {
+            Some(b) => b,
+            None => return Ok(None), // no complete, preferred, finality-safe branch yet
+        };
+        self.execute_reorg(candidate.branch, candidate.ca_height, validator_override)
+    }
+
+    /// Perform the bounded general reorg to `branch` (ascending `ca+1 … tip`), whose common ancestor is
+    /// the canonical block at `ca_height`. Restores the ancestor state, truncates the losing suffix
+    /// (moving it into the side store so a still-better branch can win it back), then re-executes each
+    /// winning block via the ordinary validated apply (schedule + signature + byte-identical state-root
+    /// re-checked, I1/I2). Fail-closed: any failure rolls the whole reorg back to the pre-reorg state.
+    fn execute_reorg(
+        &self,
+        branch: Vec<ForkBlockEntry>,
+        ca_height: u64,
+        validator_override: Option<AlloyAddr>,
+    ) -> Result<Option<Block>, BlockError> {
+        // The common-ancestor state (state AFTER block `ca_height` = the winning branch's parent state).
+        // Must still be retained (guaranteed above the finalized frontier); else we cannot reorg safely.
+        let ca_state = match self.recent_states.lock().unwrap().get(&ca_height) {
+            Some(s) => s.clone(),
+            None => return Ok(None),
+        };
+        // Full backups (fail-closed rollback covers BOTH the canonical chain and the recent-state ring).
+        let inner_backup = self.inner.lock().unwrap().clone();
+        let rs_backup = self.recent_states.lock().unwrap().clone();
+
+        // Truncate the losing suffix down to the common ancestor + restore its state. Collect the
+        // displaced blocks (with their raw txs) so we can retain them in the side store.
+        let displaced: Vec<ForkBlockEntry> = {
+            let mut g = self.inner.lock().unwrap();
+            let cut = ca_height as usize + 1;
+            let old_suffix: Vec<Block> = if cut < g.blocks.len() {
+                g.blocks.split_off(cut)
+            } else {
+                Vec::new()
+            };
+            let mut displaced = Vec::with_capacity(old_suffix.len());
+            for b in &old_suffix {
+                g.blocks_by_hash.remove(&b.hash);
+                for t in &b.txs {
+                    g.txs.remove(&t.hash);
+                }
+                let raw_txs: Vec<Vec<u8>> = b
+                    .txs
+                    .iter()
+                    .filter_map(|t| g.raw_tx.get(&t.hash).cloned())
+                    .collect();
+                displaced.push(ForkBlockEntry {
+                    number: b.number,
+                    parent_hash: b.parent_hash,
+                    timestamp: b.timestamp,
+                    view: b.view,
+                    txs_root: b.txs_root,
+                    state_root: b.state_root,
+                    proposer: b.proposer,
+                    proposer_sig: b.proposer_sig.clone(),
+                    raw_txs,
+                    hash: b.hash,
+                });
+            }
+            g.state = ca_state;
+            displaced
+        };
+
+        // Re-execute the winning branch. Each block re-runs the full validity check (contiguity, parent,
+        // schedule, signature, byte-identical state-root) via the SHARED apply path — a forged branch
+        // fails here and triggers a fail-closed rollback below.
+        for fb in &branch {
+            let applied = self.validate_and_apply_block(
+                fb.number,
+                fb.parent_hash,
+                fb.timestamp,
+                fb.view,
+                fb.txs_root,
+                fb.state_root,
+                fb.proposer,
+                &fb.proposer_sig,
+                &fb.raw_txs,
+                validator_override,
+            );
+            if let Err(e) = applied {
+                // Fail-closed: restore the entire pre-reorg state (chain + recent-state ring).
+                *self.inner.lock().unwrap() = inner_backup;
+                *self.recent_states.lock().unwrap() = rs_backup;
+                return Err(e);
+            }
+            // Cache the now-canonical block's raw txs so this node can re-gossip / re-serve it on sync
+            // (the ordinary follower path caches via `apply_wire_block`; the reorg path caches here).
+            self.cache_raw_txs(&fb.raw_txs);
+        }
+
+        // Commit the reorg's side-store bookkeeping: the now-canonical winning blocks leave the store;
+        // the displaced (previously-canonical) blocks enter it so a later, still-better branch (e.g. a
+        // taller extension of the old branch) can win them back — fork choice remains a total order.
+        {
+            let mut store = self.fork_store.lock().unwrap();
+            for fb in &branch {
+                store.remove(&fb.hash);
+            }
+            let new_head = self.tip().0;
+            let finalized = new_head.saturating_sub(FINALITY_DEPTH);
+            for d in displaced {
+                if d.number > finalized {
+                    store.insert(d.hash, d);
+                }
+            }
+            store.retain(|_, e| e.number > finalized);
+        }
+        Ok(Some(self.latest_block()))
+    }
+
+    /// The k-deep finalized height (spec 08 §6.3): `head − FINALITY_DEPTH`, saturating at 0. No reorg may
+    /// cross it. Pure read.
+    pub fn finalized_height(&self) -> u64 {
+        self.tip().0.saturating_sub(FINALITY_DEPTH)
+    }
+
+    /// Whether this exact block hash is already part of the canonical chain (tip or interior). Pure read;
+    /// lets the node skip re-considering a block it already holds (a second dedup on top of gossipsub).
+    pub fn knows_block(&self, hash: &B256) -> bool {
+        self.inner.lock().unwrap().blocks_by_hash.contains_key(hash)
+    }
+
+    /// M5 Stage B (§3.3): the effective validator set `V` under a node's config — the Stage-A single
+    /// designated proposer (`validator_override`) pins `V = [override]` and takes PRECEDENCE; otherwise
+    /// `V = validator_set(head_state)` (the on-chain epoch snapshot). The node calls this to resolve `V`
+    /// for the schedule, the production guard, and `ubi_consensusStatus`.
+    pub fn effective_validator_set(&self, validator_override: Option<AlloyAddr>) -> Vec<AlloyAddr> {
+        match validator_override {
+            Some(a) => vec![a],
+            None => self.validator_set(),
+        }
+    }
+
+    /// M5 Stage B (§3.1): the scheduled proposer `V[(height + view) mod N]` for the given height/view
+    /// under this node's config, or `None` if `V` is empty. Pure read of committed state + the config.
+    pub fn scheduled_proposer(
+        &self,
+        height: u64,
+        view: u32,
+        validator_override: Option<AlloyAddr>,
+    ) -> Option<AlloyAddr> {
+        let v = self.effective_validator_set(validator_override);
+        let n = v.len();
+        if n == 0 {
+            return None;
+        }
+        Some(v[proposer_index(height, view, n)])
     }
 
     /// Lock the inner state (for the persistence layer's read-only snapshot export). `pub(crate)` so
@@ -1849,12 +2408,24 @@ impl Chain {
     /// block, and broadcasts it to `newHeads` subscribers. Called by the node on every clock tick;
     /// empty mempool ⇒ empty block (still advances height — spec §M1-T1.6).
     pub fn produce_block(&self, timestamp: u64) -> Block {
+        // Stage-A / view-0 production (a Stage-A block is exactly a Stage-B block with `view == 0`, §2.2).
+        // Every existing caller (and the N=1 degenerate case) produces at view 0; the Stage-B view-change
+        // successor path calls [`Chain::produce_block_at_view`] with `current_view`.
+        self.produce_block_at_view(timestamp, 0)
+    }
+
+    /// M5 Stage B (spec 08 §5): produce the next block at an explicit `view`. Used by the node's view
+    /// timer when this node is the scheduled proposer for `(head+1, current_view)` — a view-change
+    /// successor stamps `view = current_view > 0`, the first-scheduled proposer stamps `view = 0`. The
+    /// `view` is committed in the header (signed + hashed, §2.2) and folded into the jury entropy (§2.3),
+    /// but reads no clock — it is data, deterministic on every node.
+    pub fn produce_block_at_view(&self, timestamp: u64, view: u32) -> Block {
         // The proposer mines the current mempool in FIFO order (the canonical commitment is the
         // `txs_root` over that order; a follower re-executes the SAME committed order — see
         // `validate_and_apply_block`). Take the mempool and delegate to the shared execution routine
         // so the proposer and the follower run byte-identical state transitions (I1/I2).
         let pending = std::mem::take(&mut self.inner.lock().unwrap().mempool);
-        self.execute_block(pending, timestamp, None)
+        self.execute_block(pending, timestamp, view, None)
     }
 
     /// The shared, deterministic block-execution routine driven by both [`Chain::produce_block`] (the
@@ -1869,6 +2440,7 @@ impl Chain {
         &self,
         pending: Vec<PendingTx>,
         timestamp: u64,
+        view: u32,
         proposer_override: Option<(AlloyAddr, Vec<u8>)>,
     ) -> Block {
         // Clone the AI-seam Arcs before locking state (the apply loop calls the oracle for liveness
@@ -1883,28 +2455,53 @@ impl Chain {
         let mut g = self.inner.lock().unwrap();
         let parent = g.blocks.last().expect("genesis always present").clone();
         let number = parent.number + 1;
+        // Stage B (fork choice / reorg, §5.4/§6): remember the parent state (before this block mutates
+        // it) so a later lower-view competitor at height `number` can be re-executed against the same
+        // parent. Bounded to the last `FINALITY_DEPTH + 1` heights — a reorg never crosses the finalized
+        // frontier. Deterministic (a plain state clone); it feeds no committed value.
+        {
+            let mut rs = self.recent_states.lock().unwrap();
+            rs.insert(number - 1, g.state.clone());
+            let cutoff = number.saturating_sub(FINALITY_DEPTH + 1);
+            rs.retain(|h, _| *h >= cutoff);
+        }
         // Spec 07 §3.4 (`ln-trust-2`): seal the seeded genesis anchor the instant before block #1 mutates
         // state — at this point `g.state` IS the height-0 seeded state (the genesis the light client must
         // reproduce). Idempotent + lazy: only fires once, only at the first block, and only if the node
         // did not already seal it explicitly at boot via `seal_genesis`. A no-op for every later block.
         if number == 1 {
+            // Stage B (§2.1): seed the genesis (height-0) epoch validator snapshot over the fully-seeded
+            // genesis state, BEFORE building the anchor + BEFORE block #1 reads `V` from its parent. Height
+            // 0 is a multiple of `EPOCH_BLOCKS`, so genesis is a boundary; this is the deterministic seed
+            // every node installs by replay. Idempotent (re-derives the same sorted set); it mutates the
+            // genesis state so the anchor's `state_root` commits it (EC-B5) and block #1's schedule reads it.
+            refresh_epoch_validators(&mut g.state, 0);
             let mut anchor = self.genesis_anchor.lock().unwrap();
             if anchor.is_none() {
                 *anchor = Some(build_genesis_anchor(&g.state));
             }
         }
-        // M5: the committed block hash now commits `txs_root` + `state_root` (spec §2.2), which are only
-        // known *after* execution. But jury-selection entropy and the txs' `block_hash` are needed
-        // *during* execution. We therefore derive a **pre-execution** `entropy_hash` from the (already
-        // final) parent hash + number + timestamp — a pure, deterministic function of pre-execution
-        // inputs, so every node computes the same jury seeds (I1) — and use it as the block's identity
-        // through the loop. After execution we compute the roots and the real header `hash`, then
-        // back-fill it onto the stored txs so receipts carry the committed block hash. `entropy_hash`
-        // feeds ONLY the seeded PRNG (never balances/roots), so the swap does not change any state.
+        // Stage B (§2.1): at an epoch boundary (`number % EPOCH_BLOCKS == 0`) re-snapshot `V` over the
+        // pre-block state. The boundary block itself is scheduled by the parent's (previous) snapshot;
+        // executing it installs the new one, which governs blocks `number+1 …`. Genesis (height 0) is
+        // seeded above via the `number == 1` path, so the first on-chain refresh here is height
+        // `EPOCH_BLOCKS`. Pure function of the parent state — deterministic on every node.
+        if number.is_multiple_of(EPOCH_BLOCKS) {
+            refresh_epoch_validators(&mut g.state, number);
+        }
+        // M5: the committed block hash now commits `view` + `txs_root` + `state_root` (spec §2.2), which
+        // are only known *after* execution. But jury-selection entropy and the txs' `block_hash` are
+        // needed *during* execution. We therefore derive a **pre-execution** `entropy_hash` from the
+        // (already final) parent hash + number + timestamp + `view` — a pure, deterministic function of
+        // pre-execution inputs, so every node computes the same jury seeds (I1) even after a view change
+        // (§2.3) — and use it as the block's identity through the loop. After execution we compute the
+        // roots and the real header `hash`, then back-fill it onto the stored txs so receipts carry the
+        // committed block hash. `entropy_hash` feeds ONLY the seeded PRNG (never balances/roots).
         let entropy_hash = Block::compute_hash(
             number,
             parent.hash,
             timestamp,
+            view,
             B256::ZERO,
             B256::ZERO,
             &AlloyAddr::ZERO,
@@ -2107,6 +2704,7 @@ impl Chain {
                     number,
                     parent.hash,
                     timestamp,
+                    view,
                     txs_root,
                     state_root,
                     &proposer,
@@ -2123,6 +2721,7 @@ impl Chain {
                     number,
                     parent.hash,
                     timestamp,
+                    view,
                     txs_root,
                     state_root,
                     &proposer,
@@ -2152,6 +2751,7 @@ impl Chain {
             hash: final_hash,
             parent_hash: parent.hash,
             timestamp,
+            view,
             txs_root,
             state_root,
             proposer,
@@ -2299,6 +2899,9 @@ impl Chain {
     /// boot-time seal is correct even for a chain restored from a FU-3 snapshot (whose state has advanced
     /// past genesis), provided the caller seals from a freshly-seeded genesis state.
     pub fn seal_genesis(&self) {
+        // Stage B: seed the genesis epoch snapshot BEFORE sealing so the anchor's `state_root` commits it
+        // consistently with block #1's schedule read (and with the lazy `execute_block` seed).
+        self.ensure_epoch_validators_seeded();
         let mut anchor = self.genesis_anchor.lock().unwrap();
         if anchor.is_none() {
             let g = self.inner.lock().unwrap();
@@ -2500,6 +3103,9 @@ impl Chain {
             "receiptsRoot": hex_b256(&B256::ZERO),
             "miner": hex_addr(&block.proposer),
             "proposer": hex_addr(&block.proposer),
+            // M5 Stage B (§11): the block's committed `view` as a `ubi2` extension. Standard `eth_*`
+            // block fields are unchanged (I3); `view` never repurposes a standard field.
+            "view": block.view,
             "proposerSig": format!("0x{}", hex::encode(&block.proposer_sig)),
             "transactions": txs,
         })
@@ -4783,18 +5389,32 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
     })
     .unwrap();
 
-    // M5 (Stage A) — `ubi_consensusStatus` → the node's head + author view + Stage-A role. Reports the
-    // single designated proposer, whether THIS node is it (`isProposer`), the connected-peer count, and
-    // k-deep `finalizedHeight` (`head − FINALITY_DEPTH`, floored at 0). Stage B fills `slot` /
-    // round-robin `validatorSet`. Pure read.
+    // M5 (Stage B) — `ubi_consensusStatus` → the node's head + the round-robin schedule + role. Reports
+    // the effective `validatorSet` `V` (the epoch snapshot the node published, or `[designated]` in the
+    // Stage-A override), `n` (`|V|`), this node's LOCAL `currentView` for the height it is extending, the
+    // `scheduledProposer` = `V[(head+1 + currentView) mod N]`, whether THIS node is it (`isProposer`), the
+    // connected-peer count, and k-deep `finalizedHeight` (`head − FINALITY_DEPTH`, floored at 0). Pure
+    // read (I6); `currentView` is labeled a LOCAL liveness value (never committed).
     m.register_method("ubi_consensusStatus", |_params, ctx, _| {
         let (height, hash) = ctx.tip();
         let net = ctx.net_status();
-        // Prefer the node-published designated proposer; fall back to this node's own proposer key.
-        let proposer = net
-            .designated_proposer
-            .or_else(|| ctx.proposer_address())
-            .unwrap_or(AlloyAddr::ZERO);
+        // The effective validator set: the node-published snapshot (Stage-B on-chain `V`, or the Stage-A
+        // `[designated]` override) if present, else fall back to the single designated proposer / this
+        // node's own key so Stage-A single-node reads still surface a 1-member set.
+        let mut validator_set: Vec<AlloyAddr> = net.validator_set.clone();
+        if validator_set.is_empty() {
+            if let Some(a) = net.designated_proposer.or_else(|| ctx.proposer_address()) {
+                validator_set.push(a);
+            }
+        }
+        let n = validator_set.len();
+        let current_view = net.current_view;
+        // The scheduled proposer for the NEXT height (head + 1) at this node's local view.
+        let scheduled = if n == 0 {
+            AlloyAddr::ZERO
+        } else {
+            validator_set[proposer_index(height + 1, current_view, n)]
+        };
         let finalized = height.saturating_sub(net.finality_depth);
         Ok::<_, ErrorObjectOwned>(json!({
             "head": {
@@ -4802,10 +5422,17 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
                 "hash": hex_b256(&hash),
                 "stateRoot": hex_b256(&ctx.state_root()),
             },
-            "currentProposer": hex_addr(&proposer),
-            "validatorSet": [hex_addr(&proposer)],
+            "currentProposer": hex_addr(&scheduled),
+            "scheduledProposer": hex_addr(&scheduled),
+            "validatorSet": validator_set.iter().map(hex_addr).collect::<Vec<_>>(),
+            "n": n,
+            "currentView": current_view,
             "isProposer": net.is_proposer,
             "peerCount": net.peers.len(),
+            // Stage B §5.3: the LOCAL count of reachable V-members (self + ping-live bound peers) the
+            // production guard uses; below `n/2 + 1` this node stalls (never a committed value).
+            "reachableValidators": net.reachable_validators,
+            "majority": if n == 0 { 0 } else { (n / 2 + 1) as u64 },
             "finalityDepth": hex_u64(net.finality_depth),
             "finalizedHeight": hex_u64(finalized),
             "chainId": hex_u64(ctx.chain_id()),
@@ -5206,21 +5833,13 @@ mod tests {
         let tr = B256::repeat_byte(3);
         let sr = B256::repeat_byte(9);
         let p = AlloyAddr::repeat_byte(1);
-        let h1 = Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, sr, &p);
-        let h2 = Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, sr, &p);
+        let h1 = Block::compute_hash(5, B256::repeat_byte(7), 1234, 0, tr, sr, &p);
+        let h2 = Block::compute_hash(5, B256::repeat_byte(7), 1234, 0, tr, sr, &p);
         assert_eq!(h1, h2);
         // Any field change moves the hash.
         assert_ne!(
             h1,
-            Block::compute_hash(6, B256::repeat_byte(7), 1234, tr, sr, &p)
-        );
-        assert_ne!(
-            h1,
-            Block::compute_hash(5, B256::repeat_byte(7), 1234, B256::repeat_byte(4), sr, &p)
-        );
-        assert_ne!(
-            h1,
-            Block::compute_hash(5, B256::repeat_byte(7), 1234, tr, B256::repeat_byte(8), &p)
+            Block::compute_hash(6, B256::repeat_byte(7), 1234, 0, tr, sr, &p)
         );
         assert_ne!(
             h1,
@@ -5228,6 +5847,36 @@ mod tests {
                 5,
                 B256::repeat_byte(7),
                 1234,
+                0,
+                B256::repeat_byte(4),
+                sr,
+                &p
+            )
+        );
+        assert_ne!(
+            h1,
+            Block::compute_hash(
+                5,
+                B256::repeat_byte(7),
+                1234,
+                0,
+                tr,
+                B256::repeat_byte(8),
+                &p
+            )
+        );
+        // Stage B: the `view` is committed — changing it moves the hash.
+        assert_ne!(
+            h1,
+            Block::compute_hash(5, B256::repeat_byte(7), 1234, 1, tr, sr, &p)
+        );
+        assert_ne!(
+            h1,
+            Block::compute_hash(
+                5,
+                B256::repeat_byte(7),
+                1234,
+                0,
                 tr,
                 sr,
                 &AlloyAddr::repeat_byte(2)
@@ -5268,6 +5917,7 @@ mod tests {
             b.number,
             b.parent_hash,
             b.timestamp,
+            b.view,
             b.txs_root,
             b.state_root,
             &b.proposer,

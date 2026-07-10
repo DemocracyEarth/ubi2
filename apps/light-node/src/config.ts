@@ -45,9 +45,9 @@ const DEVNET_CHAIN_ID = 0x5542; // 21826
 // ---------------------------------------------------------------------------------------------
 const PINNED_GENESIS_TIME = 1_700_000_000;
 const PINNED_GENESIS_HASH =
-  "0xb24d054faa31dc8e98ada4955a101f49528b708546f45558c9f45f7a9913779c";
+  "0xbc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
 const PINNED_GENESIS_STATE_ROOT =
-  "0xaa2c66cdd242eed1c3f1fa7511d60b9bc67099f6ffcaa1a8045bc25202bc1d0d";
+  "0x2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
 /** The authorized PoA proposer — Anvil acct #2 (the multi-node devnet's designated proposer). */
 const PINNED_VALIDATOR_SET = ["0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"];
 

@@ -175,6 +175,8 @@ pub struct WireBlock {
     pub number: u64,
     pub parent_hash: Hash,
     pub timestamp: u64,
+    /// M5 Stage B (spec 08 §2.2/§9): the block's view, inserted after `timestamp`, before `txs_root`.
+    pub view: u32,
     pub txs_root: Hash,
     pub state_root: Hash,
     pub proposer: Address,
@@ -185,13 +187,14 @@ pub struct WireBlock {
 }
 
 impl WireBlock {
-    /// The header pre-image `number ‖ parent_hash ‖ timestamp ‖ txs_root ‖ state_root ‖ proposer`
-    /// (spec §2.2) — byte-identical to `rpc::Block::header_preimage` so the hashes match cross-crate.
+    /// The header pre-image `number ‖ parent_hash ‖ timestamp ‖ view ‖ txs_root ‖ state_root ‖ proposer`
+    /// (spec 08 §2.2) — byte-identical to `rpc::Block::header_preimage` so the hashes match cross-crate.
     pub fn header_preimage(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(8 + 32 + 8 + 32 + 32 + 20);
+        let mut buf = Vec::with_capacity(8 + 32 + 8 + 4 + 32 + 32 + 20);
         buf.extend_from_slice(&self.number.to_be_bytes());
         buf.extend_from_slice(self.parent_hash.as_slice());
         buf.extend_from_slice(&self.timestamp.to_be_bytes());
+        buf.extend_from_slice(&self.view.to_be_bytes());
         buf.extend_from_slice(self.txs_root.as_slice());
         buf.extend_from_slice(self.state_root.as_slice());
         buf.extend_from_slice(self.proposer.as_slice());
@@ -222,6 +225,7 @@ impl WireBlock {
         out.extend_from_slice(&self.number.to_be_bytes());
         out.extend_from_slice(self.parent_hash.as_slice());
         out.extend_from_slice(&self.timestamp.to_be_bytes());
+        out.extend_from_slice(&self.view.to_be_bytes());
         out.extend_from_slice(self.txs_root.as_slice());
         out.extend_from_slice(self.state_root.as_slice());
         out.extend_from_slice(self.proposer.as_slice());
@@ -237,6 +241,7 @@ impl WireBlock {
         let number = r.u64()?;
         let parent_hash = r.b256()?;
         let timestamp = r.u64()?;
+        let view = r.u32()?;
         let txs_root = r.b256()?;
         let state_root = r.b256()?;
         let proposer = r.address()?;
@@ -254,6 +259,7 @@ impl WireBlock {
             number,
             parent_hash,
             timestamp,
+            view,
             txs_root,
             state_root,
             proposer,
@@ -724,6 +730,7 @@ mod tests {
             number: 5,
             parent_hash: B256::repeat_byte(0x11),
             timestamp: 1_700_000_010,
+            view: 0,
             txs_root: B256::ZERO,
             state_root: B256::repeat_byte(0x22),
             proposer,
@@ -762,6 +769,7 @@ mod tests {
             number: u64::MAX,
             parent_hash: B256::ZERO,
             timestamp: 1_700_000_000,
+            view: 0,
             txs_root: B256::ZERO,
             state_root: B256::ZERO,
             proposer: Address::ZERO,
@@ -830,6 +838,7 @@ mod tests {
                 number: n,
                 parent_hash: B256::repeat_byte(n as u8),
                 timestamp: 1_700_000_000 + n,
+                view: 0,
                 txs_root: B256::ZERO,
                 state_root: B256::repeat_byte((n + 1) as u8),
                 proposer: Address::ZERO,

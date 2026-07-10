@@ -113,6 +113,59 @@ pub fn seed_canonical_devnet_genesis(chain: &Chain, genesis_time: u64) {
     chain.seed_csca(*b"USA", DEVNET_CSCA_KEY_ID, DEVNET_CSCA_PUBKEY.to_vec());
 }
 
+/// M5 Stage B (spec 08 §13 setup): seed the multi-validator devnet's validator set into genesis. Each
+/// address in `UBI2_GENESIS_VALIDATORS` (comma-separated 20-byte hex, identical on every node) is seeded
+/// as a **`Verified` human** (so it accrues emission + qualifies for `V`) AND a **registered juror** (the
+/// shared PoH-gated validator registry, §2.1). All three qualify, so the epoch snapshot `V` is
+/// `{n1, n2, n3}` on every node by replay — the deterministic multi-validator schedule (EC-B1). Absent
+/// the env var (the Stage-A / single-node devnet) this is a no-op, so the pinned light-client genesis
+/// anchor is unchanged. Deterministic: `state_root` sorts, so the seed order does not affect the root.
+pub fn seed_genesis_validators(chain: &Chain, genesis_time: u64) {
+    let raw = match std::env::var("UBI2_GENESIS_VALIDATORS") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return,
+    };
+    for tok in raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let hex = tok.strip_prefix("0x").unwrap_or(tok);
+        if hex.len() != 40 {
+            tracing::warn!(
+                token = tok,
+                "UBI2_GENESIS_VALIDATORS: skipping non-20-byte address"
+            );
+            continue;
+        }
+        let mut addr = [0u8; 20];
+        let mut ok = true;
+        for i in 0..20 {
+            match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+                Ok(b) => addr[i] = b,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            tracing::warn!(
+                token = tok,
+                "UBI2_GENESIS_VALIDATORS: skipping non-hex address"
+            );
+            continue;
+        }
+        chain.seed_account(Account {
+            address: addr,
+            verified: true,
+            verified_at: genesis_time,
+            last_settled_at: genesis_time,
+            settled_balance: 0,
+            nonce: 0,
+        });
+        chain.seed_verified_human(&addr, genesis_time);
+        chain.register_juror(&addr, 0);
+        tracing::info!(validator = %hex::encode(addr.as_slice()), "seeded genesis validator");
+    }
+}
+
 /// Compute the canonical devnet **genesis anchor** — the sealed genesis `(hash, state_root)` — for a
 /// given `genesis_time`, as `0x`-free lowercase hex strings. Builds a throwaway [`Chain`] with the SAME
 /// seeds [`run`] applies on a fresh boot (via [`seed_canonical_devnet_genesis`]), seals it, and returns
@@ -296,6 +349,9 @@ pub async fn run() -> anyhow::Result<()> {
         // by the SHARED `seed_canonical_devnet_genesis` below so the live chain can never drift from the
         // pinned light-client anchor.
         seed_canonical_devnet_genesis(&chain, genesis_time);
+        // Stage B: seed the multi-validator set (if configured) so the on-chain epoch snapshot `V`
+        // rotates over `{n1, n2, n3}` (§2.1). A no-op on the Stage-A / single-node devnet.
+        seed_genesis_validators(&chain, genesis_time);
         chain
     };
 
@@ -450,7 +506,9 @@ pub async fn run() -> anyhow::Result<()> {
             net_handle,
             netcfg.validator_key,
             netcfg.designated_proposer,
+            netcfg.validator_override,
             netcfg.is_proposer,
+            block_ms,
         );
         driver.announce_start();
 
@@ -564,8 +622,8 @@ mod tests {
     /// must NOT change it), and it must equal the constant pinned in `apps/light-node/src/config.ts`.
     #[test]
     fn canonical_anchor_matches_pinned_lightnode_constants() {
-        let pinned_hash = "b24d054faa31dc8e98ada4955a101f49528b708546f45558c9f45f7a9913779c";
-        let pinned_root = "aa2c66cdd242eed1c3f1fa7511d60b9bc67099f6ffcaa1a8045bc25202bc1d0d";
+        let pinned_hash = "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
+        let pinned_root = "2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
 
         let (hash_no_key, root_no_key) = canonical_devnet_genesis(1_700_000_000, None);
         assert_eq!(hash_no_key, pinned_hash);

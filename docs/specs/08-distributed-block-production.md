@@ -374,9 +374,13 @@ CFT fault model — but the fork choice must still not *split* honest nodes if i
 
 - The deterministic tiebreak (§6.1 rule 3, lowest hash) means all honest nodes keep the **same** one of the
   two equivocating blocks. No split. *(AC-F4 / EC-B-F4.)*
-- The pair is recorded as **equivocation evidence**; the equivocator is **excluded from `V` at the next
-  epoch boundary** (a lightweight Stage-B deterrent). Stake-slashing and a *binding, quorum-backed*
-  equivocation proof are BFT/accountable-safety concerns — backlog (§14, FU-8).
+- **Shipped in Stage B:** only the no-split guarantee above (the lowest-hash tiebreak) — it is the sole
+  CFT-relevant property, since equivocation is Byzantine and outside the fault model. Stage B does **not**
+  evict; an equivocator simply keeps its round-robin slots like any other faulty CFT validator (covered by
+  view-change), with no honest-node divergence.
+- **Deferred (FU-8 / BFT, §14):** recording the pair as **equivocation evidence** and **excluding the
+  equivocator from `V` at the next epoch boundary**, plus stake-slashing and a *binding, quorum-backed*
+  equivocation proof. These are accountable-safety concerns, not CFT-safety ones.
 
 ---
 
@@ -548,7 +552,7 @@ rotation/liveness tests: a **`scripts/devnet-multi-b.sh`** launching 3 validator
 | **EC-B5** | I1 | Run 30 blocks with rotation **and** ≥ 1 forced view change (kill+restart mid-run). **Assert:** `ubi_stateRoot` is **byte-identical** across all live nodes at every common height, and `eth_getBalance` for a tracked address at a common height is the same integer on all nodes (I1/I2 through rotation + view change). | multi-proc |
 | **EC-B6** | I1 (determinism) | Unit/property test of the pure functions. **Assert:** `validator_set(state)` is identical under shuffled validator *insertion* order; `proposer_index(h, v, N)` is a pure integer function; the fork-choice total order picks the same head under shuffled competing-block *arrival* order (no `HashMap` order, no clock). | unit |
 | **EC-B-F3** | AC-F3 | A block whose `proposer ≠ V[(h+view) mod N]` — or one claiming `view = k` but signed by the wrong validator for that view — is submitted. **Assert:** rejected `WrongProposer` (or `BadSignature`); not applied; peer penalized. | unit + integration |
-| **EC-B-F4** | AC-F4 | A validator signs two distinct blocks for the same `(h, view)` (equivocation). **Assert:** honest nodes do **not** split — all keep the lowest-hash block (§6.4); both are recorded as evidence; the equivocator is absent from `V` after the next epoch boundary. | integration |
+| **EC-B-F4** | AC-F4 | A validator signs two distinct blocks for the same `(h, view)` (equivocation). **Assert:** honest nodes do **not** split — all deterministically keep the lowest-hash block (§6.1 rule 3 / §6.4). *(Evidence recording + epoch eviction are **deferred** to FU-8/BFT per §6.4 — intentionally NOT asserted here; Stage B ships only the no-split property.)* | unit |
 | **EC-B-F5** | view bound | A block with `view ≥ VIEW_MAX` is submitted. **Assert:** rejected `ViewOutOfRange`; not applied. And: a `view 1` successor followed by a late `view 0` original triggers a **bounded** reorg to `view 0` (no stuck fork, reorg depth `< FINALITY_DEPTH`). | unit + integration |
 | **EC-A (regression)** | Stage A | `m5_stage_a.rs` runs unchanged. **Assert:** EC-1/2/3/4/7 stay green under the Stage-B binary (the `N = 1` degenerate path, §10). | multi-proc |
 

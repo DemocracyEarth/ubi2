@@ -432,9 +432,9 @@ fn run_multi(args: &NodeArgs) -> anyhow::Result<()> {
 /// The genesis anchor constant currently pinned in `apps/light-node/src/config.ts` — printed alongside
 /// the recomputed anchor for a visible match/mismatch (the CLI is used to regenerate/verify this pin).
 const PINNED_LIGHTNODE_HASH: &str =
-    "b24d054faa31dc8e98ada4955a101f49528b708546f45558c9f45f7a9913779c";
+    "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
 const PINNED_LIGHTNODE_STATE_ROOT: &str =
-    "aa2c66cdd242eed1c3f1fa7511d60b9bc67099f6ffcaa1a8045bc25202bc1d0d";
+    "2ceab410e36255e646826ae52093e4ed438700e4654104b2f79ae74a4f03fb98";
 
 fn genesis_anchor(args: AnchorArgs) -> anyhow::Result<()> {
     let genesis_time = args.genesis_time.unwrap_or(match args.preset {

@@ -157,6 +157,71 @@ pub const fn fee_for_gas(gas: u64) -> u128 {
     (gas as u128) * GAS_PRICE_WEI
 }
 
+// ---------------------------------------------------------------------------------------------
+// M5 Stage B — distributed block production (spec 08 §2.1/§3/§12).
+//
+// The two genuinely-new deterministic primitives live here (per ADR-0007): the validator-set
+// membership read and the round-robin `proposer_index`. Everything time/peer-driven (the view timer,
+// the connectivity guard) lives in `crates/node`. These are pure, integer, dependency-free.
+// ---------------------------------------------------------------------------------------------
+
+/// Height multiple at which the validator set `V` is re-snapshotted (spec 08 §2.1/§12). Genesis
+/// (height 0) is itself a multiple, so `V` is seeded there and refreshed every `EPOCH_BLOCKS` blocks.
+pub const EPOCH_BLOCKS: u64 = 100;
+
+/// Reject a block whose `view` is `>= VIEW_MAX` (spec 08 §4 check 2 / §12). Healthy operation keeps
+/// `view < N`; this is a generous anti-garbage bound, not a hard protocol cap.
+pub const VIEW_MAX: u32 = 1024;
+
+/// The **membership rule** (pure, spec 08 §2.1): the addresses that are BOTH a registered active
+/// validator (`get_juror(a).active` — the M3 juror registry is the shared PoH-gated validator set) AND
+/// a `Verified` human. Sorted ascending by the 20-byte value + deduplicated — the identical discipline
+/// `active_jurors()` uses, so no `HashMap` order ever reaches the schedule (I1). This is what
+/// [`refresh_epoch_validators`] snapshots at each epoch boundary.
+pub fn compute_validator_membership(state: &dyn State) -> Vec<Address> {
+    let mut v: Vec<Address> = state
+        .active_jurors()
+        .into_iter()
+        .filter(|a| {
+            matches!(
+                state.get_human(a).map(|h| h.status),
+                Some(HumanStatus::Verified)
+            )
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The current epoch snapshot of the validator set `V` — the value scheduling reads from the **parent**
+/// state (spec 08 §2.1/§3.1). Sorted ascending; a pure read of committed state (it is stored sorted and
+/// feeds `state_root`). Returns the snapshot, NOT a live re-computation, so membership is stable for a
+/// whole epoch even as humans are verified/revoked mid-epoch.
+pub fn validator_set(state: &dyn State) -> Vec<Address> {
+    state.epoch_validators()
+}
+
+/// Refresh the committed epoch snapshot `MemState::epoch_validators` over the **pre-block** state
+/// (spec 08 §2.1). Called by `execute_block` at a boundary (`height % EPOCH_BLOCKS == 0`, including the
+/// genesis seed at height 0). Deterministic: recomputes [`compute_validator_membership`] and stores it
+/// sorted, so all nodes install a byte-identical snapshot by replay (feeds `state_root`, §8).
+pub fn refresh_epoch_validators(state: &mut dyn State, _height: u64) {
+    let v = compute_validator_membership(state);
+    state.set_epoch_validators(v);
+}
+
+/// The deterministic round-robin proposer index for height `h`, view `v` over an `n`-member set
+/// (spec 08 §2.1/§3.1): `((h + v) as usize) % n`. A pure integer function — no clock, no peer table, no
+/// `HashMap` order. `n == 0` returns 0 (callers require `N >= 1` before scheduling; this only avoids a
+/// divide-by-zero on a misuse). Widened through `u128` so a large height never wraps before the modulo.
+pub fn proposer_index(height: u64, view: u32, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    ((height as u128 + view as u128) % n as u128) as usize
+}
+
 /// Why a fee charge was rejected. Deterministic so two nodes reject identically (invariant I2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeeError {
@@ -668,6 +733,21 @@ pub trait State: Send + Sync {
     fn peek_next_exec_case_id(&self) -> ExecCaseId {
         0
     }
+
+    // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1) ----
+    //
+    // `epoch_validators` is part of consensus state and feeds `state_root` (§8). It is a sorted
+    // `Vec<Address>` snapshotted at each epoch boundary; scheduling reads it from the parent state.
+    // Default impls (empty / no-op) keep non-`MemState` stores compiling; `MemState` overrides them.
+
+    /// The current epoch validator snapshot, **sorted ascending** (the deterministic order the schedule
+    /// and `state_root` fold). Pure read. Default: empty (`N = 0`).
+    fn epoch_validators(&self) -> Vec<Address> {
+        Vec::new()
+    }
+    /// Install the epoch validator snapshot (called by [`refresh_epoch_validators`] at a boundary). The
+    /// caller passes an already-sorted, deduped `Vec<Address>`.
+    fn set_epoch_validators(&mut self, _validators: Vec<Address>) {}
 }
 
 /// In-memory account + stream store (M1 default, extended for M2). Deterministic given the same
@@ -723,6 +803,12 @@ pub struct MemState {
     /// The CSCA governance authority (spec §7.3). `None` ⇒ no authority ⇒ every gated op fails-closed
     /// (the devnet/node seeds a reserved governance address at genesis).
     csca_governance: Option<Address>,
+
+    // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1) ----
+    /// The validator set `V` snapshotted at the last epoch boundary — sorted ascending, deduped. It is
+    /// committed state (feeds `state_root`, §8) and read by the schedule from the parent state. A plain
+    /// `Vec` (not a `HashMap`), so its order is deterministic with no sorting hazard.
+    epoch_validators: Vec<Address>,
 }
 
 impl MemState {
@@ -894,6 +980,17 @@ impl State for MemState {
             .collect();
         v.sort_unstable();
         v
+    }
+
+    // ---- M5 Stage B: epoch validator snapshot ----
+    fn epoch_validators(&self) -> Vec<Address> {
+        self.epoch_validators.clone()
+    }
+    fn set_epoch_validators(&mut self, mut validators: Vec<Address>) {
+        // Store sorted + deduped so the committed order is canonical regardless of caller (I1).
+        validators.sort_unstable();
+        validators.dedup();
+        self.epoch_validators = validators;
     }
 
     // ---- M4: prompt-contract registry ----
@@ -1278,6 +1375,78 @@ mod tests {
         let a = verified_at(0);
         assert_eq!(a.balance(EMISSION_PERIOD_SECS), UBI); // exactly 1 UBI after one hour
         assert_eq!(a.balance(EMISSION_PERIOD_SECS * 24), UBI * 24); // 24 UBI/day
+    }
+
+    // ---- M5 Stage B — validator schedule pure functions (spec 08 §2.1/§3, EC-B6) ----
+
+    fn seed_validator(s: &mut MemState, a: Address, verified: bool) {
+        register_juror(s, &a, 0);
+        s.put_human(Human {
+            address: a,
+            status: if verified {
+                HumanStatus::Verified
+            } else {
+                HumanStatus::Pending
+            },
+            verified_at: 0,
+            liveness_ref: [0u8; 32],
+            vouches_in: vec![],
+            reputation: 0,
+            assurance: Assurance::Std,
+        });
+    }
+
+    /// EC-B6: `compute_validator_membership` / the snapshot is identical under shuffled insertion order,
+    /// includes only Verified active jurors, and is sorted ascending.
+    #[test]
+    fn validator_set_is_insertion_order_independent_and_gated() {
+        let a = [3u8; 20];
+        let b = [1u8; 20];
+        let c = [2u8; 20];
+        let d = [9u8; 20]; // active juror but NOT a verified human ⇒ excluded
+
+        let mut s1 = MemState::new();
+        seed_validator(&mut s1, a, true);
+        seed_validator(&mut s1, b, true);
+        seed_validator(&mut s1, c, true);
+        seed_validator(&mut s1, d, false);
+
+        let mut s2 = MemState::new();
+        seed_validator(&mut s2, d, false);
+        seed_validator(&mut s2, c, true);
+        seed_validator(&mut s2, a, true);
+        seed_validator(&mut s2, b, true);
+
+        let m1 = compute_validator_membership(&s1);
+        let m2 = compute_validator_membership(&s2);
+        assert_eq!(m1, m2, "membership is insertion-order independent");
+        assert_eq!(m1, vec![b, c, a], "sorted ascending, unverified excluded");
+
+        // The snapshot round-trips through refresh + validator_set identically.
+        refresh_epoch_validators(&mut s1, 0);
+        refresh_epoch_validators(&mut s2, 0);
+        assert_eq!(validator_set(&s1), validator_set(&s2));
+        assert_eq!(validator_set(&s1), vec![b, c, a]);
+    }
+
+    /// EC-B6: `proposer_index` is a pure integer round-robin: `(h + v) % n`.
+    #[test]
+    fn proposer_index_is_pure_round_robin() {
+        assert_eq!(proposer_index(0, 0, 3), 0);
+        assert_eq!(proposer_index(1, 0, 3), 1);
+        assert_eq!(proposer_index(2, 0, 3), 2);
+        assert_eq!(proposer_index(3, 0, 3), 0);
+        // A view change advances to the next validator in rotation.
+        assert_eq!(proposer_index(3, 1, 3), 1);
+        assert_eq!(proposer_index(3, 2, 3), 2);
+        // N = 1 degenerate (Stage A): always index 0 for every (h, v).
+        for h in 0..5 {
+            for v in 0..5 {
+                assert_eq!(proposer_index(h, v, 1), 0);
+            }
+        }
+        // No panic at n == 0 (misuse guard).
+        assert_eq!(proposer_index(5, 2, 0), 0);
     }
 
     #[test]

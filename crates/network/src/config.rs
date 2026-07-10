@@ -90,6 +90,11 @@ pub struct NetworkConfig {
     pub enable_mdns: bool,
     /// gossipsub heartbeat interval. Lower = faster mesh formation (good for tests); default 1s.
     pub gossip_heartbeat: Duration,
+    /// M5 Stage B (spec 08 §5.3): the ACTIVE liveness-probe (libp2p `ping`) interval. Kept sub-second
+    /// and well under `PROPOSER_TIMEOUT` so a silently-partitioned / frozen peer is detected as
+    /// unreachable within a bound `≪ FINALITY_DEPTH × BLOCK_MS` (the node prunes it from the
+    /// production-guard reachable set on ping-timeout). Default 500ms.
+    pub ping_interval: Duration,
 }
 
 impl NetworkConfig {
@@ -107,6 +112,7 @@ impl NetworkConfig {
             bootstrap_peers: Vec::new(),
             enable_mdns: false,
             gossip_heartbeat: Duration::from_secs(1),
+            ping_interval: Duration::from_millis(500),
         }
     }
 
@@ -138,6 +144,11 @@ impl NetworkConfig {
     /// Set the gossipsub heartbeat interval.
     pub fn with_gossip_heartbeat(mut self, d: Duration) -> Self {
         self.gossip_heartbeat = d;
+        self
+    }
+    /// Set the active-liveness (ping) probe interval (§5.3).
+    pub fn with_ping_interval(mut self, d: Duration) -> Self {
+        self.ping_interval = d;
         self
     }
 }

@@ -23,7 +23,8 @@
 //! All async/libp2p lives in `crates/network`; this module only moves bytes through the
 //! `NetworkHandle`/`NetEvent` seam and drives the chain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use alloy_primitives::{Address as AlloyAddr, B256};
 use libp2p::{Multiaddr, PeerId};
@@ -32,7 +33,24 @@ use ubi2_network::consts::{
 };
 use ubi2_network::wire::{Blocks, GetBlocks, Hello, WireBlock};
 use ubi2_network::{NetEvent, NetworkHandle};
-use ubi2_rpc::{Chain, PeerStatus};
+use ubi2_rpc::{BlockError, Chain, PeerStatus};
+
+/// M5 Stage B (spec 08 §5.4): which follower-side block rejections are the peer's FAULT (a genuinely
+/// invalid / forged block) versus a BENIGN fork-race artifact of CFT rotation (a block off our tip that
+/// fork choice will reconcile). Only the former is penalized: a benign `WrongParent` / `NonContiguous`
+/// / `BadTimestamp` block from an honest peer relaying the canonical chain must NOT be greylisted, or a
+/// node stuck on a losing branch would abandon exactly the peers that could heal it (the Blocker-1 bug).
+fn is_penalizable(err: &BlockError) -> bool {
+    matches!(
+        err,
+        BlockError::WrongProposer
+            | BlockError::BadSignature
+            | BlockError::ViewOutOfRange { .. }
+            | BlockError::StateRootMismatch { .. }
+            | BlockError::NoValidatorSet
+            | BlockError::UndecodableTx
+    )
+}
 
 /// Per-peer state the node tracks (separate from the transport-level peer table in `crates/network`).
 #[derive(Clone, Debug, Default)]
@@ -44,6 +62,13 @@ struct PeerEntry {
     /// Reset on any forward progress. When it crosses [`SYNC_MAX_NO_PROGRESS_ROUNDS`] the peer is
     /// penalized + abandoned so a peer advertising a tip it cannot serve cannot drive an unbounded loop.
     sync_no_progress: u32,
+    /// M5 Stage B (spec 08 §5.3): the last instant this peer was proven ALIVE — set on connect, on a
+    /// successful `ping`, and on any authenticated inbound message (Hello / block / sync response). The
+    /// production connectivity guard counts a `V`-member peer as reachable ONLY while this is fresh
+    /// (`now − last_alive < LIVENESS_TIMEOUT`), so a silently-frozen/black-holed peer (whose TCP
+    /// connection lingers for minutes) is pruned from "reachable" within a bound `≪ FINALITY_DEPTH ×
+    /// BLOCK_MS`. A LOCAL liveness signal — it never enters a committed value (I1/I2).
+    last_alive: Option<Instant>,
 }
 
 /// The node's network driver: holds the chain + handle + peer table and processes `NetEvent`s. One
@@ -56,32 +81,133 @@ pub struct NetDriver {
     peers: HashMap<PeerId, PeerEntry>,
     /// This node's validator key (for the `Hello` peer-proof), if it is a validator.
     validator_key: Option<ubi2_network::ValidatorKey>,
-    /// The Stage-A designated proposer's address — every follower validates a block's author against it.
-    designated_proposer: Option<AlloyAddr>,
-    /// True iff THIS node is the designated proposer (it produces blocks; others do not).
+    /// M5 Stage B (§3.3/§10): the Stage-A single-proposer OVERRIDE (only when `UBI2_DESIGNATED_PROPOSER`
+    /// is explicitly configured). `Some(a)` ⇒ `V = [a]` (N=1) with precedence; `None` ⇒ the on-chain
+    /// epoch snapshot governs the schedule (the multi-validator devnet).
+    validator_override: Option<AlloyAddr>,
+    /// True iff THIS node holds a proposer key (it MAY produce a block when the schedule elects it).
     is_proposer: bool,
     /// Highest tip we have already requested a sync up to, so we don't spam overlapping range pulls.
     sync_in_flight_to: u64,
+    // ---- M5 Stage B: the LOCAL per-height view timer (§5.1) — wall-clock is LOCAL only, never committed.
+    /// The height this node is currently trying to extend (`head + 1`); re-armed on every new head.
+    view_height: u64,
+    /// This node's local `current_view` for `view_height` (0 on a fresh head; incremented on timeout).
+    current_view: u32,
+    /// Monotonic deadline for the current view; on expiry with no block at `view_height`, escalate (§5.1).
+    view_deadline: Instant,
+    /// The local proposer timeout (`2 × BLOCK_MS`, §12) — how long to wait for the scheduled proposer.
+    proposer_timeout: Duration,
+    /// M5 Stage B (spec 08 §5.3): how long a peer's liveness stays "fresh" for the production guard. A
+    /// `V`-member is counted reachable only while `now − last_alive < LIVENESS_TIMEOUT`. Set to
+    /// `PROPOSER_TIMEOUT` (`2 × BLOCK_MS`): comfortably above the ping interval (a healthy peer refreshes
+    /// several times over) yet far below `FINALITY_DEPTH × BLOCK_MS` (6× BLOCK_MS) — so a minority that
+    /// loses majority-liveness stalls LONG before it could k-deep-finalize a divergent chain.
+    liveness_timeout: Duration,
 }
 
 impl NetDriver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chain: Chain,
         handle: NetworkHandle,
         validator_key: Option<ubi2_network::ValidatorKey>,
         designated_proposer: Option<AlloyAddr>,
+        validator_override: Option<AlloyAddr>,
         is_proposer: bool,
+        block_ms: u64,
     ) -> Self {
         chain.set_proposer_role(is_proposer, designated_proposer);
-        NetDriver {
+        let proposer_timeout = Duration::from_millis(block_ms.saturating_mul(2).max(1));
+        let driver = NetDriver {
             chain,
             handle,
             peers: HashMap::new(),
             validator_key,
-            designated_proposer,
+            validator_override,
             is_proposer,
             sync_in_flight_to: 0,
+            view_height: 0,
+            current_view: 0,
+            view_deadline: Instant::now() + proposer_timeout,
+            proposer_timeout,
+            // §5.3: liveness freshness window = PROPOSER_TIMEOUT (2×BLOCK_MS) ≪ FINALITY_DEPTH×BLOCK_MS.
+            liveness_timeout: proposer_timeout,
+        };
+        driver.publish_consensus_status();
+        driver
+    }
+
+    /// M5 Stage B (§5.3): mark a peer as proven-alive right now (on connect, a successful ping, or any
+    /// authenticated inbound message). Keeps the production-guard "reachable" verdict fresh.
+    fn mark_peer_alive(&mut self, peer: PeerId) {
+        self.peers.entry(peer).or_default().last_alive = Some(Instant::now());
+    }
+
+    /// M5 Stage B (§11): publish the effective `V` + this node's local `current_view` + the reachable
+    /// V-member count for `ubi_consensusStatus`. Called on start, on tip advance, on a view escalation,
+    /// and whenever peer liveness changes. The reachable count is a LOCAL liveness value (never committed).
+    fn publish_consensus_status(&self) {
+        let v = self.chain.effective_validator_set(self.validator_override);
+        let reachable = self.reachable_validator_count(&v);
+        self.chain
+            .set_consensus_status(v, self.current_view, reachable as u32);
+    }
+
+    /// M5 Stage B (spec 08 §5.3): the count of distinct `V`-members this node currently considers
+    /// **reachable** — itself (if a validator in `V`) plus each bound-validator peer that is BOTH in `V`
+    /// AND recently proven alive by the active liveness probe (`now − last_alive < LIVENESS_TIMEOUT`).
+    ///
+    /// The freshness gate is the Blocker-2 fix: reachability is derived from an ACTIVE liveness signal
+    /// (libp2p `ping` + authenticated inbound traffic), NOT from the transport peer table alone — which
+    /// only updates on TCP disconnect (minutes ≫ FINALITY_DEPTH×BLOCK_MS). A silently black-holed /
+    /// frozen peer whose socket lingers is therefore pruned from "reachable" within
+    /// `LIVENESS_TIMEOUT ≪ FINALITY_DEPTH×BLOCK_MS`, so a minority that loses majority-liveness stalls
+    /// instead of finalizing a divergent chain. Pure of any committed value (I1/I2).
+    fn reachable_validator_count(&self, v: &[AlloyAddr]) -> usize {
+        if v.is_empty() {
+            return 0;
         }
+        let now = Instant::now();
+        let vset: HashSet<AlloyAddr> = v.iter().copied().collect();
+        let mut reachable: HashSet<AlloyAddr> = HashSet::new();
+        // Count self if this node is a validator in `V` (always locally live).
+        if let Some(me) = self.chain.proposer_address() {
+            if vset.contains(&me) {
+                reachable.insert(me);
+            }
+        }
+        // Count each bound-validator peer in `V` that is FRESH by the active-liveness signal (§5.3).
+        for e in self.peers.values() {
+            if let Some(val) = e.validator {
+                if !vset.contains(&val) {
+                    continue;
+                }
+                let fresh = e
+                    .last_alive
+                    .is_some_and(|t| now.duration_since(t) < self.liveness_timeout);
+                if fresh {
+                    reachable.insert(val);
+                }
+            }
+        }
+        reachable.len()
+    }
+
+    /// M5 Stage B (§5.3): the production connectivity guard. This node may PRODUCE only when a **majority
+    /// of `V`** (`N/2 + 1`, counting itself if it is a validator) is currently reachable *by the active
+    /// liveness signal*. A minority partition therefore stalls (produces + finalizes nothing) rather than
+    /// forking finalized history; on heal it re-syncs via fork choice. For `N = 1` the majority is 1
+    /// (self) ⇒ Stage A is unaffected. This gates PRODUCTION only (a liveness policy); it never enters
+    /// validation (a pure function).
+    fn production_guard_ok(&self) -> bool {
+        let v = self.chain.effective_validator_set(self.validator_override);
+        let n = v.len();
+        if n == 0 {
+            return false;
+        }
+        let majority = n / 2 + 1;
+        self.reachable_validator_count(&v) >= majority
     }
 
     /// Build the `Hello` this node advertises (called on start + after every tip advance).
@@ -111,6 +237,7 @@ impl NetDriver {
     fn refresh_advertised_state(&self) {
         self.handle.update_hello(self.build_hello());
         self.publish_peers();
+        self.publish_consensus_status();
     }
 
     /// Publish the node's peer table into the chain so `ubi_getPeers` reads it (EC-1).
@@ -139,9 +266,14 @@ impl NetDriver {
                 tracing::info!(%addr, "p2p listening");
             }
             NetEvent::PeerConnected { peer, addr } => {
-                self.peers.entry(peer).or_default().multiaddr = Some(addr);
+                let e = self.peers.entry(peer).or_default();
+                e.multiaddr = Some(addr);
+                // §5.3: a fresh connection is initial liveness evidence (until the first ping proves or
+                // disproves it). Without this the guard would spuriously stall right after a reconnect.
+                e.last_alive = Some(Instant::now());
                 tracing::info!(%peer, "peer connected");
                 self.publish_peers();
+                self.publish_consensus_status();
             }
             NetEvent::PeerDisconnected { peer } => {
                 self.peers.remove(&peer);
@@ -162,6 +294,16 @@ impl NetDriver {
                 token,
             } => self.on_sync_request(from, request, token),
             NetEvent::SyncResponse { from, blocks, .. } => self.on_sync_response(from, *blocks),
+            NetEvent::PeerPing { peer, ok } => {
+                // §5.3 active-liveness probe: a successful ping refreshes the peer's liveness (keeps it
+                // in the production-guard reachable set); a failure/timeout is left to age out — once
+                // `last_alive` is older than LIVENESS_TIMEOUT the peer is pruned from "reachable", so a
+                // silently-frozen/black-holed peer stops counting toward majority within the bound.
+                if ok {
+                    self.mark_peer_alive(peer);
+                    self.publish_consensus_status();
+                }
+            }
         }
     }
 
@@ -178,6 +320,20 @@ impl NetDriver {
             self.publish_peers();
             return;
         }
+        // M5 Stage B (§9): protocol-version compatibility. A peer whose major protocol version differs
+        // speaks a different block encoding (Stage B added the header `view`), so it is INCOMPATIBLE —
+        // disconnect at the handshake rather than silently mis-decode its blocks. This makes the wire
+        // change a loud, explicit break (alongside the genesis/chain check above).
+        if hello.protocol_ver != PROTOCOL_VERSION {
+            tracing::warn!(
+                %peer, peer_ver = hello.protocol_ver, local_ver = PROTOCOL_VERSION,
+                "incompatible protocol version — disconnecting"
+            );
+            self.handle.disconnect(peer);
+            self.peers.remove(&peer);
+            self.publish_peers();
+            return;
+        }
         let bound = hello.verify_binding(&peer.to_bytes());
         // SEC-M5A-1: a `Hello.tip` is peer-advertised and UNAUTHENTICATED — a hostile peer can claim any
         // height. We record it for `ubi_getPeers`, but we only chase it if it is plausibly ahead (within
@@ -187,6 +343,8 @@ impl NetDriver {
         let entry = self.peers.entry(peer).or_default();
         entry.validator = bound;
         entry.tip = Some(hello.tip);
+        // §5.3: a received Hello proves the peer is alive right now (refreshes the guard freshness).
+        entry.last_alive = Some(Instant::now());
         if let Some(v) = bound {
             tracing::info!(%peer, validator = %v, tip = hello.tip.0, "peer hello (validator bound)");
         } else {
@@ -215,23 +373,52 @@ impl NetDriver {
         }
     }
 
-    /// §5.1 block validation (fail-closed). A follower re-executes + matches the `state_root`; the
-    /// proposer ignores its own echoed blocks (it produced them). On accept, relay + advance the
-    /// advertised tip; on reject, penalize the peer.
+    /// §5.1 block validation (fail-closed) + §5.4/§6 fork-choice reorg. A follower re-executes + matches
+    /// the `state_root`; the proposer ignores its own echoed blocks (it produced them). On a clean
+    /// extension it accepts + relays; on a benign fork-race block (a competitor at the tip, or a child of
+    /// a not-yet-canonical block) it routes to the bounded GENERAL reorg (never penalizing the honest
+    /// relayer); only a genuinely-invalid block (bad view/signature/proposer/state-root) is penalized.
     fn on_block(&mut self, from: PeerId, block: WireBlock) {
-        let (local_h, _) = self.chain.tip();
-        if block.number <= local_h {
-            return; // already have this height (or behind via sync) — nothing to apply
+        // §5.3: receiving a valid gossiped block proves the sender is alive (transport-verified by the
+        // network layer's shallow_verify before it reaches here).
+        self.mark_peer_alive(from);
+        let (local_h, _local_hash) = self.chain.tip();
+        let block_hash = block.hash();
+        // Already canonical (our tip or an interior block) — dedup, nothing to do.
+        if self.chain.knows_block(&block_hash) {
+            return;
         }
+
+        // The common path: a clean extension of our current tip.
+        if block.number == local_h + 1 {
+            match self.apply_wire_block(&block) {
+                Ok(()) => {
+                    tracing::info!(
+                        number = block.number,
+                        txs = block.txs.len(),
+                        "applied gossiped block"
+                    );
+                    self.peers.entry(from).or_default().tip = Some((block.number, block_hash));
+                    self.handle.publish_block(block);
+                    self.refresh_advertised_state();
+                    return;
+                }
+                Err(e) if is_penalizable(&e) => {
+                    tracing::warn!(%from, number = block.number, error = %e, "rejecting block; penalizing peer");
+                    self.handle.penalize_peer(from);
+                    return;
+                }
+                Err(_) => {
+                    // WrongParent / NonContiguous / BadTimestamp: a BENIGN fork-race child (its parent is
+                    // not our tip). Fall through to the general fork-choice reorg — do NOT penalize.
+                }
+            }
+        }
+
+        // A block beyond head+1 we cannot yet link (a gap). Retain it in the side store (it may complete
+        // a branch once its ancestors arrive) AND drive sync to fetch the gap — but only after the
+        // SEC-M5A-1 trust gate, so a forged/untrusted ahead-announcement cannot pin a bogus tip.
         if block.number > local_h + 1 {
-            // A gap: we're missing parents. Before trusting this announcement's NUMBER (and pinning it as
-            // a sync target) we fail closed on two SEC-M5A-1 conditions:
-            //   1. The block must be AUTHENTICATED by the Stage-A designated proposer. `shallow_verify`
-            //      already requires a valid proposer signature (it no longer passes an empty sig), and we
-            //      additionally check the recovered/declared proposer IS our designated proposer. A
-            //      forged UNSIGNED block claiming `number = u64::MAX` therefore never reaches `maybe_sync`.
-            //   2. The advertised height must be within SYNC_MAX_LOOKAHEAD of our head (handled in
-            //      `maybe_sync`) so even a *signed* (but absurd) number cannot pin an unreachable target.
             if !self.announced_tip_is_trustworthy(&block) {
                 tracing::warn!(
                     %from, number = block.number,
@@ -240,27 +427,58 @@ impl NetDriver {
                 self.handle.penalize_peer(from);
                 return;
             }
-            self.peers.entry(from).or_default().tip = Some((block.number, block.hash()));
+            self.consider_fork(from, &block);
+            self.peers.entry(from).or_default().tip = Some((block.number, block_hash));
             self.maybe_sync(from, block.number);
             return;
         }
-        let block_id = (block.number, block.hash());
-        match self.apply_wire_block(&block) {
-            Ok(()) => {
+
+        // Otherwise: a competing / divergent block AT or BELOW our tip height (a tip race, or a fork
+        // branch block). Route it to the bounded GENERAL reorg (§5.4/§6.1): reorg iff it completes a
+        // strictly fork-choice-preferred branch back to a common ancestor above the finalized frontier.
+        self.consider_fork(from, &block);
+    }
+
+    /// M5 Stage B (spec 08 §5.4/§6.1/§6.3): feed a benign fork-race / non-contiguous block into the
+    /// bounded GENERAL reorg. `consider_competing_block` authenticates + retains it in the side store and
+    /// reorgs iff it completes a strictly-preferred, finality-safe branch. On a reorg we relay the block
+    /// and re-advertise our new tip; a valid-but-not-adopted block is simply retained (NOT penalized —
+    /// it is a normal CFT tip race); only a GENUINELY invalid block (bad view/signature/proposer/root)
+    /// is penalized.
+    fn consider_fork(&mut self, from: PeerId, block: &WireBlock) {
+        match self.chain.consider_competing_block(
+            block.number,
+            block.parent_hash,
+            block.timestamp,
+            block.view,
+            block.txs_root,
+            block.state_root,
+            block.proposer,
+            &block.proposer_sig,
+            &block.txs,
+            self.validator_override,
+        ) {
+            Ok(Some(applied)) => {
                 tracing::info!(
-                    number = block.number,
-                    txs = block.txs.len(),
-                    "applied gossiped block"
+                    number = applied.number,
+                    view = applied.view,
+                    "reorged to fork-choice-preferred branch (bounded general reorg)"
                 );
-                // Record the source peer's tip (it produced/relayed this block) for `ubi_getPeers`.
-                self.peers.entry(from).or_default().tip = Some(block_id);
-                // Relay the valid block onward (gossipsub dedups by block hash) and re-advertise our tip.
-                self.handle.publish_block(block);
+                self.chain.cache_raw_txs(&block.txs);
+                self.peers.entry(from).or_default().tip = Some((block.number, block.hash()));
+                self.handle.publish_block(block.clone());
                 self.refresh_advertised_state();
             }
-            Err(e) => {
-                tracing::warn!(%from, number = block.number, error = %e, "rejecting block; penalizing peer");
+            Ok(None) => {
+                // Valid but not adopted (current chain still preferred, branch incomplete, or
+                // finality-bounded) — retained in the side store for later. Benign: do NOT penalize.
+            }
+            Err(e) if is_penalizable(&e) => {
+                tracing::debug!(%from, number = block.number, error = %e, "fork block genuinely invalid; penalizing peer");
                 self.handle.penalize_peer(from);
+            }
+            Err(e) => {
+                tracing::debug!(%from, number = block.number, error = %e, "fork block not adoptable (benign)");
             }
         }
     }
@@ -275,32 +493,36 @@ impl NetDriver {
         if !block.shallow_verify() {
             return false; // unsigned or txs_root/sig mismatch — never trust its number
         }
-        match self.designated_proposer {
-            // In a networked Stage-A deployment the designated proposer is always set; only its signed
-            // blocks advance the tip.
-            Some(dp) => block.proposer == dp,
-            // No designated proposer configured (single-node devnet) — there is no gossip peer to forge a
-            // tip, but fail closed anyway: do not chase an ahead announcement we cannot attribute.
-            None => false,
+        // Stage B: the announced author must be a plausible validator. In the Stage-A override that is
+        // the single designated proposer; in the multi-validator mode it is any member of the effective
+        // `V` (the on-chain epoch snapshot). We cannot re-execute an ahead-block here (we lack its
+        // parents), so this membership check is the gate that stops a forged/wrong-author block pinning a
+        // bogus tip; the schedule/re-execution is re-checked on the sync-applied path.
+        let v = self.chain.effective_validator_set(self.validator_override);
+        if v.is_empty() {
+            // No set resolvable (single-node devnet with no seeded validators) — fail closed.
+            return false;
         }
+        v.contains(&block.proposer)
     }
 
     /// Validate + apply one wire block against the local head (the shared follower path used by both live
-    /// gossip and sync). Caches the block's raw txs so this node can later re-serve them on sync.
-    fn apply_wire_block(&self, block: &WireBlock) -> Result<(), String> {
-        self.chain
-            .validate_and_apply_block(
-                block.number,
-                block.parent_hash,
-                block.timestamp,
-                block.txs_root,
-                block.state_root,
-                block.proposer,
-                &block.proposer_sig,
-                &block.txs,
-                self.designated_proposer,
-            )
-            .map_err(|e| e.to_string())?;
+    /// gossip and sync). Caches the block's raw txs so this node can later re-serve them on sync. Returns
+    /// the typed [`BlockError`] so the caller can distinguish a benign fork-race rejection (route to the
+    /// general reorg) from a genuinely-invalid block (penalize) via [`is_penalizable`].
+    fn apply_wire_block(&self, block: &WireBlock) -> Result<(), BlockError> {
+        self.chain.validate_and_apply_block(
+            block.number,
+            block.parent_hash,
+            block.timestamp,
+            block.view,
+            block.txs_root,
+            block.state_root,
+            block.proposer,
+            &block.proposer_sig,
+            &block.txs,
+            self.validator_override,
+        )?;
         self.chain.cache_raw_txs(&block.txs);
         Ok(())
     }
@@ -331,37 +553,59 @@ impl NetDriver {
         self.handle.respond_blocks(token, Blocks { blocks });
     }
 
-    /// §4.2 sync client: apply a received batch in ascending order; abandon the peer on the first invalid
-    /// block (it is on a bad/forked chain — AC-F8). After catching up, live gossip continues.
+    /// §4.2 sync client + §5.4/§6.3 fork healing. Apply a received batch in ascending order. A block that
+    /// cleanly extends our tip is applied; a block that DIVERGES from our chain (WrongParent — the peer
+    /// is on a different, possibly-canonical branch) is NOT a reason to abandon an honest peer (the
+    /// Blocker-1 bug) — it is routed to the bounded GENERAL reorg (retained + maybe reorged). If the
+    /// batch reveals a fork we could not yet complete, we BACKFILL the peer's divergent ancestors (from
+    /// just above the finalized frontier) so the side store can complete the branch and reorg. Only a
+    /// GENUINELY-invalid block (bad view/signature/proposer/state-root) or a stuck no-progress peer is
+    /// penalized (AC-F8).
     fn on_sync_response(&mut self, from: PeerId, resp: Blocks) {
-        let mut applied = 0usize;
+        // §5.3: a sync response proves the peer is alive.
+        self.mark_peer_alive(from);
+        let head_before = self.chain.tip().0;
+        let mut fork_seen = false;
+
         for block in &resp.blocks {
             let (head, _) = self.chain.tip();
-            if block.number <= head {
-                continue; // already have it (overlapping batch)
+            let bh = block.hash();
+            // Dedup: a block already in our canonical chain (a shared prefix / overlapping batch).
+            if self.chain.knows_block(&bh) {
+                continue;
             }
-            if block.number != head + 1 {
-                break; // out of order / gap — stop and re-request from the new head
-            }
+            // Transport sanity: a sync block must carry a valid txs_root + a recovering signature.
             if !block.shallow_verify() {
                 tracing::warn!(%from, number = block.number, "sync block failed shallow-verify; abandoning peer");
                 self.handle.penalize_peer(from);
                 break;
             }
-            match self.apply_wire_block(block) {
-                Ok(()) => applied += 1,
-                Err(e) => {
-                    tracing::warn!(%from, number = block.number, error = %e, "sync block rejected; abandoning peer");
-                    self.handle.penalize_peer(from);
-                    break;
+            // Fast path: a clean extension of our tip (before we switch to fork mode for this batch).
+            if !fork_seen && block.number == head + 1 {
+                match self.apply_wire_block(block) {
+                    Ok(()) => continue,
+                    Err(e) if is_penalizable(&e) => {
+                        tracing::warn!(%from, number = block.number, error = %e, "sync block invalid; abandoning peer");
+                        self.handle.penalize_peer(from);
+                        break;
+                    }
+                    // WrongParent / NonContiguous: the peer's chain diverges from ours — a FORK, not a
+                    // fault. Switch to fork mode and route this (and the rest of the batch) to the general
+                    // reorg; an honest peer relaying the canonical chain is NEVER penalized for this.
+                    Err(_) => fork_seen = true,
                 }
             }
+            // Fork mode (or a below-tip divergent block): retain + maybe reorg via the general path.
+            self.consider_fork(from, block);
         }
-        // Allow a follow-up request regardless of the branch below (the in-flight pull has resolved).
-        self.sync_in_flight_to = 0;
 
-        if applied > 0 {
-            tracing::info!(%from, applied, tip = self.chain.tip().0, "applied sync batch");
+        // The in-flight pull has resolved; allow a follow-up request.
+        self.sync_in_flight_to = 0;
+        let head_after = self.chain.tip().0;
+        let progressed = head_after > head_before;
+
+        if progressed {
+            tracing::info!(%from, tip = head_after, "applied sync batch (or healed a fork by reorg)");
             // Forward progress: reset the no-progress counter and chase the next batch toward the tip.
             if let Some(e) = self.peers.get_mut(&from) {
                 e.sync_no_progress = 0;
@@ -373,12 +617,9 @@ impl NetDriver {
             return;
         }
 
-        // SEC-M5A-1: NO forward progress (empty batch, an OutboundFailure-synthesized empty response, an
-        // overlapping batch, or a peer serving blocks it cannot link). Re-issuing `maybe_sync` here
-        // unconditionally — as the old code did — produces an UNBOUNDED re-request loop against a peer
-        // advertising a tip (possibly forged via u64::MAX) it cannot serve. Instead we count no-progress
-        // rounds and, past the bound, PENALIZE + abandon the peer rather than loop. The peer must offer a
-        // genuinely-progressing response (or re-advertise) to be chased again.
+        // SEC-M5A-1: NO forward progress. Re-issuing a range pull unconditionally produces an UNBOUNDED
+        // loop against a peer that cannot serve a linkable chain. Count no-progress rounds and, past the
+        // bound, PENALIZE + abandon the peer.
         let rounds = {
             let e = self.peers.entry(from).or_default();
             e.sync_no_progress = e.sync_no_progress.saturating_add(1);
@@ -389,19 +630,40 @@ impl NetDriver {
                 %from, rounds,
                 "sync made no progress for too many rounds; penalizing + abandoning peer (no re-request)"
             );
-            // Penalize (counts toward the greylist threshold) and stop chasing this peer's tip: drop our
-            // recorded tip for it so a later `maybe_sync` does not re-target the same unreachable height.
             self.handle.penalize_peer(from);
             if let Some(e) = self.peers.get_mut(&from) {
                 e.tip = None;
             }
             return;
         }
-        // Bounded retry: one more attempt toward the (still-recorded, still-plausible) tip.
-        tracing::debug!(%from, rounds, "sync made no progress; bounded retry");
-        if let Some(peer_tip) = self.peers.get(&from).and_then(|e| e.tip).map(|(h, _)| h) {
+        // Bounded retry. If this batch revealed a FORK we could not yet complete, BACKFILL the peer's
+        // divergent ancestors (from just above the finalized frontier) so the side store can complete the
+        // branch back to a common ancestor and heal it by a bounded general reorg (§5.4/§6.3) — instead
+        // of abandoning the honest peer. Otherwise retry toward the recorded tip.
+        if fork_seen {
+            self.request_fork_backfill(from);
+        } else if let Some(peer_tip) = self.peers.get(&from).and_then(|e| e.tip).map(|(h, _)| h) {
+            tracing::debug!(%from, rounds, "sync made no progress; bounded retry");
             self.maybe_sync(from, peer_tip);
         }
+    }
+
+    /// M5 Stage B (spec 08 §5.4/§6.3): when a sync batch reveals the peer is on a DIFFERENT branch (a
+    /// fork), pull the peer's blocks from just above the finalized frontier down to our head so the
+    /// divergent ANCESTORS arrive. Combined with the divergent descendants already retained from the
+    /// batch, the side store can then complete the branch back to a common ancestor and heal the fork by
+    /// a bounded general reorg. Bounded by `SYNC_MAX_BATCH`; the no-progress counter caps re-issue so a
+    /// peer that cannot actually complete the branch is eventually abandoned.
+    fn request_fork_backfill(&mut self, peer: PeerId) {
+        let head = self.chain.tip().0;
+        let finalized = self.chain.finalized_height();
+        let from = finalized.saturating_add(1).max(1);
+        if from > head {
+            return; // nothing below the tip to backfill (fork must be at/below finalized — refuse it)
+        }
+        let to = head.min(from + SYNC_MAX_BATCH - 1);
+        tracing::info!(%peer, from, to, "fork detected on sync; backfilling divergent ancestors for a bounded reorg");
+        self.handle.request_blocks(peer, GetBlocks { from, to });
     }
 
     /// Request the missing range from `peer` if its `peer_tip` is ahead of our head and we don't already
@@ -440,6 +702,7 @@ impl NetDriver {
             number: b.number,
             parent_hash: b.parent_hash,
             timestamp: b.timestamp,
+            view: b.view,
             txs_root: b.txs_root,
             state_root: b.state_root,
             proposer: b.proposer,
@@ -448,15 +711,79 @@ impl NetDriver {
         }
     }
 
-    /// The PROPOSER's per-tick action: produce a block from the local mempool and broadcast it. Returns
-    /// the produced block so the caller can persist + log. Followers never call this (Stage A).
+    /// M5 Stage B (§5.1) — the per-tick consensus step every validator node runs on the block interval:
+    /// advance the LOCAL view timer, and PRODUCE a block iff this node is the scheduled proposer for
+    /// `(head+1, current_view)` AND the production connectivity guard (§5.3) holds. Returns the produced
+    /// block (for persist/log) or `None`. Wall-clock (`Instant`) is used ONLY for the view deadline; the
+    /// block's committed timestamp is `timestamp` (the caller's clock), and the schedule/validity read no
+    /// clock — so a clock-skewed node still agrees block-for-block on what is valid (I1/I2).
+    ///
+    /// Back-compat (Stage A / N=1): the sole validator is always `proposer(h, v)`, the guard's
+    /// `majority = 1` is met by self, and it produces every block at `view 0` — exactly Stage A.
     pub fn tick_proposer(&mut self, timestamp: u64) -> Option<ubi2_rpc::Block> {
+        let (head, _) = self.chain.tip();
+        let target = head + 1;
+        // Re-arm the local view timer on a new head (adopted by production or by applying a block).
+        if self.view_height != target {
+            self.view_height = target;
+            self.current_view = 0;
+            self.view_deadline = Instant::now() + self.proposer_timeout;
+            self.publish_consensus_status();
+        } else if Instant::now() >= self.view_deadline {
+            // §5.1 timeout: no valid block at `target` by the deadline — escalate to the next view. The
+            // successor is authorized purely by the schedule (§5.2); no view-change message is sent.
+            self.current_view = self.current_view.saturating_add(1);
+            self.view_deadline = Instant::now() + self.proposer_timeout;
+            tracing::info!(
+                height = target,
+                view = self.current_view,
+                "view timeout — escalating"
+            );
+            self.publish_consensus_status();
+        }
+        // §5.3: refresh the reachable-validator count every tick so it AGES as peer liveness changes
+        // (a frozen/black-holed peer stops refreshing `last_alive` → drops out of "reachable"), keeping
+        // `ubi_consensusStatus.reachableValidators` live for the partition observer.
+        self.publish_consensus_status();
+
+        // A node with no proposer key can never produce (a pure follower).
         if !self.is_proposer {
             return None;
         }
-        let block = self.chain.produce_block(timestamp);
+        // Am I the scheduled proposer for (target, current_view)?
+        let me = self.chain.proposer_address();
+        let scheduled =
+            self.chain
+                .scheduled_proposer(target, self.current_view, self.validator_override);
+        if me.is_none() || scheduled.is_none() || me != scheduled {
+            return None;
+        }
+        // Defense-in-depth (mirrors the §4 receiver `ViewOutOfRange` check on the producer side): never
+        // emit a block whose view the network would reject. A node escalating to `VIEW_MAX` is already
+        // badly wedged — stall rather than spam blocks that get rejected + penalized.
+        if self.current_view >= ubi2_runtime::VIEW_MAX {
+            tracing::warn!(
+                height = target,
+                view = self.current_view,
+                "view escalated to VIEW_MAX — stalling production (chain wedged; awaiting recovery)"
+            );
+            return None;
+        }
+        // §5.3 production connectivity guard: only produce when connected to a majority of `V`.
+        if !self.production_guard_ok() {
+            tracing::debug!(
+                height = target,
+                view = self.current_view,
+                "scheduled, but production guard not met (not majority-connected) — not producing"
+            );
+            return None;
+        }
+        let block = self
+            .chain
+            .produce_block_at_view(timestamp, self.current_view);
         let wire = self.wire_block_from(&block);
         self.handle.publish_block(wire);
+        // We just extended to `target`; the next tick re-arms the view timer for `target + 1`.
         self.refresh_advertised_state();
         Some(block)
     }
@@ -508,7 +835,7 @@ mod sync_loop_tests {
         let cfg = NetworkConfig::new(ubi2_rpc::DEVNET_CHAIN_ID, chain.genesis_hash());
         let (handle, _rx) = rt.block_on(async { ubi2_network::start(cfg).unwrap() });
         let designated = Some(AlloyAddr::repeat_byte(0xDD));
-        let driver = NetDriver::new(chain, handle, None, designated, false);
+        let driver = NetDriver::new(chain, handle, None, designated, designated, false, 2_000);
         (driver, PeerId::random())
     }
 
@@ -570,6 +897,157 @@ mod sync_loop_tests {
             "a plausibly-ahead tip arms a bounded sync request"
         );
 
+        rt.shutdown_background();
+    }
+}
+
+/// BLOCKER-2 (spec 08 §5.3): the production connectivity guard must derive "reachable" from the ACTIVE
+/// liveness signal (ping / recent authenticated traffic), NOT from the transport peer table alone —
+/// which only updates on TCP disconnect (minutes ≫ FINALITY_DEPTH×BLOCK_MS). These tests drive the
+/// guard directly: a silently-black-holed / frozen V-member (still in the peer table, but no fresh
+/// liveness) is pruned from "reachable" within `LIVENESS_TIMEOUT`, so a minority that loses
+/// majority-liveness STALLS instead of finalizing a divergent chain.
+#[cfg(test)]
+mod liveness_guard_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use ubi2_network::config::NetworkConfig;
+    use ubi2_rpc::{Chain, ProposerKey, DEVNET_CHAIN_ID};
+    use ubi2_runtime::{Account, UBI};
+
+    // The 3 devnet validator keys (Anvil #1..#3 — PUBLIC keys, not secrets).
+    const V_KEYS_HEX: [&str; 3] = [
+        "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+        "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+        "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+    ];
+    const GENESIS_TIME: u64 = 1_700_000_000;
+
+    fn key_bytes(h: &str) -> [u8; 32] {
+        let b = h.as_bytes();
+        let mut out = [0u8; 32];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let hi = (b[2 * i] as char).to_digit(16).unwrap() as u8;
+            let lo = (b[2 * i + 1] as char).to_digit(16).unwrap() as u8;
+            *slot = (hi << 4) | lo;
+        }
+        out
+    }
+
+    /// A 3-validator seeded chain (on-chain `V = {v1, v2, v3}`) whose proposer key is `my_key` (one of
+    /// the three), configured for the multi-validator path (no single-proposer override).
+    fn seeded_3v_chain(my_key: [u8; 32]) -> (Chain, Vec<AlloyAddr>) {
+        let chain = Chain::new(DEVNET_CHAIN_ID, GENESIS_TIME)
+            .with_proposer_key(Arc::new(ProposerKey::from_bytes(&my_key).unwrap()));
+        for hx in &V_KEYS_HEX {
+            let addr = ProposerKey::from_bytes(&key_bytes(hx)).unwrap().address();
+            chain.seed_account(Account {
+                address: addr.into_array(),
+                verified: true,
+                verified_at: GENESIS_TIME,
+                last_settled_at: GENESIS_TIME,
+                settled_balance: 1_000 * UBI,
+                nonce: 0,
+            });
+            chain.seed_verified_human(&addr.into_array(), GENESIS_TIME);
+            chain.register_juror(&addr.into_array(), 0);
+        }
+        let v = chain.validator_set();
+        (chain, v)
+    }
+
+    fn driver_for(rt: &tokio::runtime::Runtime, my_key: [u8; 32], block_ms: u64) -> NetDriver {
+        let (chain, _v) = seeded_3v_chain(my_key);
+        let cfg = NetworkConfig::new(DEVNET_CHAIN_ID, chain.genesis_hash());
+        let (handle, _rx) = rt.block_on(async { ubi2_network::start(cfg).unwrap() });
+        // Multi-validator mode: no designated proposer, no override; this node holds a proposer key.
+        NetDriver::new(chain, handle, None, None, None, true, block_ms)
+    }
+
+    /// BLOCKER-2: the guard counts a V-member as reachable ONLY while its active-liveness signal is
+    /// fresh. A frozen/black-holed peer (still in the table, but no fresh liveness) is pruned within
+    /// `LIVENESS_TIMEOUT`, dropping a lone node below majority so it STALLS — the exact partition-safety
+    /// the transport-table-only signal could not provide.
+    #[test]
+    fn guard_prunes_black_holed_peers_and_stalls_the_minority() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Small block interval ⇒ LIVENESS_TIMEOUT = 2×BLOCK_MS = 400ms (fast, non-flaky test).
+        let block_ms = 200u64;
+        let mut driver = driver_for(&rt, key_bytes(V_KEYS_HEX[0]), block_ms);
+        let v = driver.chain.effective_validator_set(None);
+        assert_eq!(v.len(), 3, "on-chain V has 3 validators");
+        let majority = v.len() / 2 + 1; // 2
+        let me = driver.chain.proposer_address().unwrap();
+        let others: Vec<AlloyAddr> = v.iter().copied().filter(|a| *a != me).collect();
+        assert_eq!(others.len(), 2);
+
+        // Self-only: reachable = 1 < majority ⇒ the guard STALLS (a minority cannot finalize).
+        assert_eq!(driver.reachable_validator_count(&v), 1);
+        assert!(
+            !driver.production_guard_ok(),
+            "self-only is a minority; production must be gated off"
+        );
+
+        // Two bound-validator peers, FRESH (recently proven alive) ⇒ reachable = 3 ⇒ guard satisfied.
+        let now = Instant::now();
+        let p2 = PeerId::random();
+        let p3 = PeerId::random();
+        driver.peers.insert(
+            p2,
+            PeerEntry {
+                validator: Some(others[0]),
+                last_alive: Some(now),
+                ..Default::default()
+            },
+        );
+        driver.peers.insert(
+            p3,
+            PeerEntry {
+                validator: Some(others[1]),
+                last_alive: Some(now),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            driver.reachable_validator_count(&v),
+            3,
+            "self + 2 fresh bound-validator peers are all reachable"
+        );
+        assert!(
+            driver.production_guard_ok(),
+            "majority-connected ⇒ may produce"
+        );
+
+        // BLACK HOLE: the two peers go SILENT (frozen) but their entries LINGER in the table (TCP still
+        // 'connected'). After LIVENESS_TIMEOUT with no fresh liveness they must be pruned from
+        // 'reachable' — the Blocker-2 fix (the transport-table-only signal would keep counting them).
+        std::thread::sleep(Duration::from_millis(block_ms * 2 + 150));
+        assert!(
+            driver.peers.contains_key(&p2) && driver.peers.contains_key(&p3),
+            "the black-holed peers are STILL in the transport table (not disconnected)"
+        );
+        assert_eq!(
+            driver.reachable_validator_count(&v),
+            1,
+            "BLOCKER-2: silently-black-holed peers are pruned from reachable within LIVENESS_TIMEOUT"
+        );
+        assert!(
+            !driver.production_guard_ok(),
+            "BLOCKER-2: the minority now STALLS (reachable < majority) — no divergent finalization"
+        );
+
+        // A fresh ping from one peer restores it to reachable (majority regained ⇒ may produce again).
+        driver.mark_peer_alive(p2);
+        assert_eq!(driver.reachable_validator_count(&v), 2);
+        assert!(
+            driver.production_guard_ok(),
+            "a re-proven-alive majority restores production"
+        );
+        let _ = majority;
         rt.shutdown_background();
     }
 }

@@ -215,10 +215,10 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
     let mut h = Hasher256::new();
 
     // A short domain header pins the encoding version, so a later format change is a new root (never a
-    // silent reinterpretation of old bytes). Bumped to `/2` for the M6 additions: the `Human.assurance`
-    // tag (folded in the humans section) + the new nullifier-registry, attribute-store, and CSCA-registry
-    // sections (spec 06 §5.3 / ADR-0005).
-    h.bytes(b"ubi2/state-root/2");
+    // silent reinterpretation of old bytes). Bumped to `/2` for the M6 additions (the `Human.assurance`
+    // tag + the nullifier/attribute/CSCA sections), and to `/3` for the M5-Stage-B addition: the
+    // committed `epoch_validators` snapshot (section 0x0e, spec 08 §2.1/§8).
+    h.bytes(b"ubi2/state-root/3");
 
     // 1. Accounts — sorted by address.
     let mut accounts = state.accounts();
@@ -429,6 +429,17 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
                 h.u64(r);
             }
         }
+    }
+
+    // 9a. (M5 Stage B §2.1/§8) Epoch validator snapshot — the sorted `Vec<Address>` `V` scheduling
+    //     reads from the parent state. Committing it means all nodes agree on the proposer schedule by
+    //     replay (EC-B5). It is stored sorted (a plain `Vec`, no `HashMap`-order hazard), so folding it
+    //     in order is deterministic. A membership change at an epoch boundary moves the root.
+    let epoch_validators = state.epoch_validators();
+    h.u8(0x0e);
+    h.u64(epoch_validators.len() as u64);
+    for v in &epoch_validators {
+        h.write(v);
     }
 
     // 10. Id counters — a rolled-back op can advance a counter without leaving an entry, so the

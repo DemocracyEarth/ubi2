@@ -231,6 +231,11 @@ struct StateDto {
     csca: Vec<CscaDto>,
     #[serde(default)]
     csca_governance: Option<String>,
+    // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1), folded into `state_root`
+    //      (§8). Mirrors `rpc::persist::StateDto` so a server-served snapshot re-derives to the SAME
+    //      root the light client verifies. `#[serde(default)]` keeps a pre-Stage-B snapshot loadable. ----
+    #[serde(default)]
+    epoch_validators: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -560,6 +565,8 @@ fn export_state(state: &MemState) -> StateDto {
             })
             .collect(),
         csca_governance: state.csca_governance().map(|a| hex20(&a)),
+        // Stage B: the epoch validator snapshot (sorted by the runtime accessor).
+        epoch_validators: state.epoch_validators().iter().map(hex20).collect(),
     }
 }
 
@@ -738,6 +745,8 @@ fn import_state(dto: &StateDto) -> MemState {
     if let Some(gov) = &dto.csca_governance {
         s.set_csca_governance(unhex20(gov));
     }
+    // Stage B: restore the epoch validator snapshot (the setter re-sorts + dedups).
+    s.set_epoch_validators(dto.epoch_validators.iter().map(|a| unhex20(a)).collect());
     s
 }
 

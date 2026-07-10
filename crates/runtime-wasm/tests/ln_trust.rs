@@ -78,6 +78,7 @@ fn wire_block_for(chain: &Chain, b: &Block) -> WasmWireBlock {
         number: b.number,
         parent_hash: b.parent_hash,
         timestamp: b.timestamp,
+        view: b.view,
         txs_root: b.txs_root,
         state_root: b.state_root,
         proposer: b.proposer,

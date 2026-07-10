@@ -150,8 +150,10 @@ a small PoA round-robin with a slot-like schedule; longest-chain-with-tiebreak i
 unnecessary; tip `(height, view, hash)` is already a total order.
 
 **Consequences.** Equivocation is handled *only enough to not split honest nodes* (lowest-hash keeps one
-block) plus **epoch eviction** of the equivocator; binding, quorum-backed equivocation proofs + stake
-slashing are BFT/accountable-safety, on the backlog (FU-8).
+block) — that no-split tiebreak is what Stage B ships and tests (EC-B-F4). **Epoch eviction** of the
+equivocator, evidence recording, binding quorum-backed equivocation proofs, and stake slashing are
+accountable-safety (BFT) concerns and are **all deferred to the backlog (FU-8 / §14)** — Stage B does not
+evict (an equivocator simply keeps its round-robin slots, covered by view-change, with no divergence).
 
 ---
 
@@ -216,7 +218,8 @@ does not yet need and the roadmap sequences later.
 - **Successor authorization** (Decision 2): CFT uses `author == schedule(h, view)`; BFT adds a
   `≥ 2f+1` **view-change certificate**. ← the new wire message BFT introduces.
 - **Finality** (Decision 3): CFT is k-deep; BFT adds a **commit certificate** (single-slot, accountable).
-- **Equivocation** (Decision 3): CFT epoch-evicts; BFT binds a **slashable quorum-verifiable proof**.
+- **Equivocation** (Decision 3): CFT ships only the no-split lowest-hash tiebreak; evidence recording +
+  epoch eviction + a **slashable quorum-verifiable proof** are all deferred here (FU-8/BFT).
 - **Leader election** (Decision 1): CFT plain round-robin; BFT adds the deferred **per-epoch VRF/shuffle**.
 - **Partition finality** (Decision 2): CFT uses the **production connectivity guard**; BFT makes it
   rigorous (a minority cannot form a certificate).
@@ -239,14 +242,17 @@ the documented next milestone, not this one.
   and semantics are unchanged — unmodified wallets are unaffected.
 - **I4 (fail-closed):** preserved. An unschedulable/unsigned/absurd-view/mismatched-root block is rejected
   and applies no state; a minority partition stalls rather than finalizing.
-- **I6 (least authority):** preserved. New RPC is read-only; the only new input is a normal signed
-  equivocation-evidence tx verified deterministically; no admin surface added.
+- **I6 (least authority):** preserved. The new RPC is read-only; validator membership is derived
+  deterministically from committed state (registered validators ∧ Verified), no admin surface added. (A
+  signed equivocation-evidence tx is deferred together with eviction — FU-8 / §14.)
 
 ## Open follow-ups created/closed by this ADR
 
-- **Enables / closes on delivery:** FU-8 (validator/juror membership + rotation via the epoch snapshot +
-  equivocation eviction — Stage B). Closes the Stage-B exit criteria EC-5/EC-6 and the refinements
-  EC-B1…EC-B6, EC-B-F3…F5, keeping the EC-A (`m5_stage_a`) regression green.
+- **Enables / closes on delivery:** FU-8's validator/juror **membership + rotation via the epoch snapshot**
+  ships in Stage B; FU-8's **equivocation eviction** (evidence recording + next-epoch exclusion) is
+  **deferred** with the rest of accountable-safety (§14). Closes the Stage-B exit criteria EC-5/EC-6 and the
+  refinements EC-B1…EC-B6, EC-B-F3…F5 (EC-B-F4 = the no-split property only), keeping the EC-A
+  (`m5_stage_a`) regression green.
 - **Defers to backlog:** BFT consensus (view-change + commit certificates, single-slot finality,
   accountable slashing); per-epoch VRF/shuffle leader election; stake-slashing beyond epoch eviction. Each
   has a named attach point above (Decision 5).

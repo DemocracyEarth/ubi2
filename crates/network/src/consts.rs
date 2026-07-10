@@ -69,8 +69,11 @@ pub const SYNC_RATE_REFILL_PER_SEC: u32 = 16;
 pub const SYNC_MAX_INFLIGHT_PER_PEER: usize = 4;
 
 /// Protocol version exchanged in the `Hello` handshake (spec §4.1 `protocol_ver`). A peer with a
-/// different major version is treated as incompatible.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// different major version is treated as incompatible and disconnected (`on_hello`, spec 08 §9). Bumped
+/// `1 → 2` for M5 Stage B: the block payload on `ubi2/block/1` is redefined in place to carry the header
+/// `view` field (§2.2/§9) — the topic/sync strings are UNCHANGED, so the version bump is the loud,
+/// explicit break that stops an old node silently mis-decoding a new (view-carrying) block.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Max accepted size (bytes) of a single gossiped tx payload — a coarse anti-DoS bound on the raw RLP.
 /// A larger payload is dropped before hashing (malformed/abusive). Generous vs. real EIP-155 txs.
