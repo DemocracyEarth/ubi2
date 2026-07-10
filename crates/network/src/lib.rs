@@ -39,7 +39,7 @@ use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{gossipsub, mdns, Multiaddr, PeerId, Swarm};
+use libp2p::{gossipsub, mdns, ping, Multiaddr, PeerId, Swarm};
 use tokio::sync::mpsc;
 
 use crate::behaviour::{block_topic, tx_topic, Ubi2Behaviour, Ubi2BehaviourEvent};
@@ -104,6 +104,12 @@ pub enum NetEvent {
     },
     /// A peer crossed the invalid-message greylist threshold and was disconnected (FU-1, §3.3).
     PeerGreylisted { peer: PeerId },
+    /// M5 Stage B (spec 08 §5.3): an active-liveness (ping) result for a peer. `ok = true` on a
+    /// successful round-trip (the peer is alive), `ok = false` on a ping timeout/failure (the peer is
+    /// silent — frozen / black-holed, even if its TCP connection lingers). The node folds this into its
+    /// per-peer liveness so the production connectivity guard prunes a silent V-member from the
+    /// "reachable" set within a bound `≪ FINALITY_DEPTH × BLOCK_MS`. A LOCAL signal (never committed).
+    PeerPing { peer: PeerId, ok: bool },
 }
 
 /// An opaque handle the node returns blocks through, fulfilling a [`NetEvent::SyncRequest`]. It carries
@@ -283,6 +289,7 @@ pub fn start(
 fn build_swarm(config: &NetworkConfig) -> Result<Swarm<Ubi2Behaviour>, String> {
     let heartbeat = config.gossip_heartbeat;
     let enable_mdns = config.enable_mdns;
+    let ping_interval = config.ping_interval;
     let swarm = libp2p::SwarmBuilder::with_existing_identity(config.keypair.clone())
         .with_tokio()
         .with_tcp(
@@ -292,8 +299,14 @@ fn build_swarm(config: &NetworkConfig) -> Result<Swarm<Ubi2Behaviour>, String> {
         )
         .map_err(|e| format!("tcp transport: {e}"))?
         .with_behaviour(|key| {
-            Ubi2Behaviour::new(key, PeerId::from(key.public()), heartbeat, enable_mdns)
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
+            Ubi2Behaviour::new(
+                key,
+                PeerId::from(key.public()),
+                heartbeat,
+                enable_mdns,
+                ping_interval,
+            )
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
         })
         .map_err(|e| format!("behaviour: {e}"))?
         .with_swarm_config(|c| c.with_idle_connection_timeout(std::time::Duration::from_secs(60)))
@@ -775,6 +788,14 @@ fn handle_behaviour_event(st: &mut LoopState, ev: Ubi2BehaviourEvent) {
             }
         }
         Ubi2BehaviourEvent::Mdns(mdns::Event::Expired(_)) => {}
+        Ubi2BehaviourEvent::Ping(ping::Event { peer, result, .. }) => {
+            // §5.3 active-liveness probe: surface each ping outcome so the node maintains a per-peer
+            // liveness signal for the production connectivity guard. A success ⇒ the peer is alive; a
+            // timeout/failure ⇒ it is silent (frozen / black-holed) even if TCP lingers. We do NOT
+            // disconnect on failure — the signal stays local to the node's guard decision.
+            let ok = result.is_ok();
+            let _ = st.evt_tx.send(NetEvent::PeerPing { peer, ok });
+        }
     }
 }
 

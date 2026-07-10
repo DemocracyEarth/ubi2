@@ -10,7 +10,7 @@ use std::time::Duration;
 use libp2p::gossipsub::{self, MessageAuthenticity, MessageId, ValidationMode};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{mdns, request_response, PeerId};
+use libp2p::{mdns, ping, request_response, PeerId};
 
 use crate::codec::{SyncCodec, SyncProtocol};
 use crate::consts::{MAX_BLOCK_BYTES, PROTOCOL_SYNC, TOPIC_BLOCK, TOPIC_TX};
@@ -25,16 +25,26 @@ pub struct Ubi2Behaviour {
     pub gossipsub: gossipsub::Behaviour,
     pub sync: SyncBehaviour,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
+    /// M5 Stage B (spec 08 §5.3): an ACTIVE liveness probe. libp2p `ping` on a sub-second interval,
+    /// well under `PROPOSER_TIMEOUT`, so a silently-black-holed / frozen peer (whose TCP connection
+    /// lingers for minutes) is detected as unreachable within a bound `≪ FINALITY_DEPTH × BLOCK_MS`.
+    /// The node prunes such a peer from the production-guard "reachable" set on ping-timeout (NOT only
+    /// on transport disconnect), so a minority that loses majority-liveness STALLS instead of
+    /// finalizing a divergent chain. A ping failure does NOT close the connection (0.56 default) — the
+    /// liveness signal is kept LOCAL and never enters a committed value (I1/I2 preserved).
+    pub ping: ping::Behaviour,
 }
 
 impl Ubi2Behaviour {
     /// Build the behaviour from the local key + config knobs. `enable_mdns=false` yields a disabled
-    /// `Toggle` (deterministic tests dial explicitly).
+    /// `Toggle` (deterministic tests dial explicitly). `ping_interval` sets the active-liveness probe
+    /// cadence (§5.3); the ping timeout is derived from it (short, well under `PROPOSER_TIMEOUT`).
     pub fn new(
         key: &libp2p::identity::Keypair,
         local_peer_id: PeerId,
         gossip_heartbeat: Duration,
         enable_mdns: bool,
+        ping_interval: Duration,
     ) -> Result<Self, String> {
         // gossipsub: sign messages with the node's transport key (authenticated origin), and set the
         // message-id to the **content address the chain already uses** (spec §3.1): for a tx the id is
@@ -85,10 +95,23 @@ impl Ubi2Behaviour {
             Toggle::from(None)
         };
 
+        // The active-liveness probe (§5.3). A short per-ping timeout (bounded below the interval floor
+        // and PROPOSER_TIMEOUT) so a frozen/black-holed peer surfaces a `Failure::Timeout` quickly; the
+        // node converts repeated failures / staleness into a "not reachable" verdict for the guard.
+        let ping_timeout = ping_interval
+            .saturating_mul(2)
+            .max(Duration::from_millis(500));
+        let ping = ping::Behaviour::new(
+            ping::Config::new()
+                .with_interval(ping_interval)
+                .with_timeout(ping_timeout),
+        );
+
         Ok(Ubi2Behaviour {
             gossipsub,
             sync,
             mdns,
+            ping,
         })
     }
 }

@@ -101,6 +101,12 @@ pub const DEVNET_CHAIN_ID: u64 = 0x5542;
 /// `< FINALITY_DEPTH`. Devnet default `k = 6` (matches `NetStatus::finality_depth`).
 pub const FINALITY_DEPTH: u64 = 6;
 
+/// M5 Stage B (spec 08 §5.4/§6.1): cap on the bounded SIDE STORE of valid non-canonical fork blocks
+/// ([`Chain::consider_competing_block`]). Generous versus the handful of concurrent forks a CFT
+/// round-robin ever produces (an original-vs-successor tip race is at most a couple of blocks wide),
+/// but a hard bound so a hostile flood of authenticated-but-off-chain blocks cannot grow it unbounded.
+const MAX_FORK_STORE: usize = 256;
+
 /// Fork-choice tip comparison (spec 08 §6.1): is tip `a` canonical-preferred over tip `b`? The total
 /// order on `(height, view, hash)` is: (1) greater height, ties → (2) lower view, ties → (3) lower hash.
 /// Two distinct equal-height valid chains have distinct tip hashes, so rule 3 always terminates — the
@@ -491,6 +497,97 @@ impl std::error::Error for BlockError {}
 // ---------------------------------------------------------------------------------------------
 // Chain state
 // ---------------------------------------------------------------------------------------------
+
+/// M5 Stage B (spec 08 §5.4/§6.1/§6.3): a VALID-but-non-canonical fork block retained in the bounded
+/// side store ([`Chain`]`.fork_store`). It carries exactly the header fields + the ordered raw user-tx
+/// bytes needed to (a) walk a fork branch's ancestry by `parent_hash` and (b) deterministically
+/// re-execute the branch on a reorg (`< FINALITY_DEPTH` deep). The `hash` is the committed block hash
+/// (the store key), so a later-arriving child that names this block as its parent completes the branch
+/// and can trigger a bounded general reorg (the h1@view1→h2@view1 race in §5.4). Authenticated on
+/// entry (signature recovers to `proposer`) but its schedule/state-root is only fully re-checked when
+/// it is actually re-executed during a reorg — a forged branch fails there and is rolled back.
+#[derive(Clone)]
+struct ForkBlockEntry {
+    number: u64,
+    parent_hash: B256,
+    timestamp: u64,
+    view: u32,
+    txs_root: B256,
+    state_root: B256,
+    proposer: AlloyAddr,
+    proposer_sig: Vec<u8>,
+    raw_txs: Vec<Vec<u8>>,
+    hash: B256,
+}
+
+/// M5 Stage B (spec 08 §6.1): a fork-choice tip key `(height, view, hash)` — the total-order comparison
+/// key over competing chain tips ([`fork_choice_prefers`]).
+type TipKey = (u64, u32, B256);
+
+/// M5 Stage B (spec 08 §6.1/§6.3): a complete, reorg-ready fork branch — the ascending winning blocks
+/// (`ca+1 … tip`), the common-ancestor height they reattach at, and the fork-choice tip key.
+struct ReorgCandidate {
+    branch: Vec<ForkBlockEntry>,
+    ca_height: u64,
+    tip: TipKey,
+}
+
+/// M5 Stage B (spec 08 §6.1/§6.3): assemble the complete fork branch ending at `tip` by walking
+/// `parent_hash` back through the retained fork blocks (`fmap`) until a **canonical common ancestor**
+/// (a block already in `inner.blocks_by_hash`) is reached. Returns the branch as an ascending list
+/// (`ca+1 … tip`) plus the common-ancestor height, or `None` if the branch is:
+/// - **incomplete** (an ancestor is neither canonical nor retained — a missing parent, wait for it),
+/// - **non-contiguous** (a height gap in the fork chain — malformed), or
+/// - **finality-bounded** (the common ancestor is below the finalized frontier — a reorg here would
+///   revert finalized history, §6.3, which is REFUSED).
+///
+/// Pure: reads only the retained headers + canonical index, no clock, no arrival order (I1).
+fn assemble_fork_branch(
+    tip: &ForkBlockEntry,
+    fmap: &HashMap<B256, ForkBlockEntry>,
+    inner: &Inner,
+    finalized: u64,
+) -> Option<(Vec<ForkBlockEntry>, u64)> {
+    let mut chain: Vec<ForkBlockEntry> = Vec::new();
+    let mut cur = tip.clone();
+    let mut guard = 0usize;
+    loop {
+        guard += 1;
+        // Defensive walk bound (no real keccak hash cycle can form): a branch reverting more than the
+        // whole finality window is not a bounded reorg — abandon it.
+        if guard > (FINALITY_DEPTH as usize + 2) * 8 {
+            return None;
+        }
+        // Is `cur`'s parent a canonical block? Then it is the common ancestor (the fork point).
+        if let Some(&idx) = inner.blocks_by_hash.get(&cur.parent_hash) {
+            let ca_number = inner.blocks[idx].number;
+            // Height contiguity: the branch's lowest block must sit exactly on the canonical ancestor.
+            if cur.number != ca_number + 1 {
+                return None;
+            }
+            // Finality bound (§6.3): the lowest reverted block is `ca_number + 1`; it must be ABOVE the
+            // finalized frontier (`ca_number >= finalized`). A deeper fork would revert finalized
+            // history — REFUSE (never reorg across the finalized frontier).
+            if ca_number < finalized {
+                return None;
+            }
+            chain.push(cur);
+            chain.reverse();
+            return Some((chain, ca_number));
+        }
+        // Else the parent must be another retained fork block; continue walking upward.
+        match fmap.get(&cur.parent_hash) {
+            Some(parent) => {
+                if cur.number != parent.number + 1 {
+                    return None; // non-contiguous fork branch (a height gap)
+                }
+                chain.push(cur.clone());
+                cur = parent.clone();
+            }
+            None => return None, // missing ancestor — the branch is incomplete for now
+        }
+    }
+}
 
 /// Clone so the follower's [`Chain::validate_and_apply_block`] can snapshot-and-restore on a rejected
 /// block (fail-closed: a divergent block applies no state change). All fields are cheaply clonable.
@@ -1353,6 +1450,14 @@ pub struct Chain {
     /// unbounded and never lets a reorg cross the finalized frontier. Kept OUTSIDE `Inner` (which is
     /// cloned as the trial-execution backup) so it is not churned by the trial/rollback dance.
     recent_states: Arc<Mutex<std::collections::BTreeMap<u64, MemState>>>,
+    /// M5 Stage B (spec 08 §5.4/§6.1/§6.3): the bounded SIDE STORE of valid non-canonical fork blocks,
+    /// keyed by block hash. When a node is on a losing tip-race branch and the winning branch's blocks
+    /// arrive non-contiguously (a child of a block this node does not hold as canonical), they are
+    /// retained here so a later block that completes the branch back to a common ancestor triggers a
+    /// bounded general reorg. Pruned to blocks above the finalized frontier and capped at
+    /// [`MAX_FORK_STORE`]; kept OUTSIDE `Inner` (not churned by the trial/rollback clone), like
+    /// `recent_states`. Purely a local reconciliation aid — it never feeds a committed value (I1/I2).
+    fork_store: Arc<Mutex<HashMap<B256, ForkBlockEntry>>>,
 }
 
 /// The seeded genesis anchor served to a light client (spec 07 §3.4). Holds the canonical genesis state
@@ -1412,6 +1517,12 @@ pub struct NetStatus {
     /// Stage B (§11): this node's LOCAL view for the height it is extending (a local liveness value,
     /// labeled as such — never a committed value). `0` until the node's view timer sets it.
     pub current_view: u32,
+    /// M5 Stage B (spec 08 §5.3): the number of distinct `V`-members this node currently considers
+    /// **reachable** (self + ping-live bound-validator peers), as counted by the production connectivity
+    /// guard. A LOCAL liveness signal (never committed): when it drops below `N/2 + 1` this node stalls
+    /// production (the partition-safe-finality guard). Surfaced on `ubi_consensusStatus` so a partition
+    /// test can observe the minority side converge below majority within a bound (Blocker-2).
+    pub reachable_validators: u32,
 }
 
 /// M5: a proposer's secp256k1 signing key + its derived EVM address. Used to sign block headers so a
@@ -1551,6 +1662,7 @@ impl Chain {
             })),
             genesis_anchor: Arc::new(Mutex::new(None)),
             recent_states: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            fork_store: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1571,10 +1683,16 @@ impl Chain {
     /// M5 (Stage B, §11): publish the effective validator set `V` + this node's local `current_view`
     /// for `ubi_consensusStatus`. The node computes `V` (on-chain snapshot or the Stage-A override) and
     /// its local view in `crates/node` and pushes it here; the RPC handler renders it. Read-only (I6).
-    pub fn set_consensus_status(&self, validator_set: Vec<AlloyAddr>, current_view: u32) {
+    pub fn set_consensus_status(
+        &self,
+        validator_set: Vec<AlloyAddr>,
+        current_view: u32,
+        reachable_validators: u32,
+    ) {
         let mut s = self.net_status.lock().unwrap();
         s.validator_set = validator_set;
         s.current_view = current_view;
+        s.reachable_validators = reachable_validators;
     }
 
     /// M5 Stage B (spec 08 §2.1): ensure the genesis (height-0) epoch validator snapshot is seeded. The
@@ -1783,16 +1901,30 @@ impl Chain {
         Ok(produced)
     }
 
-    /// M5 Stage B (spec 08 §5.4/§6): consider a valid block that **competes at the current tip height**
-    /// (a tip race — same parent as the tip, different `view`/`hash`) and REORG to it iff the fork-choice
-    /// total order (§6.1) prefers it over the current tip. This is how a late `view 0` original reconciles
-    /// with a `view 1` successor already adopted: lower view wins, so the follower reorgs (a bounded,
-    /// depth-1 reorg, `< FINALITY_DEPTH`).
+    /// M5 Stage B (spec 08 §5.4/§6.1/§6.3): consider a VALID block that competes with — but does not
+    /// cleanly extend — the local canonical chain, and perform a **bounded GENERAL reorg** to the
+    /// fork-choice-best branch it completes. This generalises the earlier depth-1 tip-swap: it handles
+    /// not only a same-height, shared-parent competitor (a late `view 0` original vs an adopted `view 1`
+    /// successor, §5.4) but also a **taller** honest branch whose ancestry does not extend our tip
+    /// (the h1@view1 → h2@view1 race that would otherwise leave a node on `h1@view0` PERMANENTLY stuck
+    /// and finalizing a conflicting chain — spec §5.4/§7, EC-B-F5).
     ///
-    /// Returns `Ok(Some(block))` if it reorged to the competitor, `Ok(None)` if the competitor was valid
-    /// but NOT preferred (current tip kept), `Err` if the competitor is invalid (unschedulable / bad
-    /// signature / bad state root) or cannot be considered (not a tip race / parent state finalized-away).
-    /// Fail-closed: an invalid competitor applies no state change.
+    /// Mechanics:
+    /// - The block is authenticated up front (view in range, hash + signature recover to `proposer`)
+    ///   and RETAINED in the bounded side store (`fork_store`), keyed by hash, so a later-arriving child
+    ///   that names it as parent can complete the branch.
+    /// - We then walk `parent_hash` back through the side store + our canonical blocks to the **common
+    ///   ancestor**. If that ancestor is at/below the finalized frontier we REFUSE (never revert
+    ///   finalized history, §6.3); otherwise we truncate the losing suffix, restore the ancestor state,
+    ///   and deterministically re-execute the winning branch (each block re-validated + state-root
+    ///   matched). The displaced canonical suffix is moved into the side store so a still-better branch
+    ///   can later win it back — fork choice is a total order, so this converges (I1).
+    ///
+    /// Returns `Ok(Some(new_tip))` if a reorg happened, `Ok(None)` if the block was valid but no reorg
+    /// applied (the current chain is still preferred, the branch is incomplete, or its ancestor is
+    /// finalized-bounded — all BENIGN, do not penalize), `Err(e)` only if the block is GENUINELY invalid
+    /// (`ViewOutOfRange` / `BadSignature`, or — on re-execution — `WrongProposer` / `StateRootMismatch`),
+    /// which the caller may penalize. Fail-closed: an invalid branch applies no state change.
     #[allow(clippy::too_many_arguments)]
     pub fn consider_competing_block(
         &self,
@@ -1808,65 +1940,14 @@ impl Chain {
         validator_override: Option<AlloyAddr>,
     ) -> Result<Option<Block>, BlockError> {
         self.ensure_epoch_validators_seeded();
-        // Cheap header + schedule + signature checks, against the PARENT state (not the current tip).
+        // §4(2) view in range — reject an absurd/garbage view before any retention or work.
         if view >= VIEW_MAX {
             return Err(BlockError::ViewOutOfRange { view });
         }
-        let (tip_number, tip_view, tip_hash) = {
-            let g = self.inner.lock().unwrap();
-            let tip = g.blocks.last().expect("genesis present");
-            (tip.number, tip.view, tip.hash)
-        };
-        // Only a same-height competitor is a tip race; anything else is not our concern here.
-        if number != tip_number {
-            return Err(BlockError::NonContiguous {
-                have: tip_number,
-                got: number,
-            });
-        }
-        // The competitor must share the parent with the current tip (same fork point).
-        {
-            let g = self.inner.lock().unwrap();
-            let parent = g
-                .blocks
-                .iter()
-                .rev()
-                .find(|b| b.number == number - 1)
-                .cloned();
-            match parent {
-                Some(p) if p.hash == parent_hash => {}
-                _ => return Err(BlockError::WrongParent),
-            }
-        }
-        // The parent state must still be retained (i.e. the reorg does not cross the finalized frontier).
-        let parent_state = match self.recent_states.lock().unwrap().get(&(number - 1)) {
-            Some(s) => s.clone(),
-            None => {
-                return Err(BlockError::NonContiguous {
-                    have: tip_number,
-                    got: number,
-                })
-            }
-        };
-        // §4(3) author = scheduled proposer, resolved over the PARENT state's `V` (§3.3).
-        let expected = {
-            let v: Vec<AlloyAddr> = match validator_override {
-                Some(a) => vec![a],
-                None => validator_set(&parent_state)
-                    .into_iter()
-                    .map(AlloyAddr::from)
-                    .collect(),
-            };
-            let n = v.len();
-            if n == 0 {
-                return Err(BlockError::NoValidatorSet);
-            }
-            v[proposer_index(number, view, n)]
-        };
-        if proposer != expected {
-            return Err(BlockError::WrongProposer);
-        }
-        let claimed_hash = Block::compute_hash(
+        // §4(4) authenticate: the hash + signature must recover to the claimed author. This is what
+        // makes it safe to RETAIN the block (only a signed-by-a-real-key block enters the side store);
+        // its schedule + state-root are fully re-checked when the branch is re-executed on a reorg.
+        let hash = Block::compute_hash(
             number,
             parent_hash,
             timestamp,
@@ -1875,67 +1956,234 @@ impl Chain {
             claimed_state_root,
             &proposer,
         );
-        match recover_proposer(&claimed_hash, proposer_sig) {
+        match recover_proposer(&hash, proposer_sig) {
             Some(recovered) if recovered == proposer => {}
             _ => return Err(BlockError::BadSignature),
         }
 
-        // Fork choice (§6.1): reorg only if the competitor is canonical-preferred over the current tip.
-        if !fork_choice_prefers(
-            (number, view, claimed_hash),
-            (tip_number, tip_view, tip_hash),
-        ) {
-            return Ok(None); // valid, but the current tip stays canonical (e.g. a higher-view straggler)
+        // Snapshot the tip + finalized frontier (short lock).
+        let (current_tip, finalized, already_canonical) = {
+            let g = self.inner.lock().unwrap();
+            let tip = g.blocks.last().expect("genesis present");
+            let finalized = tip.number.saturating_sub(FINALITY_DEPTH);
+            let canon = g.blocks_by_hash.contains_key(&hash);
+            ((tip.number, tip.view, tip.hash), finalized, canon)
+        };
+        // Already canonical (our tip or an interior block) — nothing to reconcile.
+        if already_canonical || hash == current_tip.2 {
+            return Ok(None);
+        }
+        // At/below the finalized frontier a competing block can never win a bounded reorg — never
+        // retained, never reorged (a reorg here would cross finalized history, §6.3).
+        if number <= finalized {
+            return Ok(None);
         }
 
-        // Decode the competitor's ordered raw txs.
-        let mut pending = Vec::with_capacity(raw_txs.len());
-        for raw in raw_txs {
-            match decode_pending_tx(self.chain_id, raw) {
-                Ok(p) => pending.push(p),
-                Err(_) => return Err(BlockError::UndecodableTx),
+        // Retain the authenticated fork block so a later child can complete its branch (§5.4).
+        self.store_fork_block(
+            ForkBlockEntry {
+                number,
+                parent_hash,
+                timestamp,
+                view,
+                txs_root: claimed_txs_root,
+                state_root: claimed_state_root,
+                proposer,
+                proposer_sig: proposer_sig.to_vec(),
+                raw_txs: raw_txs.to_vec(),
+                hash,
+            },
+            finalized,
+        );
+
+        // Assemble the fork-choice-best COMPLETE branch and reorg to it iff it beats our tip (§6.1).
+        self.maybe_reorg_to_best_branch(current_tip, finalized, validator_override)
+    }
+
+    /// Insert a fork block into the bounded side store (keyed by hash) and prune it: drop anything at or
+    /// below the finalized frontier (it can never win a bounded reorg, §6.3), then, if still over
+    /// [`MAX_FORK_STORE`], evict the lowest-height entries (a hostile flood cannot grow it unbounded).
+    fn store_fork_block(&self, entry: ForkBlockEntry, finalized: u64) {
+        let mut store = self.fork_store.lock().unwrap();
+        store.insert(entry.hash, entry);
+        store.retain(|_, e| e.number > finalized);
+        if store.len() > MAX_FORK_STORE {
+            // Evict lowest-height entries first (oldest forks are least likely to still win).
+            let mut by_height: Vec<(u64, B256)> =
+                store.iter().map(|(h, e)| (e.number, *h)).collect();
+            by_height.sort();
+            let excess = store.len() - MAX_FORK_STORE;
+            for (_, h) in by_height.into_iter().take(excess) {
+                store.remove(&h);
             }
         }
+    }
 
-        // Reorg: back up the whole `Inner`, restore the parent state + truncate the loser off the tip,
-        // then re-execute the competitor. On a state-root mismatch, roll back to the pre-reorg state
-        // (fail-closed — a divergent competitor never displaces the canonical tip).
-        let backup = self.inner.lock().unwrap().clone();
+    /// M5 Stage B (spec 08 §6.1): find the fork-choice-best COMPLETE branch among the retained fork
+    /// blocks (each walked back to a canonical common ancestor above the finalized frontier) and, if its
+    /// tip beats the current canonical tip, perform the bounded general reorg. Pure of any clock/rand —
+    /// the decision + re-execution read only `(state, headers)`, so every honest node converges (I1).
+    fn maybe_reorg_to_best_branch(
+        &self,
+        current_tip: TipKey,
+        finalized: u64,
+        validator_override: Option<AlloyAddr>,
+    ) -> Result<Option<Block>, BlockError> {
+        // Snapshot the side store (short lock) so the walk holds no lock on `inner`/`recent_states`.
+        let fmap: HashMap<B256, ForkBlockEntry> = self.fork_store.lock().unwrap().clone();
+        if fmap.is_empty() {
+            return Ok(None);
+        }
+        // Find the best complete branch: for each retained block treated as a branch tip, walk to a
+        // canonical ancestor and keep the fork-choice-best whose tip beats our current tip.
+        let mut best: Option<ReorgCandidate> = None;
         {
-            let mut g = self.inner.lock().unwrap();
-            // Drop the current tip (the loser at height `number`) from the block index + tx map.
-            if let Some(loser) = g.blocks.pop() {
-                g.blocks_by_hash.remove(&loser.hash);
-                for t in &loser.txs {
-                    g.txs.remove(&t.hash);
+            let g = self.inner.lock().unwrap();
+            for tip_entry in fmap.values() {
+                let tip: TipKey = (tip_entry.number, tip_entry.view, tip_entry.hash);
+                if !fork_choice_prefers(tip, current_tip) {
+                    continue; // this branch tip does not beat our canonical tip
+                }
+                if let Some((branch, ca_height)) =
+                    assemble_fork_branch(tip_entry, &fmap, &g, finalized)
+                {
+                    let better = best
+                        .as_ref()
+                        .map(|b| fork_choice_prefers(tip, b.tip))
+                        .unwrap_or(true);
+                    if better {
+                        best = Some(ReorgCandidate {
+                            branch,
+                            ca_height,
+                            tip,
+                        });
+                    }
                 }
             }
-            // Restore the parent state so re-execution builds on the shared fork point.
-            g.state = parent_state;
         }
-        let produced = self.execute_block(
-            pending,
-            timestamp,
-            view,
-            Some((proposer, proposer_sig.to_vec())),
-        );
-        if produced.state_root != claimed_state_root
-            || produced.txs_root != claimed_txs_root
-            || produced.hash != claimed_hash
+        let candidate = match best {
+            Some(b) => b,
+            None => return Ok(None), // no complete, preferred, finality-safe branch yet
+        };
+        self.execute_reorg(candidate.branch, candidate.ca_height, validator_override)
+    }
+
+    /// Perform the bounded general reorg to `branch` (ascending `ca+1 … tip`), whose common ancestor is
+    /// the canonical block at `ca_height`. Restores the ancestor state, truncates the losing suffix
+    /// (moving it into the side store so a still-better branch can win it back), then re-executes each
+    /// winning block via the ordinary validated apply (schedule + signature + byte-identical state-root
+    /// re-checked, I1/I2). Fail-closed: any failure rolls the whole reorg back to the pre-reorg state.
+    fn execute_reorg(
+        &self,
+        branch: Vec<ForkBlockEntry>,
+        ca_height: u64,
+        validator_override: Option<AlloyAddr>,
+    ) -> Result<Option<Block>, BlockError> {
+        // The common-ancestor state (state AFTER block `ca_height` = the winning branch's parent state).
+        // Must still be retained (guaranteed above the finalized frontier); else we cannot reorg safely.
+        let ca_state = match self.recent_states.lock().unwrap().get(&ca_height) {
+            Some(s) => s.clone(),
+            None => return Ok(None),
+        };
+        // Full backups (fail-closed rollback covers BOTH the canonical chain and the recent-state ring).
+        let inner_backup = self.inner.lock().unwrap().clone();
+        let rs_backup = self.recent_states.lock().unwrap().clone();
+
+        // Truncate the losing suffix down to the common ancestor + restore its state. Collect the
+        // displaced blocks (with their raw txs) so we can retain them in the side store.
+        let displaced: Vec<ForkBlockEntry> = {
+            let mut g = self.inner.lock().unwrap();
+            let cut = ca_height as usize + 1;
+            let old_suffix: Vec<Block> = if cut < g.blocks.len() {
+                g.blocks.split_off(cut)
+            } else {
+                Vec::new()
+            };
+            let mut displaced = Vec::with_capacity(old_suffix.len());
+            for b in &old_suffix {
+                g.blocks_by_hash.remove(&b.hash);
+                for t in &b.txs {
+                    g.txs.remove(&t.hash);
+                }
+                let raw_txs: Vec<Vec<u8>> = b
+                    .txs
+                    .iter()
+                    .filter_map(|t| g.raw_tx.get(&t.hash).cloned())
+                    .collect();
+                displaced.push(ForkBlockEntry {
+                    number: b.number,
+                    parent_hash: b.parent_hash,
+                    timestamp: b.timestamp,
+                    view: b.view,
+                    txs_root: b.txs_root,
+                    state_root: b.state_root,
+                    proposer: b.proposer,
+                    proposer_sig: b.proposer_sig.clone(),
+                    raw_txs,
+                    hash: b.hash,
+                });
+            }
+            g.state = ca_state;
+            displaced
+        };
+
+        // Re-execute the winning branch. Each block re-runs the full validity check (contiguity, parent,
+        // schedule, signature, byte-identical state-root) via the SHARED apply path — a forged branch
+        // fails here and triggers a fail-closed rollback below.
+        for fb in &branch {
+            let applied = self.validate_and_apply_block(
+                fb.number,
+                fb.parent_hash,
+                fb.timestamp,
+                fb.view,
+                fb.txs_root,
+                fb.state_root,
+                fb.proposer,
+                &fb.proposer_sig,
+                &fb.raw_txs,
+                validator_override,
+            );
+            if let Err(e) = applied {
+                // Fail-closed: restore the entire pre-reorg state (chain + recent-state ring).
+                *self.inner.lock().unwrap() = inner_backup;
+                *self.recent_states.lock().unwrap() = rs_backup;
+                return Err(e);
+            }
+            // Cache the now-canonical block's raw txs so this node can re-gossip / re-serve it on sync
+            // (the ordinary follower path caches via `apply_wire_block`; the reorg path caches here).
+            self.cache_raw_txs(&fb.raw_txs);
+        }
+
+        // Commit the reorg's side-store bookkeeping: the now-canonical winning blocks leave the store;
+        // the displaced (previously-canonical) blocks enter it so a later, still-better branch (e.g. a
+        // taller extension of the old branch) can win them back — fork choice remains a total order.
         {
-            *self.inner.lock().unwrap() = backup;
-            return Err(BlockError::StateRootMismatch {
-                expected: claimed_state_root,
-                got: produced.state_root,
-            });
+            let mut store = self.fork_store.lock().unwrap();
+            for fb in &branch {
+                store.remove(&fb.hash);
+            }
+            let new_head = self.tip().0;
+            let finalized = new_head.saturating_sub(FINALITY_DEPTH);
+            for d in displaced {
+                if d.number > finalized {
+                    store.insert(d.hash, d);
+                }
+            }
+            store.retain(|_, e| e.number > finalized);
         }
-        Ok(Some(produced))
+        Ok(Some(self.latest_block()))
     }
 
     /// The k-deep finalized height (spec 08 §6.3): `head − FINALITY_DEPTH`, saturating at 0. No reorg may
     /// cross it. Pure read.
     pub fn finalized_height(&self) -> u64 {
         self.tip().0.saturating_sub(FINALITY_DEPTH)
+    }
+
+    /// Whether this exact block hash is already part of the canonical chain (tip or interior). Pure read;
+    /// lets the node skip re-considering a block it already holds (a second dedup on top of gossipsub).
+    pub fn knows_block(&self, hash: &B256) -> bool {
+        self.inner.lock().unwrap().blocks_by_hash.contains_key(hash)
     }
 
     /// M5 Stage B (§3.3): the effective validator set `V` under a node's config — the Stage-A single
@@ -5181,6 +5429,10 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
             "currentView": current_view,
             "isProposer": net.is_proposer,
             "peerCount": net.peers.len(),
+            // Stage B §5.3: the LOCAL count of reachable V-members (self + ping-live bound peers) the
+            // production guard uses; below `n/2 + 1` this node stalls (never a committed value).
+            "reachableValidators": net.reachable_validators,
+            "majority": if n == 0 { 0 } else { (n / 2 + 1) as u64 },
             "finalityDepth": hex_u64(net.finality_depth),
             "finalizedHeight": hex_u64(finalized),
             "chainId": hex_u64(ctx.chain_id()),

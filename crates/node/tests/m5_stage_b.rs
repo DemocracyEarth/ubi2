@@ -349,6 +349,235 @@ fn ecb5_state_root_identical_through_rotation_and_view_change() {
     assert_eq!(sr, f2.state_root());
 }
 
+// ─── Cluster helper: a lockstep set of the 3 validator-keyed chains ─────────────────────────────
+// Mirrors the 3-node devnet in one process so a block at ANY (height, view) can be produced by the
+// correctly-scheduled proposer `V[(h+v) mod 3]` and applied to every chain — the machinery the reorg
+// unit tests need to build multi-block canonical + fork branches deterministically.
+struct Cluster {
+    chains: Vec<Chain>,
+    v: Vec<AlloyAddr>,
+    ts: u64,
+}
+
+impl Cluster {
+    fn new() -> Self {
+        let chains: Vec<Chain> = V_KEYS.iter().map(|k| seeded_chain(Some(*k)).0).collect();
+        let v = chains[0].validator_set();
+        Cluster {
+            chains,
+            v,
+            ts: GENESIS_TIME,
+        }
+    }
+
+    fn chain_index_for(&self, addr: AlloyAddr) -> usize {
+        V_KEYS
+            .iter()
+            .position(|k| ProposerKey::from_bytes(k).unwrap().address() == addr)
+            .expect("addr is one of the 3 validators")
+    }
+
+    /// Produce the next block (`head + 1`) at `view` by the scheduled proposer and apply it to every
+    /// cluster chain, keeping them in lockstep. Returns the produced block. Timestamps are monotonic and
+    /// deterministic, so two clusters mining the same (view, order) prefix produce byte-identical blocks.
+    fn mine(&mut self, view: u32) -> Block {
+        let head = self.chains[0].tip().0;
+        let height = head + 1;
+        let proposer = self.v[proposer_index(height, view, self.v.len())];
+        let pidx = self.chain_index_for(proposer);
+        self.ts += 1;
+        let ts = self.ts;
+        let blk = self.chains[pidx].produce_block_at_view(ts, view);
+        for (i, c) in self.chains.iter().enumerate() {
+            if i == pidx {
+                continue;
+            }
+            c.validate_and_apply_block(
+                blk.number,
+                blk.parent_hash,
+                blk.timestamp,
+                blk.view,
+                blk.txs_root,
+                blk.state_root,
+                blk.proposer,
+                &blk.proposer_sig,
+                &[],
+                None,
+            )
+            .expect("cluster follower applies the produced block");
+        }
+        blk
+    }
+}
+
+/// Apply a fully-formed (empty-tx) block to a follower chain via the clean-extend path.
+fn apply_block(chain: &Chain, b: &Block) -> Result<Block, BlockError> {
+    chain.validate_and_apply_block(
+        b.number,
+        b.parent_hash,
+        b.timestamp,
+        b.view,
+        b.txs_root,
+        b.state_root,
+        b.proposer,
+        &b.proposer_sig,
+        &[],
+        None,
+    )
+}
+
+/// Feed a competing / fork / taller-branch block to a chain via the bounded GENERAL reorg.
+fn consider_block(chain: &Chain, b: &Block) -> Result<Option<Block>, BlockError> {
+    chain.consider_competing_block(
+        b.number,
+        b.parent_hash,
+        b.timestamp,
+        b.view,
+        b.txs_root,
+        b.state_root,
+        b.proposer,
+        &b.proposer_sig,
+        &[],
+        None,
+    )
+}
+
+/// BLOCKER-1 core (spec 08 §5.4/§6.1/§7, EC-B-F5): a node that adopted a LOSING tip-race branch
+/// (`h1@view0`) and then sees the WINNING branch EXTENDED (`h1@view1` then `h2@view1`) must perform a
+/// bounded GENERAL reorg and CONVERGE (byte-identical `state_root` to the winning branch) — it must NOT
+/// stay `WrongParent`-forever stuck (the reproduced gate bug) and finalize a conflicting chain.
+#[test]
+fn ecbf5_general_reorg_heals_stuck_losing_branch() {
+    // The WINNING branch: h1@view1, then its child h2@view1 (a taller, height-2 branch).
+    let mut win = Cluster::new();
+    let h1_v1 = win.mine(1);
+    let h2_v1 = win.mine(1);
+    assert_eq!(h1_v1.number, 1);
+    assert_eq!(h2_v1.number, 2);
+    assert_eq!(
+        h2_v1.parent_hash, h1_v1.hash,
+        "h2@view1 is a child of h1@view1"
+    );
+
+    // The LOSING tip-race block h1@view0 (shares the genesis parent with h1@view1).
+    let (_c, v) = seeded_chain(None);
+    let h1_v0 = produce_block1_at_view(&v, 0);
+    assert_ne!(
+        h1_v0.hash, h1_v1.hash,
+        "distinct competing blocks at height 1"
+    );
+    assert_eq!(h1_v0.parent_hash, h1_v1.parent_hash, "same genesis parent");
+
+    // Node A adopts the LOSING branch h1@view0 first (the race the gate probes).
+    let (a, _) = seeded_chain(None);
+    apply_block(&a, &h1_v0).expect("A adopts h1@view0");
+    assert_eq!(a.tip().1, h1_v0.hash, "A is on the losing branch");
+
+    // The competing h1@view1 arrives (same height, higher view): NOT preferred yet, so it is RETAINED
+    // in the side store but A does not reorg — exactly the moment the old code got permanently stuck.
+    let r1 = consider_block(&a, &h1_v1).expect("h1@view1 is a valid competitor");
+    assert!(r1.is_none(), "h1@view1 is higher-view; not preferred yet");
+    assert_eq!(
+        a.tip().1,
+        h1_v0.hash,
+        "A still on the losing branch (retained, not stuck)"
+    );
+
+    // The winning branch's CHILD h2@view1 arrives — now the view-1 branch is TALLER (height 2). A must
+    // perform the bounded general reorg to it, NOT reject WrongParent forever.
+    let r2 = consider_block(&a, &h2_v1).expect("h2@view1 is a valid taller-branch child");
+    assert!(
+        r2.is_some(),
+        "EC-B-F5: A reorgs to the taller honest branch (bounded general reorg)"
+    );
+    assert_eq!(a.tip().0, 2, "A advanced to the taller branch height");
+    assert_eq!(
+        a.tip().1,
+        h2_v1.hash,
+        "A's canonical tip is the winning branch tip"
+    );
+    assert_eq!(
+        a.state_root(),
+        h2_v1.state_root,
+        "EC-B-F5: byte-identical state_root to the winning branch (convergence, I1)"
+    );
+    // And the reorg was bounded: common ancestor = genesis, depth 2, well under FINALITY_DEPTH (6).
+    const _: () = assert!(2 < ubi2_rpc::FINALITY_DEPTH, "reorg depth < FINALITY_DEPTH");
+}
+
+/// BLOCKER-1 finality bound (spec 08 §6.3, EC-B-F5): a fork whose common ancestor is BELOW the finalized
+/// frontier is REFUSED — the finalized frontier is NEVER reverted — even though the fork branch is
+/// fork-choice-preferred (strictly taller). The node keeps its canonical (finalized) history intact.
+#[test]
+fn ecbf5_reorg_never_crosses_finalized_frontier() {
+    // Node A's canonical chain: 10 view-0 blocks. finalizedHeight = 10 − FINALITY_DEPTH(6) = 4.
+    let mut main = Cluster::new();
+    let (a, _) = seeded_chain(None);
+    let mut a_blocks = Vec::new();
+    for _ in 0..10 {
+        let b = main.mine(0);
+        apply_block(&a, &b).expect("A extends its canonical chain");
+        a_blocks.push(b);
+    }
+    assert_eq!(a.tip().0, 10);
+    let finalized = a.finalized_height();
+    assert_eq!(finalized, 4, "finalizedHeight = 10 − 6");
+
+    // A FORK that shares blocks 1..2 with A, then diverges at height 3 (view 1) — so its common ancestor
+    // is height 2, BELOW the finalized frontier (4) — and grows TALLER than A (to height 12).
+    let mut fork = Cluster::new();
+    let _shared1 = fork.mine(0); // == A's block 1 (same seed/view/timestamp)
+    let shared2 = fork.mine(0); // == A's block 2
+    assert_eq!(
+        shared2.hash, a_blocks[1].hash,
+        "fork shares blocks 1..2 with A"
+    );
+    let mut fork_blocks = Vec::new();
+    for _ in 3..=12 {
+        fork_blocks.push(fork.mine(1)); // divergent view-1 branch, heights 3..12
+    }
+    let fork_tip = fork_blocks.last().unwrap().clone();
+    assert_eq!(
+        fork_tip.number, 12,
+        "fork branch is strictly taller than A (12 > 10)"
+    );
+    // The fork tip IS fork-choice-preferred over A's tip (so ONLY the finality bound can refuse it).
+    let a_tip_key = (a_blocks[9].number, a_blocks[9].view, a_blocks[9].hash);
+    assert!(
+        fork_choice_prefers((fork_tip.number, fork_tip.view, fork_tip.hash), a_tip_key),
+        "the taller fork branch is fork-choice-preferred"
+    );
+
+    // Feed the ENTIRE divergent branch to A. A must REFUSE to reorg (its common ancestor, height 2, is
+    // below finalizedHeight 4 — reverting it would cross the finalized frontier, §6.3).
+    for fb in &fork_blocks {
+        let r = consider_block(&a, fb).expect("fork block is authenticated/valid");
+        assert!(
+            r.is_none(),
+            "EC-B-F5: a fork below the finalized frontier is NEVER adopted (block {} not reorged)",
+            fb.number
+        );
+    }
+    assert_eq!(
+        a.tip().0,
+        10,
+        "A's head is unchanged (no reorg across finalized)"
+    );
+    assert_eq!(a.tip().1, a_blocks[9].hash, "A's canonical tip is intact");
+    assert_eq!(
+        a.state_root(),
+        a_blocks[9].state_root,
+        "A's committed state_root is unchanged"
+    );
+    // The finalized block at a sub-finalized height (3) is byte-for-byte the canonical one — never
+    // reverted to the fork's version.
+    assert_eq!(
+        a.block_at(3).unwrap().hash,
+        a_blocks[2].hash,
+        "EC-B-F5: the finalized block at height 3 is NEVER replaced by the fork"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // MULTI-PROCESS tier (#[ignore] — spawns the built ubi2-node binary; mirrors m5_stage_a.rs)
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -439,6 +668,25 @@ impl NodeProc {
             &self.tmp,
             &log,
         ));
+    }
+    /// SIGSTOP the node process: it becomes SLOW-BUT-ALIVE (frozen — produces/answers nothing) while its
+    /// TCP connections LINGER (transport still "connected"). This is the delay / black-hole proxy the CFT
+    /// safety tests need: a silent proposer that peers' active-liveness probe must detect.
+    fn pause(&self) {
+        if let Some(c) = &self.child {
+            let _ = Command::new("kill")
+                .args(["-s", "STOP", &c.id().to_string()])
+                .status();
+        }
+    }
+    /// SIGCONT the node process: a paused (slow) node RESUMES. It must reconcile with the chain it missed
+    /// (reorg / re-sync) rather than stay stuck or penalize the honest peers relaying the canonical chain.
+    fn resume(&self) {
+        if let Some(c) = &self.child {
+            let _ = Command::new("kill")
+                .args(["-s", "CONT", &c.id().to_string()])
+                .status();
+        }
     }
 }
 
@@ -899,4 +1147,210 @@ fn ecb4_ecb5_reconverge_and_state_root_parity() {
         "EC-B4: restarted node's FINALIZED block hash at height {target} must equal the canonical chain's"
     );
     eprintln!("[m5b] EC-B4 PASS: restarted node re-converged (finalized height {target})");
+}
+
+/// This node's `(reachableValidators, majority)` from `ubi_consensusStatus` (BLOCKER-2 §5.3). The
+/// reachable count is a LOCAL liveness value; when it drops below `majority` the node stalls production.
+fn reachable_and_majority(port: u16) -> Option<(u64, u64)> {
+    let v = rpc_call(port, "ubi_consensusStatus", "[]")?;
+    let reachable = v["reachableValidators"].as_u64()?;
+    let majority = v["majority"].as_u64()?;
+    Some((reachable, majority))
+}
+
+/// Assert every one of the given nodes agrees BYTE-FOR-BYTE on the finalized chain: the same `state_root`
+/// AND the same block hash at the minimum `finalizedHeight` across all of them, once every node has
+/// advanced past a positive finalized frontier. This is the CFT safety property (§7): no two honest nodes
+/// finalize conflicting blocks. Returns the agreed finalized height, or `None` on timeout.
+fn wait_all_converged(ports: &[u16], timeout: Duration) -> Option<u64> {
+    poll_until(
+        || {
+            let fins: Vec<u64> = ports.iter().filter_map(|p| finalized_height(*p)).collect();
+            if fins.len() != ports.len() {
+                return None;
+            }
+            let common = *fins.iter().min().unwrap();
+            if common == 0 {
+                return None; // wait for a positive finalized frontier on every node
+            }
+            let roots: Vec<String> = ports
+                .iter()
+                .filter_map(|p| state_root_at(*p, common))
+                .collect();
+            let hashes: Vec<String> = ports
+                .iter()
+                .filter_map(|p| block_hash_at(*p, common))
+                .collect();
+            if roots.len() == ports.len()
+                && hashes.len() == ports.len()
+                && roots.iter().all(|r| *r == roots[0])
+                && hashes.iter().all(|h| *h == hashes[0])
+            {
+                Some(common)
+            } else {
+                None
+            }
+        },
+        timeout,
+    )
+}
+
+/// BLOCKER-1 regression (multi-process, spec 08 §5.4/§7, EC-B-F5): a slow-but-alive scheduled proposer
+/// (SIGSTOP, not SIGKILL) whose successor already EXTENDED the chain. On resume the recovered proposer
+/// must reconcile — the general reorg heals its divergent tip and sync heals its gap WITHOUT penalizing
+/// the honest peers relaying the canonical chain — so ALL nodes converge on one chain with byte-identical
+/// finalized state roots. Before the fix a node driven onto a losing branch stayed WrongParent-stuck and
+/// finalized a conflicting chain (or abandoned every honest peer on sync).
+#[test]
+#[ignore = "multi-process integration test; run with -- --ignored"]
+fn ecbf5_delayed_proposer_multiprocess_converges() {
+    let _serialize = MULTI_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let bin = node_bin();
+    assert!(bin.exists(), "run `cargo build --workspace` first");
+    let tmp = std::env::temp_dir().join(format!("ubi2-m5b-delay-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let _g = TmpGuard(tmp.clone());
+    let nodes = spawn_three(&tmp, 30);
+    wait_all_ready(&nodes);
+    let port0 = nodes[0].rpc_port;
+
+    // Reach a comfortable height with all three connected + rotating.
+    poll_until(
+        || block_number(port0).filter(|h| *h >= 6),
+        Duration::from_secs(60),
+    )
+    .expect("initial progress");
+
+    // PAUSE (SIGSTOP — slow, not dead) the scheduled view-0 proposer for head+1. It freezes: it stops
+    // producing/answering, but its TCP sockets linger. Its successors view-change and EXTEND the chain.
+    let scheduled = scheduled_proposer(port0).expect("scheduledProposer");
+    let victim = (0..3)
+        .find(|i| addr_of_key(&V_KEYS[*i]) == scheduled)
+        .expect("scheduled proposer is one of our validators");
+    let paused_at = block_number(port0).unwrap_or(0);
+    eprintln!(
+        "[m5b] delay: pausing node {} (proposer {scheduled}) at height {paused_at}",
+        victim + 1
+    );
+    nodes[victim].pause();
+
+    // The majority (the 2 survivors) keeps producing through the view change (guard: 2 ≥ majority 2) —
+    // the chain does NOT halt while the scheduled proposer is slow.
+    let survivors: Vec<u16> = nodes
+        .iter()
+        .filter(|n| (n.idx - 1) as usize != victim)
+        .map(|n| n.rpc_port)
+        .collect();
+    poll_until(
+        || block_number(survivors[0]).filter(|h| *h >= paused_at + 6),
+        Duration::from_secs(60),
+    )
+    .expect("majority keeps producing through the view change (chain does not halt)");
+
+    // RESUME the slow proposer. It wakes with a stale (possibly divergent) tip and must reconcile with
+    // the canonical chain — via the bounded general reorg (gossip) and/or fork-healing sync.
+    eprintln!("[m5b] delay: resuming node {}", victim + 1);
+    nodes[victim].resume();
+
+    // SAFETY (§7): all three nodes converge BYTE-FOR-BYTE at the finalized frontier — no stuck node, no
+    // conflicting finalized history, honest peers never abandoned.
+    let all_ports: Vec<u16> = nodes.iter().map(|n| n.rpc_port).collect();
+    let converged = wait_all_converged(&all_ports, Duration::from_secs(120));
+    assert!(
+        converged.is_some(),
+        "EC-B-F5: all 3 nodes must converge byte-for-byte at the finalized height after a slow proposer recovers (heights {:?})",
+        all_ports.iter().map(|p| block_number(*p)).collect::<Vec<_>>()
+    );
+    eprintln!(
+        "[m5b] EC-B-F5 delay-proposer PASS: all 3 nodes converged (finalized height {})",
+        converged.unwrap()
+    );
+}
+
+/// BLOCKER-2 regression (multi-process, spec 08 §5.3): a silent BLACK-HOLE partition. Three connected
+/// nodes; then the MAJORITY (2 of 3) is frozen (SIGSTOP) — they go silent while their TCP sockets linger
+/// (still "connected" to the transport table). The lone minority node's ACTIVE liveness probe (ping)
+/// must prune the silent peers, dropping its reachable count below majority within a bound WELL under
+/// `FINALITY_DEPTH × BLOCK_MS`, so it STALLS (produces nothing → never k-deep-finalizes a divergent
+/// chain). With the transport-table-only signal it would have kept counting the frozen peers and forked
+/// finalized history — the exact hazard §5.3 prevents.
+#[test]
+#[ignore = "multi-process integration test; run with -- --ignored"]
+fn ecb_blackhole_partition_minority_stalls() {
+    let _serialize = MULTI_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let bin = node_bin();
+    assert!(bin.exists(), "run `cargo build --workspace` first");
+    let tmp = std::env::temp_dir().join(format!("ubi2-m5b-part-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let _g = TmpGuard(tmp.clone());
+    let nodes = spawn_three(&tmp, 40);
+    wait_all_ready(&nodes);
+
+    // All three connected + producing.
+    let minority_port = nodes[2].rpc_port;
+    poll_until(
+        || block_number(nodes[0].rpc_port).filter(|h| *h >= 5),
+        Duration::from_secs(60),
+    )
+    .expect("initial progress");
+    // The minority is initially majority-connected (reachable ≥ majority).
+    poll_until(
+        || reachable_and_majority(minority_port).filter(|(r, m)| *r >= *m),
+        Duration::from_secs(20),
+    )
+    .expect("minority starts majority-connected");
+
+    // BLACK-HOLE the MAJORITY: freeze nodes 1 & 2. Their sockets linger (transport still "connected"),
+    // but they answer no pings/blocks — the silent partition the guard must survive.
+    eprintln!("[m5b] partition: black-holing the majority (nodes 1 & 2)");
+    nodes[0].pause();
+    nodes[1].pause();
+
+    // The minority's reachable count must drop BELOW majority within a bound WELL under
+    // FINALITY_DEPTH × BLOCK_MS (= 6 × BLOCK_MS). This is the active-liveness-probe fix in action.
+    let bound = Duration::from_millis(6 * BLOCK_MS);
+    let dropped = poll_until(
+        || reachable_and_majority(minority_port).filter(|(r, m)| *r < *m),
+        bound,
+    );
+    assert!(
+        dropped.is_some(),
+        "BLOCKER-2: the minority's reachable count must drop below majority within FINALITY_DEPTH×BLOCK_MS ({:?})",
+        reachable_and_majority(minority_port)
+    );
+    eprintln!(
+        "[m5b] partition: minority reachable dropped below majority ({:?})",
+        dropped.unwrap()
+    );
+
+    // Let it fully settle past the pruning window, then assert the minority STALLS: no further block
+    // production (it cannot finalize a divergent chain). We compare its height across a multi-block
+    // window; a stalled node's height does not advance.
+    std::thread::sleep(Duration::from_millis(2 * BLOCK_MS));
+    let h_stall = block_number(minority_port).expect("minority reachable");
+    std::thread::sleep(Duration::from_millis(5 * BLOCK_MS));
+    let h_final = block_number(minority_port).expect("minority reachable");
+    assert_eq!(
+        h_final, h_stall,
+        "BLOCKER-2: the minority STALLS once it loses majority-liveness (no divergent finalization): {h_stall} -> {h_final}"
+    );
+    // The stalled minority's finalized frontier never crossed the partition point (it produced nothing
+    // that finalized): finalizedHeight = head − FINALITY_DEPTH, and head is frozen well below any
+    // divergent progress.
+    eprintln!("[m5b] BLOCKER-2 partition PASS: minority stalled at height {h_final} (no divergent finalization)");
+
+    // Heal: resume the majority. The minority re-syncs to the (canonical) majority chain — demonstrating
+    // the majority was the live/canonical side and no conflicting finalization occurred.
+    nodes[0].resume();
+    nodes[1].resume();
+    let all_ports: Vec<u16> = nodes.iter().map(|n| n.rpc_port).collect();
+    let converged = wait_all_converged(&all_ports, Duration::from_secs(120));
+    assert!(
+        converged.is_some(),
+        "after heal, all nodes converge on one chain (the minority never forked finalized history)"
+    );
+    eprintln!(
+        "[m5b] BLOCKER-2 partition heal PASS: all nodes converged (finalized height {})",
+        converged.unwrap()
+    );
 }
