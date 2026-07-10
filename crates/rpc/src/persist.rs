@@ -265,6 +265,10 @@ struct BlockDto {
     hash: String,
     parent_hash: String,
     timestamp: u64,
+    // M5 Stage B (spec 08 §2.2): the block's view. `#[serde(default)]` keeps a pre-Stage-B snapshot
+    // loadable (it restores `view = 0`, exactly a Stage-A block).
+    #[serde(default)]
+    view: u32,
     txs_root: String,
     state_root: String,
     proposer: String,
@@ -297,6 +301,10 @@ struct StateDto {
     csca: Vec<CscaDto>,
     #[serde(default)]
     csca_governance: Option<String>,
+    // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1). `#[serde(default)]` keeps
+    //      pre-Stage-B snapshots loadable (empty `V`, re-seeded at the next boundary / block #1). ----
+    #[serde(default)]
+    epoch_validators: Vec<String>,
 }
 
 /// The full on-disk chain snapshot.
@@ -627,6 +635,8 @@ fn export_state(state: &MemState) -> StateDto {
             })
             .collect(),
         csca_governance: state.csca_governance().map(|a| hex20(&a)),
+        // Stage B: the epoch validator snapshot, already sorted by the runtime accessor.
+        epoch_validators: state.epoch_validators().iter().map(hex20).collect(),
     }
 }
 
@@ -665,6 +675,7 @@ fn export_block(b: &Block) -> BlockDto {
         hash: hex32(&b.hash.0),
         parent_hash: hex32(&b.parent_hash.0),
         timestamp: b.timestamp,
+        view: b.view,
         txs_root: hex32(&b.txs_root.0),
         state_root: hex32(&b.state_root.0),
         proposer: hex20(&b.proposer.into_array()),
@@ -845,6 +856,9 @@ fn import_state(dto: &StateDto) -> MemState {
     if let Some(gov) = &dto.csca_governance {
         s.set_csca_governance(unhex20(gov));
     }
+    // Stage B: restore the epoch validator snapshot (the setter re-sorts + dedups, so a hand-rolled
+    // snapshot cannot install a non-canonical order).
+    s.set_epoch_validators(dto.epoch_validators.iter().map(|a| unhex20(a)).collect());
     s
 }
 
@@ -883,6 +897,7 @@ fn import_block(dto: &BlockDto) -> Block {
         hash: B256::from(unhex32(&dto.hash)),
         parent_hash: B256::from(unhex32(&dto.parent_hash)),
         timestamp: dto.timestamp,
+        view: dto.view,
         txs_root: B256::from(unhex32(&dto.txs_root)),
         state_root: B256::from(unhex32(&dto.state_root)),
         proposer: AlloyAddr::from(unhex20(&dto.proposer)),

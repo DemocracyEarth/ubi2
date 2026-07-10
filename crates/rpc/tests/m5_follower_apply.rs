@@ -127,6 +127,7 @@ fn follower_reaches_identical_state_root() {
             block.number,
             block.parent_hash,
             block.timestamp,
+            block.view,
             block.txs_root,
             block.state_root,
             block.proposer,
@@ -168,6 +169,7 @@ fn follower_rejects_tampered_state_root_no_apply() {
             block.number,
             block.parent_hash,
             block.timestamp,
+            block.view,
             block.txs_root,
             bad_root, // claim a state root the re-execution will not produce
             block.proposer,
@@ -204,6 +206,7 @@ fn follower_rejects_wrong_proposer() {
             block.number,
             block.parent_hash,
             block.timestamp,
+            block.view,
             block.txs_root,
             block.state_root,
             block.proposer,
@@ -228,6 +231,7 @@ fn follower_rejects_wrong_parent() {
             block.number,
             B256::repeat_byte(0x01), // not the follower's genesis hash
             block.timestamp,
+            block.view,
             block.txs_root,
             block.state_root,
             block.proposer,

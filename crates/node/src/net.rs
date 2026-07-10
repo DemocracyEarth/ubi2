@@ -23,7 +23,8 @@
 //! All async/libp2p lives in `crates/network`; this module only moves bytes through the
 //! `NetworkHandle`/`NetEvent` seam and drives the chain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use alloy_primitives::{Address as AlloyAddr, B256};
 use libp2p::{Multiaddr, PeerId};
@@ -56,32 +57,91 @@ pub struct NetDriver {
     peers: HashMap<PeerId, PeerEntry>,
     /// This node's validator key (for the `Hello` peer-proof), if it is a validator.
     validator_key: Option<ubi2_network::ValidatorKey>,
-    /// The Stage-A designated proposer's address — every follower validates a block's author against it.
-    designated_proposer: Option<AlloyAddr>,
-    /// True iff THIS node is the designated proposer (it produces blocks; others do not).
+    /// M5 Stage B (§3.3/§10): the Stage-A single-proposer OVERRIDE (only when `UBI2_DESIGNATED_PROPOSER`
+    /// is explicitly configured). `Some(a)` ⇒ `V = [a]` (N=1) with precedence; `None` ⇒ the on-chain
+    /// epoch snapshot governs the schedule (the multi-validator devnet).
+    validator_override: Option<AlloyAddr>,
+    /// True iff THIS node holds a proposer key (it MAY produce a block when the schedule elects it).
     is_proposer: bool,
     /// Highest tip we have already requested a sync up to, so we don't spam overlapping range pulls.
     sync_in_flight_to: u64,
+    // ---- M5 Stage B: the LOCAL per-height view timer (§5.1) — wall-clock is LOCAL only, never committed.
+    /// The height this node is currently trying to extend (`head + 1`); re-armed on every new head.
+    view_height: u64,
+    /// This node's local `current_view` for `view_height` (0 on a fresh head; incremented on timeout).
+    current_view: u32,
+    /// Monotonic deadline for the current view; on expiry with no block at `view_height`, escalate (§5.1).
+    view_deadline: Instant,
+    /// The local proposer timeout (`2 × BLOCK_MS`, §12) — how long to wait for the scheduled proposer.
+    proposer_timeout: Duration,
 }
 
 impl NetDriver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chain: Chain,
         handle: NetworkHandle,
         validator_key: Option<ubi2_network::ValidatorKey>,
         designated_proposer: Option<AlloyAddr>,
+        validator_override: Option<AlloyAddr>,
         is_proposer: bool,
+        block_ms: u64,
     ) -> Self {
         chain.set_proposer_role(is_proposer, designated_proposer);
-        NetDriver {
+        let proposer_timeout = Duration::from_millis(block_ms.saturating_mul(2).max(1));
+        let driver = NetDriver {
             chain,
             handle,
             peers: HashMap::new(),
             validator_key,
-            designated_proposer,
+            validator_override,
             is_proposer,
             sync_in_flight_to: 0,
+            view_height: 0,
+            current_view: 0,
+            view_deadline: Instant::now() + proposer_timeout,
+            proposer_timeout,
+        };
+        driver.publish_consensus_status();
+        driver
+    }
+
+    /// M5 Stage B (§11): publish the effective `V` + this node's local `current_view` for
+    /// `ubi_consensusStatus`. Called on start, on tip advance, and on a view escalation.
+    fn publish_consensus_status(&self) {
+        let v = self.chain.effective_validator_set(self.validator_override);
+        self.chain.set_consensus_status(v, self.current_view);
+    }
+
+    /// M5 Stage B (§5.3): the production connectivity guard. This node may PRODUCE only when it is
+    /// connected to a **majority of `V`** (`N/2 + 1`, counting itself if it is a validator). A minority
+    /// partition therefore stalls (produces + finalizes nothing) rather than forking finalized history;
+    /// on heal it re-syncs via fork choice. For `N = 1` the majority is 1 (self) ⇒ Stage A is unaffected.
+    /// This gates PRODUCTION only (a liveness policy); it never enters validation (a pure function).
+    fn production_guard_ok(&self) -> bool {
+        let v = self.chain.effective_validator_set(self.validator_override);
+        let n = v.len();
+        if n == 0 {
+            return false;
         }
+        let majority = n / 2 + 1;
+        let vset: HashSet<AlloyAddr> = v.into_iter().collect();
+        let mut reachable: HashSet<AlloyAddr> = HashSet::new();
+        // Count self if this node is a validator in `V`.
+        if let Some(me) = self.chain.proposer_address() {
+            if vset.contains(&me) {
+                reachable.insert(me);
+            }
+        }
+        // Count each bound-validator peer that is a member of `V` (the §4.1 handshake binding).
+        for e in self.peers.values() {
+            if let Some(val) = e.validator {
+                if vset.contains(&val) {
+                    reachable.insert(val);
+                }
+            }
+        }
+        reachable.len() >= majority
     }
 
     /// Build the `Hello` this node advertises (called on start + after every tip advance).
@@ -111,6 +171,7 @@ impl NetDriver {
     fn refresh_advertised_state(&self) {
         self.handle.update_hello(self.build_hello());
         self.publish_peers();
+        self.publish_consensus_status();
     }
 
     /// Publish the node's peer table into the chain so `ubi_getPeers` reads it (EC-1).
@@ -178,6 +239,20 @@ impl NetDriver {
             self.publish_peers();
             return;
         }
+        // M5 Stage B (§9): protocol-version compatibility. A peer whose major protocol version differs
+        // speaks a different block encoding (Stage B added the header `view`), so it is INCOMPATIBLE —
+        // disconnect at the handshake rather than silently mis-decode its blocks. This makes the wire
+        // change a loud, explicit break (alongside the genesis/chain check above).
+        if hello.protocol_ver != PROTOCOL_VERSION {
+            tracing::warn!(
+                %peer, peer_ver = hello.protocol_ver, local_ver = PROTOCOL_VERSION,
+                "incompatible protocol version — disconnecting"
+            );
+            self.handle.disconnect(peer);
+            self.peers.remove(&peer);
+            self.publish_peers();
+            return;
+        }
         let bound = hello.verify_binding(&peer.to_bytes());
         // SEC-M5A-1: a `Hello.tip` is peer-advertised and UNAUTHENTICATED — a hostile peer can claim any
         // height. We record it for `ubi_getPeers`, but we only chase it if it is plausibly ahead (within
@@ -219,7 +294,42 @@ impl NetDriver {
     /// proposer ignores its own echoed blocks (it produced them). On accept, relay + advance the
     /// advertised tip; on reject, penalize the peer.
     fn on_block(&mut self, from: PeerId, block: WireBlock) {
-        let (local_h, _) = self.chain.tip();
+        let (local_h, local_hash) = self.chain.tip();
+        // M5 Stage B (§5.4/§6): a block AT the current tip height that is a DIFFERENT block (a tip race —
+        // e.g. a late `view 0` original vs an already-adopted `view 1` successor) is considered for a
+        // fork-choice reorg. `consider_competing_block` applies the total order (§6.1): lower view wins,
+        // so the follower may reorg (bounded, depth-1). A block equal to our own tip is a no-op.
+        if block.number == local_h && local_h > 0 && block.hash() != local_hash {
+            match self.chain.consider_competing_block(
+                block.number,
+                block.parent_hash,
+                block.timestamp,
+                block.view,
+                block.txs_root,
+                block.state_root,
+                block.proposer,
+                &block.proposer_sig,
+                &block.txs,
+                self.validator_override,
+            ) {
+                Ok(Some(applied)) => {
+                    tracing::info!(
+                        number = applied.number,
+                        view = applied.view,
+                        "reorged to competing block (fork choice: lower view/hash wins)"
+                    );
+                    self.chain.cache_raw_txs(&block.txs);
+                    self.peers.entry(from).or_default().tip = Some((block.number, block.hash()));
+                    self.handle.publish_block(block);
+                    self.refresh_advertised_state();
+                }
+                Ok(None) => { /* valid but not preferred — keep our tip, do not penalize */ }
+                Err(e) => {
+                    tracing::debug!(%from, number = block.number, error = %e, "competing block rejected");
+                }
+            }
+            return;
+        }
         if block.number <= local_h {
             return; // already have this height (or behind via sync) — nothing to apply
         }
@@ -275,14 +385,17 @@ impl NetDriver {
         if !block.shallow_verify() {
             return false; // unsigned or txs_root/sig mismatch — never trust its number
         }
-        match self.designated_proposer {
-            // In a networked Stage-A deployment the designated proposer is always set; only its signed
-            // blocks advance the tip.
-            Some(dp) => block.proposer == dp,
-            // No designated proposer configured (single-node devnet) — there is no gossip peer to forge a
-            // tip, but fail closed anyway: do not chase an ahead announcement we cannot attribute.
-            None => false,
+        // Stage B: the announced author must be a plausible validator. In the Stage-A override that is
+        // the single designated proposer; in the multi-validator mode it is any member of the effective
+        // `V` (the on-chain epoch snapshot). We cannot re-execute an ahead-block here (we lack its
+        // parents), so this membership check is the gate that stops a forged/wrong-author block pinning a
+        // bogus tip; the schedule/re-execution is re-checked on the sync-applied path.
+        let v = self.chain.effective_validator_set(self.validator_override);
+        if v.is_empty() {
+            // No set resolvable (single-node devnet with no seeded validators) — fail closed.
+            return false;
         }
+        v.contains(&block.proposer)
     }
 
     /// Validate + apply one wire block against the local head (the shared follower path used by both live
@@ -293,12 +406,13 @@ impl NetDriver {
                 block.number,
                 block.parent_hash,
                 block.timestamp,
+                block.view,
                 block.txs_root,
                 block.state_root,
                 block.proposer,
                 &block.proposer_sig,
                 &block.txs,
-                self.designated_proposer,
+                self.validator_override,
             )
             .map_err(|e| e.to_string())?;
         self.chain.cache_raw_txs(&block.txs);
@@ -440,6 +554,7 @@ impl NetDriver {
             number: b.number,
             parent_hash: b.parent_hash,
             timestamp: b.timestamp,
+            view: b.view,
             txs_root: b.txs_root,
             state_root: b.state_root,
             proposer: b.proposer,
@@ -448,15 +563,64 @@ impl NetDriver {
         }
     }
 
-    /// The PROPOSER's per-tick action: produce a block from the local mempool and broadcast it. Returns
-    /// the produced block so the caller can persist + log. Followers never call this (Stage A).
+    /// M5 Stage B (§5.1) — the per-tick consensus step every validator node runs on the block interval:
+    /// advance the LOCAL view timer, and PRODUCE a block iff this node is the scheduled proposer for
+    /// `(head+1, current_view)` AND the production connectivity guard (§5.3) holds. Returns the produced
+    /// block (for persist/log) or `None`. Wall-clock (`Instant`) is used ONLY for the view deadline; the
+    /// block's committed timestamp is `timestamp` (the caller's clock), and the schedule/validity read no
+    /// clock — so a clock-skewed node still agrees block-for-block on what is valid (I1/I2).
+    ///
+    /// Back-compat (Stage A / N=1): the sole validator is always `proposer(h, v)`, the guard's
+    /// `majority = 1` is met by self, and it produces every block at `view 0` — exactly Stage A.
     pub fn tick_proposer(&mut self, timestamp: u64) -> Option<ubi2_rpc::Block> {
+        let (head, _) = self.chain.tip();
+        let target = head + 1;
+        // Re-arm the local view timer on a new head (adopted by production or by applying a block).
+        if self.view_height != target {
+            self.view_height = target;
+            self.current_view = 0;
+            self.view_deadline = Instant::now() + self.proposer_timeout;
+            self.publish_consensus_status();
+        } else if Instant::now() >= self.view_deadline {
+            // §5.1 timeout: no valid block at `target` by the deadline — escalate to the next view. The
+            // successor is authorized purely by the schedule (§5.2); no view-change message is sent.
+            self.current_view = self.current_view.saturating_add(1);
+            self.view_deadline = Instant::now() + self.proposer_timeout;
+            tracing::info!(
+                height = target,
+                view = self.current_view,
+                "view timeout — escalating"
+            );
+            self.publish_consensus_status();
+        }
+
+        // A node with no proposer key can never produce (a pure follower).
         if !self.is_proposer {
             return None;
         }
-        let block = self.chain.produce_block(timestamp);
+        // Am I the scheduled proposer for (target, current_view)?
+        let me = self.chain.proposer_address();
+        let scheduled =
+            self.chain
+                .scheduled_proposer(target, self.current_view, self.validator_override);
+        if me.is_none() || scheduled.is_none() || me != scheduled {
+            return None;
+        }
+        // §5.3 production connectivity guard: only produce when connected to a majority of `V`.
+        if !self.production_guard_ok() {
+            tracing::debug!(
+                height = target,
+                view = self.current_view,
+                "scheduled, but production guard not met (not majority-connected) — not producing"
+            );
+            return None;
+        }
+        let block = self
+            .chain
+            .produce_block_at_view(timestamp, self.current_view);
         let wire = self.wire_block_from(&block);
         self.handle.publish_block(wire);
+        // We just extended to `target`; the next tick re-arms the view timer for `target + 1`.
         self.refresh_advertised_state();
         Some(block)
     }
@@ -508,7 +672,7 @@ mod sync_loop_tests {
         let cfg = NetworkConfig::new(ubi2_rpc::DEVNET_CHAIN_ID, chain.genesis_hash());
         let (handle, _rx) = rt.block_on(async { ubi2_network::start(cfg).unwrap() });
         let designated = Some(AlloyAddr::repeat_byte(0xDD));
-        let driver = NetDriver::new(chain, handle, None, designated, false);
+        let driver = NetDriver::new(chain, handle, None, designated, designated, false, 2_000);
         (driver, PeerId::random())
     }
 

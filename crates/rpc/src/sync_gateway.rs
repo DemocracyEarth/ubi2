@@ -295,6 +295,7 @@ fn block_to_wire(block: &crate::Block, chain: &Chain) -> WireBlock {
         number: block.number,
         parent_hash: block.parent_hash,
         timestamp: block.timestamp,
+        view: block.view,
         txs_root: block.txs_root,
         state_root: block.state_root,
         proposer: block.proposer,

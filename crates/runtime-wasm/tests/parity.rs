@@ -124,6 +124,7 @@ fn wire_block_for(chain: &Chain, b: &Block) -> WasmWireBlock {
         number: b.number,
         parent_hash: b.parent_hash,
         timestamp: b.timestamp,
+        view: b.view,
         txs_root: b.txs_root,
         state_root: b.state_root,
         proposer: b.proposer,
@@ -137,6 +138,9 @@ fn wire_block_for(chain: &Chain, b: &Block) -> WasmWireBlock {
     assert_eq!(decoded.number, canonical.number);
     assert_eq!(decoded.parent_hash, canonical.parent_hash);
     assert_eq!(decoded.timestamp, canonical.timestamp);
+    // M5 Stage B (spec 08 §2.2/§9): `view` must decode byte-identically too — the field the light-client
+    // parity gate must carry through re-execution (it also feeds `entropy_hash`, §2.3).
+    assert_eq!(decoded.view, canonical.view, "view must decode identically");
     assert_eq!(decoded.txs_root, canonical.txs_root);
     assert_eq!(decoded.state_root, canonical.state_root);
     assert_eq!(decoded.proposer, canonical.proposer);
@@ -341,6 +345,103 @@ fn wasm_and_server_followers_agree_state_root_and_balance_for_every_block() {
             bal_future[i].to_string(),
             "live inter-block balance projection diverged for {who:?}"
         );
+    }
+}
+
+/// M5 Stage B (spec 08 §2.2/§2.3/§9): the header's `view` field must flow through browser re-execution
+/// byte-identically — it is part of the signed/hashed header pre-image AND folds into `entropy_hash`
+/// (jury-selection seeding). A block produced at a NONZERO view (a view-change successor, §5) must
+/// re-execute in the browser kernel to the same `state_root`/`balanceOf` as the server, and the wrapper's
+/// decoded `view` must equal the header's.
+#[test]
+fn wasm_and_server_agree_state_root_through_a_nonzero_view() {
+    let genesis_time = 1_700_000_000u64;
+    let chain_id = DEVNET_CHAIN_ID;
+
+    let proposer = std::sync::Arc::new(ProposerKey::from_bytes(&[11u8; 32]).unwrap());
+    let chain = Chain::new(chain_id, genesis_time).with_proposer_key(proposer);
+
+    let alice_sk = SigningKey::from_slice(&[0x11; 32]).unwrap();
+    let bob_sk = SigningKey::from_slice(&[0x22; 32]).unwrap();
+    let alice = addr_of(&alice_sk);
+    let bob = addr_of(&bob_sk);
+
+    chain.seed_verified_human(&alice, genesis_time);
+    chain.seed_account(Account {
+        address: alice,
+        verified: true,
+        verified_at: genesis_time,
+        last_settled_at: genesis_time,
+        settled_balance: 1_000 * UBI,
+        nonce: 0,
+    });
+
+    // Anchor at view 0 (the height's first-scheduled proposer, §2.2).
+    let anchor = chain.produce_block(genesis_time + 2);
+    let mut light = build_light_at_anchor(&chain, chain_id, &anchor);
+    assert_eq!(light.state_root(), anchor.state_root.0);
+
+    // Block A: produced at view 1 (as if a view-change successor stamped it, §5.2) — still a valid,
+    // signed block under the single-proposer chain (view does not gate production here; the schedule/
+    // validity check that enforces "author == V[(h+view) mod N]" lives in `validate_and_apply_block`,
+    // exercised by `crates/node/tests/m5_stage_b.rs`'s EC-B-F3/EC-B3). This test isolates the OTHER half
+    // of the Stage-B contract: that a nonzero `view` re-executes identically in the browser kernel.
+    let t1 = genesis_time + 100;
+    chain
+        .ingest_gossip_tx(&signed_tx(&alice_sk, chain_id, bob, 5 * UBI, vec![], 0))
+        .expect("alice→bob transfer admitted");
+    let block_a = chain.produce_block_at_view(t1, 1);
+    assert_eq!(block_a.view, 1, "test setup: block A must carry view=1");
+    let bal_a = balances_at(&chain, &[alice, bob], t1);
+
+    // Block B: produced at view 5 (a further-escalated successor) — the header, hash, and entropy_hash
+    // must all commit `view = 5` identically on both followers.
+    let t2 = genesis_time + 200;
+    chain
+        .ingest_gossip_tx(&signed_tx(&bob_sk, chain_id, alice, UBI, vec![], 0))
+        .expect("bob→alice transfer admitted");
+    let block_b = chain.produce_block_at_view(t2, 5);
+    assert_eq!(block_b.view, 5, "test setup: block B must carry view=5");
+    let bal_b = balances_at(&chain, &[alice, bob], t2);
+
+    for (b, now, want) in [(&block_a, t1, &bal_a), (&block_b, t2, &bal_b)] {
+        let wire = wire_block_for(&chain, b); // asserts decoded.view == canonical.view too
+        assert_eq!(
+            wire.view, b.view,
+            "wrapper WireBlock.view must equal the rpc::Block view"
+        );
+        let outcome = light
+            .apply_decoded(&wire, Some(b.proposer.into_array()))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "browser must accept server block {} at view {}: {e}",
+                    b.number, b.view
+                )
+            });
+        assert_eq!(
+            outcome.state_root, b.state_root.0,
+            "state_root diverged at block {} (view {})",
+            b.number, b.view
+        );
+        assert_eq!(
+            light.state_root(),
+            chain
+                .state_root_at(b.number)
+                .expect("server has this height")
+                .0,
+            "light vs server state_root_at diverged at block {} (view {})",
+            b.number,
+            b.view
+        );
+        for (i, who) in [alice, bob].iter().enumerate() {
+            assert_eq!(
+                light.balance_of(who, now).to_string(),
+                want[i].to_string(),
+                "balanceOf diverged for {who:?} at block {} (view {})",
+                b.number,
+                b.view
+            );
+        }
     }
 }
 

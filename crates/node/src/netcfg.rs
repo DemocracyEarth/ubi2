@@ -23,9 +23,17 @@ pub struct NodeNetConfig {
     /// The validator key (signs the `Hello` peer-proof). Defaults to the proposer key's bytes when this
     /// node is the proposer; a follower may still set one to advertise itself as a validator.
     pub validator_key: Option<ValidatorKey>,
-    /// The Stage-A designated proposer address every node validates blocks against (AC-F3).
+    /// The Stage-A designated proposer address every node validates blocks against (AC-F3). In Stage B
+    /// this is the display/announced-tip authority; the schedule uses `validator_override` (below).
     pub designated_proposer: Option<AlloyAddr>,
-    /// True iff THIS node is the designated proposer.
+    /// M5 Stage B (§3.3/§10): the Stage-A single-proposer OVERRIDE — set ONLY when `UBI2_DESIGNATED_PROPOSER`
+    /// is EXPLICITLY configured. When `Some(a)`, the node pins `V = [a]` (`N = 1`) with precedence over any
+    /// on-chain snapshot (exactly Stage A). When `None` (the multi-validator devnet), the schedule reads
+    /// the authoritative on-chain epoch snapshot. This distinction is why an explicit designated proposer
+    /// keeps `m5_stage_a` in the degenerate `N = 1` path, while the multi-B devnet rotates over `V`.
+    pub validator_override: Option<AlloyAddr>,
+    /// True iff THIS node holds a proposer key (it MAY produce a block when the schedule elects it). In
+    /// Stage A only the one proposer sets it; in multi-B every validator node sets it.
     pub is_proposer: bool,
     /// The pinned genesis unix time, shared by every node so genesis hashes match (the network anchor).
     pub genesis_time: u64,
@@ -112,10 +120,11 @@ pub fn resolve(default_genesis_time: u64) -> NodeNetConfig {
         .map(|k| k.address());
     let is_proposer = proposer_addr.is_some();
 
-    // The designated proposer: explicit env, else (if we are the proposer) our own address.
-    let designated_proposer = env("UBI2_DESIGNATED_PROPOSER")
-        .and_then(|s| parse_addr(&s))
-        .or(proposer_addr);
+    // The Stage-A single-proposer OVERRIDE: ONLY when `UBI2_DESIGNATED_PROPOSER` is explicitly set. This
+    // pins `V = [override]` with precedence (§3.3). Absent it, the schedule uses the on-chain snapshot.
+    let validator_override = env("UBI2_DESIGNATED_PROPOSER").and_then(|s| parse_addr(&s));
+    // The designated proposer (display / announced-tip authority): explicit env, else our own address.
+    let designated_proposer = validator_override.or(proposer_addr);
 
     // Validator key for the Hello peer-proof: explicit, else the proposer key bytes (so the bound
     // validator address == the designated proposer's address on the proposer node).
@@ -162,6 +171,7 @@ pub fn resolve(default_genesis_time: u64) -> NodeNetConfig {
         proposer_secret,
         validator_key,
         designated_proposer,
+        validator_override,
         is_proposer,
         genesis_time,
         block_ms,

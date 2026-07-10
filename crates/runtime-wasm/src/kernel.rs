@@ -356,7 +356,12 @@ impl LightCore {
         //    apply kernel (charge_fee → op → failed-tx nonce → the M3 sybil/finalize sweeps). The same
         //    pre-execution entropy hash the proposer used feeds jury selection (never balances/roots).
         //    We commit the trial only if the recomputed roots match the header byte-for-byte.
-        let entropy_hash = entropy_hash(block.number, block.parent_hash.0, block.timestamp);
+        let entropy_hash = entropy_hash(
+            block.number,
+            block.parent_hash.0,
+            block.timestamp,
+            block.view,
+        );
         let mut trial = self.state.clone();
         ubi2_exec::apply_ops(
             &mut trial,
@@ -456,16 +461,18 @@ impl LightCore {
     }
 }
 
-/// The PRE-execution entropy hash — `keccak256(number ‖ parent_hash ‖ timestamp ‖ 0 ‖ 0 ‖ 0)` — the
-/// same value `crates/rpc::execute_block` derives (block hash over zeroed roots + zero proposer) and
-/// feeds to the shared kernel's jury selection (it folds ONLY into the seeded PRNG, never balances or
-/// roots, so the swap does not change any state). Byte-identical to `Block::compute_hash(number,
-/// parent_hash, timestamp, ZERO, ZERO, ZERO)`.
-fn entropy_hash(number: u64, parent_hash: [u8; 32], timestamp: u64) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(8 + 32 + 8 + 32 + 32 + 20);
+/// The PRE-execution entropy hash — `keccak256(number ‖ parent_hash ‖ timestamp ‖ view ‖ 0 ‖ 0 ‖ 0)` —
+/// the same value `crates/rpc::execute_block` derives (block hash over the committed `view` + zeroed
+/// roots + zero proposer) and feeds to the shared kernel's jury selection (it folds ONLY into the seeded
+/// PRNG, never balances or roots, so the swap does not change any state). M5 Stage B (§2.3) adds `view`
+/// so a view-change successor's jury entropy is a pure function of its (view-carrying) header. Byte-
+/// identical to `Block::compute_hash(number, parent_hash, timestamp, view, ZERO, ZERO, ZERO)`.
+fn entropy_hash(number: u64, parent_hash: [u8; 32], timestamp: u64, view: u32) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(8 + 32 + 8 + 4 + 32 + 32 + 20);
     buf.extend_from_slice(&number.to_be_bytes());
     buf.extend_from_slice(&parent_hash);
     buf.extend_from_slice(&timestamp.to_be_bytes());
+    buf.extend_from_slice(&view.to_be_bytes()); // Stage B: the committed view
     buf.extend_from_slice(&[0u8; 32]); // txs_root placeholder
     buf.extend_from_slice(&[0u8; 32]); // state_root placeholder
     buf.extend_from_slice(&[0u8; 20]); // proposer placeholder
