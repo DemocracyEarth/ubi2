@@ -437,6 +437,34 @@ export interface CscaRegistry {
   entries: CscaEntry[];
 }
 
+/** A single accepted Self identity-commitment root entry (spec 06b §2.2). */
+export interface SelfIdentityRootEntry {
+  /** The Poseidon Lean-IMT root (32-byte hex). */
+  root: string;
+  /** Block height governance pinned it at (the freshness-window clock). */
+  pinnedAtBlock: number;
+}
+
+/** A single accepted Self OFAC SMT root entry (spec 06b §2.2). */
+export interface SelfOfacRootEntry {
+  /** `0 = passportno`, `1 = namedob`, `2 = nameyob` (mirrors `SELF_IDX_OFAC_*` slot order). */
+  kind: number;
+  /** The OFAC SMT root (32-byte hex). */
+  root: string;
+  /** Block height governance pinned it at. */
+  pinnedAtBlock: number;
+}
+
+/** Response from `ubi_getSelfRoots` — the LIVE accepted trust anchors a proof must bind against. */
+export interface SelfRootsResponse {
+  /** The accepted Self identity-commitment roots (`merkle_root` slot 9 must be a member). */
+  identityRoots: SelfIdentityRootEntry[];
+  /** The accepted OFAC SMT roots, one set per kind (slots 16/17/18 must each be a member). */
+  ofacRoots: SelfOfacRootEntry[];
+  /** The freshness window (in blocks) a pinned root stays valid for (spec 06b §2.2). */
+  windowBlocks: number;
+}
+
 interface JsonRpcCaller {
   call<T = unknown>(method: string, params?: unknown[]): Promise<T>;
 }
@@ -479,6 +507,275 @@ export class ZkPassportReader {
   async getCscaRegistry(): Promise<CscaRegistry> {
     return this.rpc.call<CscaRegistry>("ubi_getCscaRegistry");
   }
+
+  /**
+   * `ubi_getSelfRoots()` — the LIVE accepted Self identity + OFAC roots (spec 06b §2.2/§8). A
+   * client (real prover or [`buildDevMockSubmission`]) reads this to know which `merkle_root` /
+   * `ofac_*_root` values the runtime currently binds against, rather than hardcoding a devnet
+   * constant that could drift from the live chain.
+   */
+  async getSelfRoots(): Promise<SelfRootsResponse> {
+    return this.rpc.call<SelfRootsResponse>("ubi_getSelfRoots");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dev mint (mock) — a BINDING-CORRECT submission for devnets running the MockZkVerifier
+// (spec 06b §6.3; `crates/runtime::MockZkVerifier`, the devnet consensus default).
+//
+// The dev-fixture (`/api/self-dev-fixture`) and the raw synthetic fixture
+// (`crates/zkpoh/fixtures/self_synthetic_public.json`) both carry ARBITRARY de-risk values for
+// the policy-bound slots (scope@19, merkle_root@9, current_date@10..16, user_identifier@20) —
+// values the C0 crypto tests use to exercise ARITY, not the C1 runtime's on-chain BINDING checks
+// (`submit_zk_passport_proof`, `crates/runtime/src/lifecycle.rs`). Submitting that fixture as-is
+// on a devnet is rejected at the FIRST binding (`WrongScope`) and never mints a human.
+//
+// `buildDevMockSubmission` instead constructs the full 21-signal vector so every binding the
+// runtime checks (spec 06b §4.4) passes:
+//   * scope@19            == UBI2_SELF_SCOPE (the exact 32 bytes `crates/runtime/src/zkpoh.rs`
+//                            pins — low 8 bytes ASCII "ubi2-poh", rest zero);
+//   * user_identifier@20  == address_to_hash(sender) (the low 20 bytes hold `sender`, matching
+//                            `crates/runtime::address_to_hash` exactly);
+//   * merkle_root@9        an accepted Self identity root, read LIVE via `ubi_getSelfRoots`
+//                            (never hardcoded — the devnet seed is a documented constant but this
+//                            helper stays correct even if governance repins it);
+//   * ofac@16,17,18        the accepted OFAC roots (kinds 0/1/2), also read live;
+//   * current_date@10..16  TODAY as six YYMMDD ASCII-digit field elements, encoded by the exact
+//                            inverse-civil-calendar algorithm `crates/runtime::current_date_to_epoch`
+//                            decodes (Howard Hinnant days-from-civil) — so it decodes inside
+//                            `block.timestamp`'s `SELF_DATE_WINDOW_SECS` freshness window;
+//   * attestation_id@8     == 1 (E-Passport);
+//   * nullifier@7           a fresh random CANONICAL BN254 scalar (< r) — unique per call, so
+//                            repeated dev-mints for the same address don't collide (they'd hit
+//                            `AlreadyEnhanced` on-chain anyway, since one address ⇒ one human);
+//   * slots 0..7 (revealedData[0..3] + forbidden_countries[3..7])  arbitrary canonical field
+//                            elements — pass-through, never bound by the runtime.
+//
+// The `proof` bytes are NEVER inspected by `MockZkVerifier::verify_passport` — it keys purely on
+// `(nullifier@7, submitter_address)` — so any well-formed non-empty byte string (≤
+// `MAX_ZK_PROOF_BYTES` = 1024, `crates/rpc/src/humanity.rs`) is accepted. This is why the mock
+// path is dev-only: it produces a real on-chain mint with NO cryptographic proof of humanity
+// behind it. It exists so the plumbing (encode → sign → submit → mint) is exercisable and
+// demonstrable on a devnet without a real Self phone flow, clearly labeled as a mock everywhere
+// it is surfaced in the UI.
+// ---------------------------------------------------------------------------
+
+/** The pinned canonical ubi2 Self scope seed (spec 06b §3) — mirrors `UBI2_SELF_SCOPE_SEED` in
+ *  `crates/runtime/src/zkpoh.rs`. One scope network-wide ⇒ one-passport-one-human. */
+export const UBI2_SELF_SCOPE_SEED = "ubi2-poh";
+
+/**
+ * The pinned canonical ubi2 scope scalar the runtime binds `signals[19]` against — mirrors
+ * `ubi2_runtime::UBI2_SELF_SCOPE` (`crates/runtime/src/zkpoh.rs` ~line 99) EXACTLY: the low 8
+ * bytes are the ASCII encoding of [`UBI2_SELF_SCOPE_SEED`], the remaining 24 bytes are zero.
+ * Derived here (rather than hand-copied as a hex literal) so the derivation is self-evidently the
+ * same rule the Rust doc comment states.
+ */
+export const UBI2_SELF_SCOPE: Hex = (() => {
+  const seed = new TextEncoder().encode(UBI2_SELF_SCOPE_SEED); // 8 ASCII bytes
+  const buf = new Uint8Array(32);
+  buf.set(seed, 32 - seed.length); // low 8 bytes = seed ASCII, high 24 bytes = zero
+  return u8ArrayToHex(buf);
+})();
+
+/** The `attestation_id` value a Self E-Passport disclosure proof carries (slot 8, bound `== 1`). */
+export const SELF_ATTESTATION_ID_EPASSPORT = 1;
+
+/** OFAC root kinds (spec 06b §2.2) — mirror `ubi2_runtime::OFAC_KIND_*` (slots 16/17/18). */
+export const OFAC_KIND_PASSPORTNO = 0;
+export const OFAC_KIND_NAMEDOB = 1;
+export const OFAC_KIND_NAMEYOB = 2;
+
+/** The BN254 scalar-field order `r` — mirrors `ubi2_runtime::BN254_FR_MODULUS_BE` exactly. A
+ *  canonical nullifier must be strictly `< r` (the malleability guard, spec 06b §3.5). */
+export const BN254_FR_MODULUS =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+/**
+ * Zero-extend a 20-byte ubi2 address to a 32-byte big-endian [`Hex`] — mirrors
+ * `ubi2_runtime::address_to_hash` EXACTLY (the low 20 bytes hold the address, the high 12 bytes
+ * are zero). This is the `user_identifier` slot (20) form the runtime binds the tx sender against.
+ */
+export function addressToHash(address: string): Hex {
+  const clean = address.toLowerCase().replace(/^0x/, "");
+  if (clean.length !== 40) {
+    throw new Error(`addressToHash: expected a 20-byte (40 hex-char) address, got "${address}"`);
+  }
+  return `0x${"0".repeat(24)}${clean}` as Hex;
+}
+
+/**
+ * A cryptographically-sourced (where available) random 32-byte buffer. Falls back to `Math.random`
+ * only if no `crypto.getRandomValues` is present (never the case in a browser or Node ≥19) — the
+ * nullifier only needs to be unpredictable-enough-to-be-unique for a devnet dev tool, not a
+ * security boundary (the mock verifier provides none regardless).
+ */
+function randomBytes32(): Uint8Array {
+  const buf = new Uint8Array(32);
+  const g = globalThis as { crypto?: { getRandomValues?: (b: Uint8Array) => Uint8Array } };
+  if (g.crypto?.getRandomValues) {
+    g.crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < 32; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  return buf;
+}
+
+/**
+ * A fresh random CANONICAL BN254 scalar (`< r`, spec 06b §3.5's round-trip obligation) — the
+ * `nullifier` slot (7) for a dev-mock submission. Reducing a full 256-bit random value mod `r`
+ * (rather than rejection-sampling) always yields a value `< r`, so [`is_canonical_scalar`]'s Rust
+ * twin (`crates/runtime::is_canonical_scalar`) always accepts it.
+ */
+export function randomCanonicalScalar(): Hex {
+  const bytes = randomBytes32();
+  let n = 0n;
+  for (const b of bytes) n = (n << 8n) | BigInt(b);
+  n = n % BN254_FR_MODULUS;
+  return `0x${n.toString(16).padStart(64, "0")}` as Hex;
+}
+
+/**
+ * Encode a unix-seconds timestamp as the six `current_date` YYMMDD ASCII-digit field elements
+ * (slots 10..16) — the EXACT inverse of `ubi2_runtime::current_date_to_epoch` (Howard Hinnant
+ * civil-from-days), matching `crates/runtime/tests/m6_zkpoh.rs::date_signals` byte-for-byte so the
+ * decoded epoch lands within `block.timestamp`'s freshness window (spec 06b §4.4 step 5).
+ */
+export function dateToSelfSignals(nowSecs: number): [Hex, Hex, Hex, Hex, Hex, Hex] {
+  const days = Math.floor(nowSecs / 86_400);
+  const z = days + 719_468;
+  const era = Math.floor(z / 146_097); // z is always positive for any realistic `nowSecs` (post-1970)
+  const doe = z - era * 146_097; // [0, 146096]
+  const yoe = Math.floor(
+    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365,
+  ); // [0, 399]
+  const y = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100)); // [0, 365]
+  const mp = Math.floor((5 * doy + 2) / 153); // [0, 11]
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1; // [1, 31]
+  const m = mp < 10 ? mp + 3 : mp - 9; // [1, 12]
+  const year = m <= 2 ? y + 1 : y;
+  const yy = ((year % 100) + 100) % 100;
+  const digits = [Math.floor(yy / 10), yy % 10, Math.floor(m / 10), m % 10, Math.floor(d / 10), d % 10];
+  return digits.map((dg) => numberToBytes32(0x30 + dg)) as [Hex, Hex, Hex, Hex, Hex, Hex]; // 0x30 = ASCII '0'
+}
+
+/** A small non-negative integer → 32-byte big-endian [`Hex`] (canonical — always `< r`). */
+function numberToBytes32(n: number): Hex {
+  return `0x${n.toString(16).padStart(64, "0")}` as Hex;
+}
+
+/** The fixed dev-mock proof payload — `MockZkVerifier::verify_passport` never inspects proof
+ *  bytes, only `(nullifier, submitter)`, so any well-formed non-empty blob is accepted. 192 bytes
+ *  (matching the shape of `crates/runtime/tests/m6_zkpoh.rs`'s `vec![0xAB; 192]` test proof). */
+const DEV_MOCK_PROOF_BYTES = new Uint8Array(192).fill(0xab);
+
+/** The result of [`buildDevMockSubmission`] — ready to pass straight to
+ *  `encodeSubmitZkPassportProof` (or `.publicSignals`/`.proofBytes` individually). */
+export interface DevMockSubmission {
+  /** The dev-mock proof bytes (opaque to `MockZkVerifier`; see [`DEV_MOCK_PROOF_BYTES`]). */
+  proofBytes: Uint8Array;
+  /** The full 21-element `bytes32` public-signal vector (spec 06b §4.1), every policy slot bound
+   *  correctly for `sender` against the LIVE roots supplied. Exactly `SELF_NPUBLIC` (21) elements —
+   *  typed as `Hex[]` (matching [`ZkPassportProofParams.publicSignals`]) rather than the fixed
+   *  21-tuple so it passes straight to `encodeSubmitZkPassportProof` with no cast. */
+  publicSignals: Hex[];
+  /** Always `0` (Self e-passport, `SCHEME_TAG_PASSPORT`). */
+  schemeTag: 0;
+  /** The nullifier (slot 7) this submission will register — convenience for a pre-check /
+   *  post-submit `ubi_isNullifierUsed` display. */
+  nullifier: Hex;
+}
+
+/**
+ * Build a BINDING-CORRECT `submitZkPassportProof` submission for `sender` that the C1 runtime
+ * ACCEPTS on a devnet running `MockZkVerifier` (spec 06b §6.3) — a real on-chain mint, with every
+ * policy binding (`crates/runtime/src/lifecycle.rs::submit_zk_passport_proof`) satisfied, but with
+ * NO actual proof of humanity behind it (the "proof" bytes are inert; see the module doc above).
+ *
+ * **DEV-ONLY.** Never wire this to a path a user could reach outside an explicitly-labeled devnet
+ * "dev mint (mock)" affordance — it demonstrates the mint mechanics, not proof-of-humanity.
+ *
+ * @param sender  The tx sender / subject address (20-byte hex, `0x`-prefixed or not) — bound into
+ *                `user_identifier@20` via [`addressToHash`]. The caller MUST sign+send the
+ *                resulting calldata FROM this exact address (anti-replay, spec §4.4 step 4).
+ * @param roots   The LIVE accepted Self roots from `ubi_getSelfRoots` ([`ZkPassportReader.getSelfRoots`]).
+ *                Never hardcode a root — a governance repin would silently break a hardcoded value.
+ * @param now     Unix seconds to encode as `current_date` (defaults to `Date.now()/1000`). Must be
+ *                within `SELF_DATE_WINDOW_SECS` (±2 days) of the block that mines the tx.
+ */
+export function buildDevMockSubmission(
+  sender: string,
+  roots: SelfRootsResponse,
+  now: number = Math.floor(Date.now() / 1000),
+): DevMockSubmission {
+  if (roots.identityRoots.length === 0) {
+    throw new Error(
+      "buildDevMockSubmission: ubi_getSelfRoots returned no accepted Self identity root — the devnet has not seeded one.",
+    );
+  }
+  const identityRoot = roots.identityRoots[0]!.root as Hex;
+
+  const ofacByKind = new Map(roots.ofacRoots.map((r) => [r.kind, r.root as Hex]));
+  const ofacRoot = (kind: number): Hex => {
+    const r = ofacByKind.get(kind);
+    if (!r) {
+      throw new Error(
+        `buildDevMockSubmission: ubi_getSelfRoots returned no accepted OFAC root of kind ${kind}.`,
+      );
+    }
+    return r;
+  };
+
+  const nullifier = randomCanonicalScalar();
+  const date = dateToSelfSignals(now);
+
+  // Slots 0..7 (revealedData_packed[0..3] + forbidden_countries_list_packed[3..7]): pass-through,
+  // never bound by the runtime — small arbitrary canonical field elements.
+  const passthrough = [1, 2, 3, 4, 5, 6, 7].map(numberToBytes32);
+
+  const signals: Hex[] = [
+    ...passthrough, // 0..7  revealedData[0..3] + forbidden_countries[3..7]
+    nullifier, // 7      nullifier
+    numberToBytes32(SELF_ATTESTATION_ID_EPASSPORT), // 8      attestation_id
+    identityRoot, // 9      merkle_root
+    ...date, // 10..16 current_date (6 signals)
+    ofacRoot(OFAC_KIND_PASSPORTNO), // 16
+    ofacRoot(OFAC_KIND_NAMEDOB), // 17
+    ofacRoot(OFAC_KIND_NAMEYOB), // 18
+    UBI2_SELF_SCOPE, // 19     scope
+    addressToHash(sender), // 20     user_identifier
+  ];
+
+  if (signals.length !== SELF_NPUBLIC) {
+    // Defensive — a slot-count bug here would silently misalign the vector.
+    throw new Error(`buildDevMockSubmission: built ${signals.length} signals, expected ${SELF_NPUBLIC}.`);
+  }
+
+  return {
+    proofBytes: DEV_MOCK_PROOF_BYTES,
+    publicSignals: signals,
+    schemeTag: 0,
+    nullifier,
+  };
+}
+
+/**
+ * One-shot helper: [`buildDevMockSubmission`] → `submitZkPassportProof` calldata, ready for
+ * `sendZkPassportProof`. DEV-ONLY (see [`buildDevMockSubmission`]'s doc).
+ */
+export function encodeDevMockSubmission(
+  sender: string,
+  roots: SelfRootsResponse,
+  now?: number,
+): { data: Hex; nullifier: Hex } {
+  const built = buildDevMockSubmission(sender, roots, now);
+  const data = encodeSubmitZkPassportProof({
+    proofBytes: built.proofBytes,
+    publicSignals: built.publicSignals,
+    schemeTag: built.schemeTag,
+  });
+  return { data, nullifier: built.nullifier };
 }
 
 // ---------------------------------------------------------------------------

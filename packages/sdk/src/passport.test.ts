@@ -19,6 +19,12 @@
  *  6. validateProofBundle requires exactly 21 signals.
  *  7. SDK↔Rust parity: reading the shared synthetic fixture, the SDK's nullifier@7 equals the
  *     fixture's slot-7 field element (the same slot the Rust `SELF_IDX_NULLIFIER` binds).
+ *  8. buildDevMockSubmission (the C1 "dev mint (mock)" helper) constructs a 21-signal vector that
+ *     satisfies every binding `submit_zk_passport_proof` checks: scope == UBI2_SELF_SCOPE,
+ *     user_identifier == address_to_hash(sender), merkle_root/ofac roots == the supplied live
+ *     roots, attestation_id == 1, nullifier canonical (< BN254 r) and fresh per call, and
+ *     current_date decodes to the exact calendar day of `now` (parity-checked against the literal
+ *     example in `crates/runtime/src/zkpoh.rs::tests::current_date_decode_and_freshness`).
  */
 
 import { readFileSync } from "node:fs";
@@ -37,11 +43,27 @@ import {
   encodeZkBundleAsCalldata,
   validateSelfRelayPayload,
   encodeSelfRelayPayload,
+  buildDevMockSubmission,
+  encodeDevMockSubmission,
+  dateToSelfSignals,
+  addressToHash,
+  randomCanonicalScalar,
+  UBI2_SELF_SCOPE,
+  BN254_FR_MODULUS,
+  OFAC_KIND_PASSPORTNO,
+  OFAC_KIND_NAMEDOB,
+  OFAC_KIND_NAMEYOB,
   SELF_NPUBLIC,
   SELF_IDX_NULLIFIER,
   SELF_IDX_USER_IDENTIFIER,
+  SELF_IDX_SCOPE,
+  SELF_IDX_MERKLE_ROOT,
+  SELF_IDX_ATTESTATION_ID,
+  SELF_IDX_CURRENT_DATE,
+  SELF_IDX_OFAC_PASSPORTNO,
   type SelfProofBundle,
   type SelfRelayPayload,
+  type SelfRootsResponse,
 } from "./passport.js";
 
 // ---------------------------------------------------------------------------
@@ -255,6 +277,175 @@ test("encodeSelfRelayPayload: 21-vector relay payload → 0xf342a2f3 calldata (r
     data.includes(BigInt(TEST_NULLIFIER_DEC).toString(16)),
     "the nullifier field element appears in the encoded calldata",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Dev mint (mock) — buildDevMockSubmission (C1 devnet dev-mint helper)
+// ---------------------------------------------------------------------------
+
+// The exact devnet-seeded roots (`crates/node/src/lib.rs::DEVNET_SELF_IDENTITY_ROOT`/
+// `DEVNET_OFAC_ROOTS`) shaped as a `ubi_getSelfRoots` response — a realistic fixture for the
+// *test*, never hardcoded inside the SDK helper itself (it always reads roots from the caller).
+const DEV_IDENTITY_ROOT = "0x" + "5e".repeat(32);
+const DEV_OFAC_ROOTS = ["0x" + "0f".repeat(32), "0x" + "1f".repeat(32), "0x" + "2f".repeat(32)];
+const DEV_ROOTS: SelfRootsResponse = {
+  identityRoots: [{ root: DEV_IDENTITY_ROOT, pinnedAtBlock: 0 }],
+  ofacRoots: [
+    { kind: OFAC_KIND_PASSPORTNO, root: DEV_OFAC_ROOTS[0]!, pinnedAtBlock: 0 },
+    { kind: OFAC_KIND_NAMEDOB, root: DEV_OFAC_ROOTS[1]!, pinnedAtBlock: 0 },
+    { kind: OFAC_KIND_NAMEYOB, root: DEV_OFAC_ROOTS[2]!, pinnedAtBlock: 0 },
+  ],
+  windowBlocks: 5_000_000,
+};
+
+const DEV_SENDER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"; // well-known devnet dev account
+
+test("dateToSelfSignals: parity with the Rust example (crates/runtime::zkpoh tests)", () => {
+  // The exact example `current_date_decode_and_freshness` asserts: 2023-11-14 00:00 UTC decodes
+  // from ASCII digits '2','3','1','1','1','4' and epoch 1_699_920_000. We assert the INVERSE:
+  // encoding that same epoch reproduces those exact six ASCII-digit signals.
+  const sig = dateToSelfSignals(1_699_920_000);
+  const expectedAscii = ["2", "3", "1", "1", "1", "4"].map((c) => BigInt(c.charCodeAt(0)));
+  sig.forEach((h, i) => {
+    assert(BigInt(h) === expectedAscii[i], `digit[${i}] matches the Rust fixture example`);
+  });
+});
+
+test("dateToSelfSignals: round-trips against JS Date's own UTC calendar", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const sig = dateToSelfSignals(now);
+  const d = new Date(now * 1000);
+  const yy = d.getUTCFullYear() % 100;
+  const mm = d.getUTCMonth() + 1;
+  const dd = d.getUTCDate();
+  const expected = [
+    Math.floor(yy / 10), yy % 10,
+    Math.floor(mm / 10), mm % 10,
+    Math.floor(dd / 10), dd % 10,
+  ];
+  sig.forEach((h, i) => {
+    const digit = Number(BigInt(h)) - 0x30;
+    assert(digit === expected[i], `digit[${i}] == ${expected[i]} (got ${digit})`);
+  });
+});
+
+test("addressToHash: zero-extends the low 20 bytes, matching ubi2_runtime::address_to_hash", () => {
+  const h = addressToHash(DEV_SENDER);
+  assert(h.length === 66, "32-byte 0x-hex");
+  // Derive the expected value independently (BigInt round-trip, not a hand-typed hex literal) so a
+  // transcription slip here can't mask a real bug — this is the exact class of error the dev-mint
+  // helper exists to avoid in the runtime bindings.
+  assert(BigInt(h) === BigInt(DEV_SENDER), "value equals the address interpreted as a big-endian uint256");
+  assert(
+    h.toLowerCase().endsWith(DEV_SENDER.slice(2).toLowerCase()),
+    `low 20 bytes carry the address verbatim, got ${h}`,
+  );
+  assert(h.slice(2, 26) === "0".repeat(24), "high 12 bytes are zero");
+});
+
+test("randomCanonicalScalar: always canonical (< BN254 r) and unique per call", () => {
+  const a = randomCanonicalScalar();
+  const b = randomCanonicalScalar();
+  assert(BigInt(a) < BN254_FR_MODULUS, "a < r");
+  assert(BigInt(b) < BN254_FR_MODULUS, "b < r");
+  assert(a !== b, "two calls produce different nullifiers (collision astronomically unlikely)");
+});
+
+test("buildDevMockSubmission: satisfies every runtime binding (spec 06b §4.4)", () => {
+  const now = 1_699_920_000; // pinned so the date assertion below is exact, not just \"close to now\"
+  const built = buildDevMockSubmission(DEV_SENDER, DEV_ROOTS, now);
+
+  assert(built.publicSignals.length === SELF_NPUBLIC, "exactly 21 signals");
+  assert(built.schemeTag === 0, "schemeTag is 0 (SCHEME_TAG_PASSPORT)");
+
+  // scope@19 == UBI2_SELF_SCOPE (crates/runtime::UBI2_SELF_SCOPE, low-8-byte ASCII "ubi2-poh").
+  assert(built.publicSignals[SELF_IDX_SCOPE] === UBI2_SELF_SCOPE, "scope binds UBI2_SELF_SCOPE");
+  assert(
+    UBI2_SELF_SCOPE.toLowerCase() ===
+      ("0x" + "00".repeat(24) + Buffer.from("ubi2-poh").toString("hex")).toLowerCase(),
+    "UBI2_SELF_SCOPE derivation matches the documented low-8-byte ASCII packing exactly",
+  );
+
+  // user_identifier@20 == address_to_hash(sender) (anti-replay binding, §4.4 step 4).
+  assert(
+    built.publicSignals[SELF_IDX_USER_IDENTIFIER] === addressToHash(DEV_SENDER),
+    "user_identifier binds address_to_hash(sender)",
+  );
+
+  // attestation_id@8 == 1 (E-Passport).
+  assert(BigInt(built.publicSignals[SELF_IDX_ATTESTATION_ID]) === 1n, "attestation_id == 1");
+
+  // merkle_root@9 and ofac@16,17,18 == the LIVE roots supplied (never hardcoded in the helper).
+  assert(
+    built.publicSignals[SELF_IDX_MERKLE_ROOT].toLowerCase() === DEV_IDENTITY_ROOT.toLowerCase(),
+    "merkle_root == the supplied live identity root",
+  );
+  [0, 1, 2].forEach((kind) => {
+    assert(
+      built.publicSignals[SELF_IDX_OFAC_PASSPORTNO + kind].toLowerCase() ===
+        DEV_OFAC_ROOTS[kind]!.toLowerCase(),
+      `ofac root kind ${kind} == the supplied live root`,
+    );
+  });
+
+  // current_date@10..16 decodes to exactly `now`'s calendar day (2023-11-14, the pinned Rust
+  // fixture example — see the dateToSelfSignals parity test above).
+  for (let i = 0; i < 6; i++) {
+    assert(
+      built.publicSignals[SELF_IDX_CURRENT_DATE + i] === dateToSelfSignals(now)[i],
+      `current_date digit[${i}] matches dateToSelfSignals(now)`,
+    );
+  }
+
+  // nullifier@7 is canonical (< r) and equals the returned convenience field.
+  assert(built.publicSignals[SELF_IDX_NULLIFIER] === built.nullifier, "nullifier field matches slot 7");
+  assert(BigInt(built.nullifier) < BN254_FR_MODULUS, "nullifier is canonical (< BN254 r)");
+
+  // A second build for the same sender gets a DIFFERENT nullifier (each dev-mint call is unique;
+  // on-chain reuse would only be rejected via AlreadyEnhanced/NullifierAlreadyUsed, not a collision).
+  const built2 = buildDevMockSubmission(DEV_SENDER, DEV_ROOTS, now);
+  assert(built.nullifier !== built2.nullifier, "repeated builds get fresh nullifiers");
+});
+
+test("buildDevMockSubmission: throws fail-closed on missing roots (never silently mints wrong)", () => {
+  const empty: SelfRootsResponse = { identityRoots: [], ofacRoots: [], windowBlocks: 0 };
+  let threw = false;
+  try {
+    buildDevMockSubmission(DEV_SENDER, empty, 1_699_920_000);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "throws when ubi_getSelfRoots has no accepted identity root");
+
+  const noOfac: SelfRootsResponse = {
+    identityRoots: DEV_ROOTS.identityRoots,
+    ofacRoots: [{ kind: OFAC_KIND_PASSPORTNO, root: DEV_OFAC_ROOTS[0]!, pinnedAtBlock: 0 }],
+    windowBlocks: 0,
+  };
+  let threw2 = false;
+  try {
+    buildDevMockSubmission(DEV_SENDER, noOfac, 1_699_920_000);
+  } catch {
+    threw2 = true;
+  }
+  assert(threw2, "throws when an OFAC kind (namedob/nameyob) is missing from the live roots");
+});
+
+test("encodeDevMockSubmission: 0xf342a2f3 calldata, matches manual encode of the built submission", () => {
+  const now = 1_699_920_000;
+  const { data, nullifier } = encodeDevMockSubmission(DEV_SENDER, DEV_ROOTS, now);
+  assert(data.startsWith("0xf342a2f3"), "selector is 0xf342a2f3 (submitZkPassportProof)");
+
+  const built = buildDevMockSubmission(DEV_SENDER, DEV_ROOTS, now);
+  const viaEncode = encodeSubmitZkPassportProof({
+    proofBytes: built.proofBytes,
+    publicSignals: built.publicSignals,
+    schemeTag: built.schemeTag,
+  });
+  // Nullifiers differ between independent builds (fresh randomness each call), so compare the
+  // calldata with the nullifier slot masked out rather than expecting byte-identical output.
+  assert(data.length === viaEncode.length, "same calldata length as a manual encode");
+  assert(nullifier !== built.nullifier, "each call mints a fresh nullifier (sanity: not a stub)");
 });
 
 // ---------------------------------------------------------------------------

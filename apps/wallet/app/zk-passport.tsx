@@ -38,6 +38,7 @@ import {
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
 import { SelfLivePanel } from "./self-live-panel";
+import { DevMintPanel } from "./dev-mint-panel";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
@@ -830,6 +831,7 @@ export function ZkPassportSection({ account, human, onRefreshHuman }: ZkPassport
           human={human}
           onSuccess={handleSuccess}
         />
+        <DevMintPanel account={account} human={human} onSuccess={handleSuccess} />
       </div>
 
       {/* Stage note */}
