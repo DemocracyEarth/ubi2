@@ -41,6 +41,7 @@ import {
   extractSubmitterAddress,
   type SelfRelayPayload,
 } from "@ubi2/sdk";
+import { captureRawBundle } from "./capture";
 
 // Force the Node.js runtime (not edge) so the module-level Map persists across requests within
 // this worker process.
@@ -110,7 +111,17 @@ export async function POST(req: NextRequest) {
   };
   store.set(submitter, record);
 
-  return NextResponse.json({ ok: true, submitter, nullifier, note: contextNote });
+  // EC-C7 capture side-channel: a NO-OP unless UBI2_SELF_CAPTURE_DIR is set (dev-only). Persists the
+  // raw {proof, publicSignals} + decoded reconciliation values to disk; never affects validity.
+  const capturedTo = captureRawBundle(payload, submitter);
+
+  return NextResponse.json({
+    ok: true,
+    submitter,
+    nullifier,
+    note: contextNote,
+    ...(capturedTo ? { captured: capturedTo } : {}),
+  });
 }
 
 /**
