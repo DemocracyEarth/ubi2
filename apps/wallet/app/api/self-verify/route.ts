@@ -41,7 +41,7 @@ import {
   extractSubmitterAddress,
   type SelfRelayPayload,
 } from "@ubi2/sdk";
-import { captureRawBundle } from "./capture";
+import { captureRawBundle, captureRawRequestBody } from "./capture";
 
 // Force the Node.js runtime (not edge) so the module-level Map persists across requests within
 // this worker process.
@@ -70,6 +70,10 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
   }
+
+  // EC-C7: persist the verbatim body BEFORE validation, so a real Self V2 payload our validator does not
+  // yet accept is still captured for inspection (no-op unless UBI2_SELF_CAPTURE_DIR is set).
+  captureRawRequestBody(body);
 
   const shapeErr = validateSelfRelayPayload(body);
   if (shapeErr) {

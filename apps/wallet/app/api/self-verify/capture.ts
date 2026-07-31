@@ -44,6 +44,25 @@ function decToBytes32Hex(dec: string): string {
   return "0x" + hex.padStart(64, "0");
 }
 
+/**
+ * Persist the VERBATIM request body BEFORE any validation (a no-op unless capture mode is on). This is
+ * the diagnostic escape hatch: the real Self V2 app may POST a proof shape our validator/encoder does not
+ * yet accept — this saves exactly what arrived so we can adapt the encoder to the real format. Returns
+ * the directory written to, or null.
+ */
+export function captureRawRequestBody(body: unknown): string | null {
+  const dir = process.env.UBI2_SELF_CAPTURE_DIR;
+  if (!dir) return null;
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "self_raw_body.json"), JSON.stringify(body, null, 2) + "\n");
+    return dir;
+  } catch (e) {
+    console.error("[self-verify capture] raw body persist failed:", e);
+    return null;
+  }
+}
+
 interface CapturePayload {
   attestationId: number | string;
   proof: unknown;
