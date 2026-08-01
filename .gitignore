@@ -39,3 +39,7 @@ devnet-data/
 # Agent loop scratch (reports are committed; scratch is not)
 .agent-scratch/
 .devnet-lightnode-data/
+
+# EC-C7 local capture run (never commit)
+.ec-c7-run/
+.ec-c7-capture/
