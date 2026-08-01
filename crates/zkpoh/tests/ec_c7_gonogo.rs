@@ -1,10 +1,10 @@
 //! EC-C7 GO/NO-GO — does the GENUINE captured Self staging proof verify against our pinned PRODUCTION VK?
 //!
-//! Fixtures are a real proof captured from a Self mobile-app mock-passport STAGING scan (via the C1 relay,
-//! `apps/wallet/app/api/self-verify` capture side-channel):
-//!   * `self_staging_proof.json`  — the app's affine Groth16 proof (`a`/`b`/`c`, 2 coords each).
-//!   * `self_staging_public.json` — the 21 public signals (real staging merkle_root@9, scope@19, etc.).
-//! It is checked against `self_prod_vkey.json` (Self's real vc_and_disclose VK, extracted on-chain).
+//! Fixtures are a real proof captured from a Self mobile-app mock-passport STAGING scan (via the C1 relay
+//! `apps/wallet/app/api/self-verify` capture side-channel): `self_staging_proof.json` is the app's affine
+//! Groth16 proof (`a`/`b`/`c`, 2 coords each) and `self_staging_public.json` is the 21 public signals
+//! (real staging merkle_root@9, scope@19, etc.). It is checked against `self_prod_vkey.json` (Self's real
+//! vc_and_disclose VK, extracted on-chain).
 //!
 //! This is THE gate: if this verifies TRUE through the exact `Groth16Verifier` seam that runs on-chain,
 //! our extracted VK matches the staging ceremony and we can pin it + flip the real verifier. We try both
@@ -74,13 +74,21 @@ fn parse_proof(swap_b: bool) -> Proof<Bn254> {
     };
     let c = j["c"].as_array().unwrap();
     let gc = G1Affine::new_unchecked(fq(c[0].as_str().unwrap()), fq(c[1].as_str().unwrap()));
-    Proof { a: ga, b: gb, c: gc }
+    Proof {
+        a: ga,
+        b: gb,
+        c: gc,
+    }
 }
 
 fn parse_signals() -> [[u8; 32]; SELF_NPUBLIC] {
     let j: Value = serde_json::from_str(PUBLIC_JSON).unwrap();
     let arr = j.as_array().unwrap();
-    assert_eq!(arr.len(), SELF_NPUBLIC, "captured public.json carries 21 signals");
+    assert_eq!(
+        arr.len(),
+        SELF_NPUBLIC,
+        "captured public.json carries 21 signals"
+    );
     let mut out = [[0u8; 32]; SELF_NPUBLIC];
     for (i, s) in arr.iter().enumerate() {
         let f = Fr::from_str(s.as_str().unwrap()).unwrap();
@@ -92,8 +100,10 @@ fn parse_signals() -> [[u8; 32]; SELF_NPUBLIC] {
 
 #[test]
 fn captured_staging_proof_verifies_against_production_vk() {
-    let verifier = Groth16Verifier::from_vk_bytes(&prod_vk().to_pinned().unwrap().to_canonical_bytes().unwrap())
-        .expect("production VK loads at arity 21");
+    let verifier = Groth16Verifier::from_vk_bytes(
+        &prod_vk().to_pinned().unwrap().to_canonical_bytes().unwrap(),
+    )
+    .expect("production VK loads at arity 21");
     let pi = ZkPublicInputs::new(parse_signals());
 
     let mut winner: Option<bool> = None;
