@@ -1,0 +1,13 @@
+# Dependencies (restored via `forge install`; see README)
+lib/
+
+# Foundry compiler artifacts
+cache/
+out/
+
+# Broadcast logs from scripts
+/broadcast/*/31337/
+/broadcast/**/dryrun/
+
+# Env
+.env
