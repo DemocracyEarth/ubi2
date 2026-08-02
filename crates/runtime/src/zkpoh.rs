@@ -50,7 +50,7 @@ pub const SELF_IDX_NULLIFIER: usize = 7;
 pub const SELF_IDX_ATTESTATION_ID: usize = 8;
 /// `merkle_root` — slot 9. Bound ∈ accepted Self identity roots (§2.2) — NOT our CSCA root.
 pub const SELF_IDX_MERKLE_ROOT: usize = 9;
-/// `current_date[6]` (YYMMDD ASCII) — slots 10..=15. Freshness window vs `block.timestamp` (§4.4).
+/// `current_date[6]` (YYMMDD raw digits 0-9) — slots 10..=15. Freshness window vs `block.timestamp` (§4.4).
 pub const SELF_IDX_CURRENT_DATE: usize = 10;
 /// `ofac_passportno_smt_root` — slot 16. Bound ∈ accepted OFAC roots kind 0 (§2.2).
 pub const SELF_IDX_OFAC_PASSPORTNO: usize = 16;
@@ -306,21 +306,24 @@ pub fn address_to_hash(addr: &Address) -> Hash {
 
 /// Decode the six `current_date` ASCII-digit signals (YYMMDD, each a 32-byte big-endian field value
 /// whose meaningful content is a single ASCII byte) into the unix-second timestamp of that civil day at
-/// 00:00 UTC, or `None` if any signal is not a `'0'..='9'` ASCII digit (fail-closed, spec 06b §4.4
+/// 00:00 UTC, or `None` if any signal is not a raw decimal digit `0..=9` (fail-closed, spec 06b §4.4
 /// step 5). Assumes 20YY (2000..2099 — Self e-passport dates). Pure integer arithmetic (Howard Hinnant
 /// days-from-civil), so it is bit-reproducible across nodes (no chrono, no float, no clock).
 pub fn current_date_to_epoch(date: &[Hash; 6]) -> Option<u64> {
     let mut digits = [0u8; 6];
     for (i, sig) in date.iter().enumerate() {
-        // A valid current_date signal is a small integer (an ASCII digit code): all high bytes zero.
+        // Self's `vc_and_disclose` circuit emits each `current_date` signal as a RAW decimal digit
+        // 0-9 (the field element's value IS the digit) — NOT an ASCII code. (Confirmed bit-for-bit
+        // against a genuine Self staging proof, EC-C7: signals [2,6,0,7,3,1] => 2026-07-31. Self's
+        // Formatter.sol reverts on dateNum[i] > 9 then ADDS 48 to rebuild ASCII, proving raw input.)
         if sig[..31].iter().any(|&b| b != 0) {
             return None;
         }
         let b = sig[31];
-        if !b.is_ascii_digit() {
+        if b > 9 {
             return None;
         }
-        digits[i] = b - b'0';
+        digits[i] = b;
     }
     let yy = digits[0] as i64 * 10 + digits[1] as i64;
     let mm = digits[2] as i64 * 10 + digits[3] as i64;
@@ -763,15 +766,21 @@ mod tests {
 
     #[test]
     fn current_date_decode_and_freshness() {
-        // 2023-11-14 as YYMMDD ASCII digits: '2','3','1','1','1','4'.
+        // 2023-11-14 as YYMMDD RAW digits: 2,3,1,1,1,4 (the value IS the digit, not an ASCII code).
         let mut date = [[0u8; 32]; 6];
-        for (i, b) in [b'2', b'3', b'1', b'1', b'1', b'4'].iter().enumerate() {
-            date[i] = u64_to_hash(*b as u64);
+        for (i, d) in [2u64, 3, 1, 1, 1, 4].iter().enumerate() {
+            date[i] = u64_to_hash(*d);
         }
         let epoch = current_date_to_epoch(&date).expect("valid YYMMDD");
         // 2023-11-14 00:00 UTC = 1_699_920_000.
         assert_eq!(epoch, 1_699_920_000);
-        // A non-digit signal fails closed.
+        // The genuine Self staging capture (EC-C7): [2,6,0,7,3,1] => 2026-07-31 00:00 UTC.
+        let mut real = [[0u8; 32]; 6];
+        for (i, d) in [2u64, 6, 0, 7, 3, 1].iter().enumerate() {
+            real[i] = u64_to_hash(*d);
+        }
+        assert_eq!(current_date_to_epoch(&real), Some(1_785_456_000));
+        // An out-of-range signal (>9, e.g. a stray ASCII code) fails closed.
         let mut bad = date;
         bad[0] = u64_to_hash(b'Z' as u64);
         assert!(current_date_to_epoch(&bad).is_none());

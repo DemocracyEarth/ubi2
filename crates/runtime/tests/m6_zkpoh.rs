@@ -65,7 +65,8 @@ fn date_signals(now: u64) -> [Hash; 6] {
     let digits = [yy / 10, yy % 10, m / 10, m % 10, d / 10, d % 10];
     let mut out = [[0u8; 32]; 6];
     for (i, dg) in digits.iter().enumerate() {
-        out[i] = u64_to_hash((b'0' + dg) as u64);
+        // Self emits current_date as RAW decimal digits 0-9 (not ASCII codes) — EC-C7.
+        out[i] = u64_to_hash(*dg as u64);
     }
     out
 }
