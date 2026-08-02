@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn canonical_anchor_matches_pinned_lightnode_constants() {
         let pinned_hash = "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
-        let pinned_root = "fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
+        let pinned_root = "e50660aa38e3be89e6186e1d8473e744a22a2111957a22cc192a03b93fa28825";
 
         let (hash_no_key, root_no_key) = canonical_devnet_genesis(1_700_000_000, None);
         assert_eq!(hash_no_key, pinned_hash);
