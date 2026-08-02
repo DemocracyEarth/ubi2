@@ -76,6 +76,11 @@ const DEVNET_SELF_IDENTITY_ROOT: [u8; 32] = [0x5E; 32];
 /// M6 Stage C: the three curated devnet Self OFAC SMT roots (kinds 0/1/2 — passportno/namedob/nameyob),
 /// so a proof's OFAC slots (16/17/18) each bind an accepted root. Fixed NON-SECRET devnet constants.
 const DEVNET_OFAC_ROOTS: [[u8; 32]; 3] = [[0x0F; 32], [0x1F; 32], [0x2F; 32]];
+/// M6 / EC-C7: the devnet's canonical Self `scope` scalar (the binding target for `signals[19]`). The
+/// deployment-independent placeholder [`ubi2_runtime::UBI2_SELF_SCOPE`] — a real deployment overrides this
+/// with Self's scope derivation for its own Self endpoint host (e.g. `proofofhumanity.org`). Seeded so the
+/// devnet's ZK path has a non-`None` scope; the deterministic `MockZkVerifier` remains the consensus default.
+const DEVNET_SELF_SCOPE: [u8; 32] = ubi2_runtime::UBI2_SELF_SCOPE;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -118,6 +123,7 @@ pub fn seed_canonical_devnet_genesis(chain: &Chain, genesis_time: u64) {
     for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
         chain.seed_self_ofac_root(kind as u8, *root);
     }
+    chain.seed_self_scope(DEVNET_SELF_SCOPE);
 }
 
 /// M5 Stage B (spec 08 §13 setup): seed the multi-validator devnet's validator set into genesis. Each
@@ -232,6 +238,7 @@ fn build_genesis_state(dev_addr: &[u8; 20], genesis_time: u64) -> MemState {
     for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
         ubi2_runtime::seed_self_ofac_root(&mut s, kind as u8, *root);
     }
+    ubi2_runtime::seed_self_scope(&mut s, DEVNET_SELF_SCOPE);
     s
 }
 

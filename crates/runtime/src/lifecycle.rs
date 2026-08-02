@@ -672,7 +672,6 @@ use crate::zkpoh::{
     u64_to_hash, Assurance, CscaEntry, CscaStatus, SelfIdentityRoot, SelfOfacRoot,
     ZkPassportVerifier, ZkPublicInputs, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO,
     SCHEME_TAG_PASSPORT, SELF_ATTESTATION_ID_EPASSPORT, SELF_DATE_WINDOW_SECS, SELF_NPUBLIC,
-    UBI2_SELF_SCOPE,
 };
 
 /// Why a `submitZkPassportProof` op was rejected (spec §4.2; AC-2/3, AC-F1…F6/F9). Deterministic so two
@@ -783,8 +782,10 @@ pub fn submit_zk_passport_proof(
         return Err(ZkPohError::UnexpectedAttestation);
     }
 
-    // --- (3) scope (slot 19) == UBI2_SELF_SCOPE — one scope network-wide ⇒ one-passport-one-human. ---
-    if pi.scope() != UBI2_SELF_SCOPE {
+    // --- (3) scope (slot 19) == the deployment's genesis-seeded canonical scope — one scope network-wide
+    //         ⇒ one-passport-one-human. Fail closed if unseeded (`None`). Its value is Self's off-chain
+    //         scope derivation for this deployment's Self endpoint host (EC-C7). ---
+    if state.self_scope() != Some(pi.scope()) {
         return Err(ZkPohError::WrongScope);
     }
 
@@ -1027,4 +1028,11 @@ pub fn seed_self_ofac_root(state: &mut dyn State, kind: u8, root: Hash) {
         root,
         pinned_at_block: 0,
     });
+}
+
+/// Seed the canonical Self `scope` scalar (genesis wiring only). This is the deployment's binding target
+/// for `signals[19]` — Self's off-chain scope derivation for the deployment's Self endpoint host (EC-C7).
+/// Staging (an ephemeral tunnel host) and production (`proofofhumanity.org`) seed different scalars.
+pub fn seed_self_scope(state: &mut dyn State, scope: Hash) {
+    state.put_self_scope(scope);
 }

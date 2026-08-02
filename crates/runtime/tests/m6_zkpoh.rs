@@ -7,7 +7,7 @@
 
 use ubi2_runtime::{
     address_to_hash, current_date_to_epoch, pin_self_identity_root, retire_self_root,
-    seed_self_identity_root, seed_self_ofac_root, seed_verified_human, state_root,
+    seed_self_identity_root, seed_self_ofac_root, seed_self_scope, seed_verified_human, state_root,
     submit_zk_passport_proof, u64_to_hash, Assurance, CscaGovError, HumanStatus, MemState,
     MockZkVerifier, State, ZkPohError, ZkProofSubmission, EMISSION_PERIOD_SECS, OFAC_KIND_NAMEDOB,
     OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO, SELF_ATTESTATION_ID_EPASSPORT,
@@ -44,6 +44,7 @@ fn bootstrap_self_roots(state: &mut MemState) -> Hash {
     seed_self_ofac_root(state, OFAC_KIND_PASSPORTNO, OFAC_ROOTS[0]);
     seed_self_ofac_root(state, OFAC_KIND_NAMEDOB, OFAC_ROOTS[1]);
     seed_self_ofac_root(state, OFAC_KIND_NAMEYOB, OFAC_ROOTS[2]);
+    seed_self_scope(state, UBI2_SELF_SCOPE);
     IDENTITY_ROOT
 }
 

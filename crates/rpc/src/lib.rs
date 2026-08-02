@@ -2384,6 +2384,13 @@ impl Chain {
         ubi2_runtime::seed_self_ofac_root(&mut self.inner.lock().unwrap().state, kind, root);
     }
 
+    /// M6 / EC-C7: seed the canonical Self `scope` scalar this deployment binds `signals[19]` against
+    /// (spec 06b §3). Called by the node at genesis; its value is Self's scope derivation for the
+    /// deployment's Self endpoint host.
+    pub fn seed_self_scope(&self, scope: [u8; 32]) {
+        ubi2_runtime::seed_self_scope(&mut self.inner.lock().unwrap().state, scope);
+    }
+
     /// The live accepted Self identity roots, sorted by `root`. Pure read for `ubi_getSelfRoots`.
     pub fn self_identity_roots(&self) -> Vec<ubi2_runtime::SelfIdentityRoot> {
         self.inner.lock().unwrap().state.self_identity_roots()
