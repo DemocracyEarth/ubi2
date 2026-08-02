@@ -75,3 +75,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
+
+  contracts:
+    name: contracts (solidity — forge fmt + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      # lib/ is not vendored (see contracts/README.md) — restore the pinned deps.
+      - name: Restore pinned dependencies
+        run: forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 foundry-rs/forge-std --no-git
+      - run: forge fmt --check
+      - run: forge test -vv
