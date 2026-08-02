@@ -65,7 +65,8 @@ sol! {
         function submitZkPassportProof(
             bytes proof,
             bytes32[21] publicSignals,
-            uint8 schemeTag
+            uint8 schemeTag,
+            bytes userContextData
         ) external;
         /// Register a CSCA trust anchor (governance-gated — spec §7.3). RETAINED, reserved for the
         /// own-stack milestone (O-C1); inactive on the Self verify path.
@@ -123,13 +124,15 @@ pub enum HumanityOp {
     },
 
     // ---- M6: ZK-passport ops ----
-    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)` — a Self `vc_and_disclose` proof for
-    /// the tx signer (spec 06b §4.3). The submitter address is the tx sender (NOT in calldata) — supplied
-    /// separately by the dispatcher and bound against `publicSignals[user_identifier]` (§4.4).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag, userContextData)` — a Self
+    /// `vc_and_disclose` proof for the tx signer (spec 06b §4.3, EC-C7). The submitter address is the tx
+    /// sender (NOT a calldata field) — supplied separately by the dispatcher and bound TWO ways against
+    /// `userContextData` (`[32:64]` low-20 == sender, and `hash160(userContextData)` == slot 20).
     SubmitZkPassportProof {
         proof: Vec<u8>,
         signals: [Hash; 21],
         scheme_tag: u8,
+        user_context_data: Vec<u8>,
     },
     /// `registerCsca(countryCode, keyId, pubkey)` — governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
@@ -162,6 +165,8 @@ pub enum CalldataError {
     BadVerdict(&'static str),
     /// A `submitZkPassportProof` proof blob was outside the accepted size bounds (spec §4.2 step 1).
     BadProofLength(usize),
+    /// A `submitZkPassportProof` `userContextData` buffer exceeded the accepted size bound (EC-C7).
+    BadUserContextLength(usize),
 }
 
 impl std::fmt::Display for CalldataError {
@@ -178,6 +183,9 @@ impl std::fmt::Display for CalldataError {
             CalldataError::BadProofLength(n) => {
                 write!(f, "ZK proof length {n} is outside the accepted bounds")
             }
+            CalldataError::BadUserContextLength(n) => {
+                write!(f, "userContextData length {n} exceeds the accepted bound")
+            }
         }
     }
 }
@@ -187,6 +195,12 @@ impl std::fmt::Display for CalldataError {
 /// uncompressed/padded encoding still fits, while rejecting an unbounded blob at decode (DoS guard,
 /// §11). The verifier itself fails closed on any malformed bytes within this bound.
 pub const MAX_ZK_PROOF_BYTES: usize = 1024;
+
+/// Maximum accepted `submitZkPassportProof` `userContextData` size (spec 06b §4.4, EC-C7) — byte-
+/// identical to `ubi2_exec::op::MAX_USER_CONTEXT_DATA_BYTES`. A genuine buffer is ~106 bytes; an
+/// unbounded blob is rejected at decode (DoS guard). The `< 64`-byte fail-closed lower bound + the
+/// two-way submitter binding are enforced in the runtime, not here.
+pub const MAX_USER_CONTEXT_DATA_BYTES: usize = 1024;
 
 /// Map the `uint8 verdict` ABI byte to the canonical [`Verdict`] enum (0=Human,1=Sybil,2=Uncertain).
 fn verdict_from_u8(b: u8) -> Result<Verdict, CalldataError> {
@@ -266,10 +280,15 @@ pub fn parse_calldata(data: &[u8]) -> Result<HumanityOp, CalldataError> {
             for (i, sig) in call.publicSignals.iter().enumerate() {
                 signals[i] = sig.0;
             }
+            let user_context_data = call.userContextData.to_vec();
+            if user_context_data.len() > MAX_USER_CONTEXT_DATA_BYTES {
+                return Err(CalldataError::BadUserContextLength(user_context_data.len()));
+            }
             Ok(HumanityOp::SubmitZkPassportProof {
                 proof,
                 signals,
                 scheme_tag: call.schemeTag,
+                user_context_data,
             })
         }
         s if s == registerCscaCall::SELECTOR => {
@@ -367,7 +386,7 @@ mod tests {
         );
         assert_eq!(
             &submitZkPassportProofCall::SELECTOR,
-            &keccak256(b"submitZkPassportProof(bytes,bytes32[21],uint8)")[..4]
+            &keccak256(b"submitZkPassportProof(bytes,bytes32[21],uint8,bytes)")[..4]
         );
         assert_eq!(
             &registerCscaCall::SELECTOR,
@@ -403,10 +422,12 @@ mod tests {
             sig_bytes[i] = b;
             fixed[i] = FixedBytes::<32>::from(b);
         }
+        let ucd = vec![0x11u8; 106];
         let data = submitZkPassportProofCall {
             proof: proof.clone(),
             publicSignals: fixed,
             schemeTag: 0,
+            userContextData: Bytes::from(ucd.clone()),
         }
         .abi_encode();
         assert_eq!(
@@ -415,6 +436,7 @@ mod tests {
                 proof: vec![0xAB; 192],
                 signals: sig_bytes,
                 scheme_tag: 0,
+                user_context_data: ucd,
             }
         );
 
@@ -423,11 +445,25 @@ mod tests {
             proof: Bytes::from(vec![0u8; MAX_ZK_PROOF_BYTES + 1]),
             publicSignals: fixed,
             schemeTag: 0,
+            userContextData: Bytes::from(vec![0u8; 106]),
         }
         .abi_encode();
         assert!(matches!(
             parse_calldata(&big).unwrap_err(),
             CalldataError::BadProofLength(_)
+        ));
+
+        // An over-long userContextData buffer is rejected at decode (EC-C7 DoS bound).
+        let big_ucd = submitZkPassportProofCall {
+            proof: proof.clone(),
+            publicSignals: fixed,
+            schemeTag: 0,
+            userContextData: Bytes::from(vec![0u8; MAX_USER_CONTEXT_DATA_BYTES + 1]),
+        }
+        .abi_encode();
+        assert!(matches!(
+            parse_calldata(&big_ucd).unwrap_err(),
+            CalldataError::BadUserContextLength(_)
         ));
     }
 

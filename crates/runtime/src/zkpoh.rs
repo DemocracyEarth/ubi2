@@ -278,8 +278,10 @@ impl ZkPublicInputs {
         self.signals[SELF_IDX_USER_IDENTIFIER]
     }
 
-    /// The `user_identifier` interpreted as a 20-byte ubi2 address (the low 20 bytes of slot 20). The
-    /// mock verifier keys on this + the nullifier, so the state machine is exercisable without pairing.
+    /// The low 20 bytes of slot 20, used **only** as the [`MockZkVerifier`] scripting handle (paired with
+    /// the nullifier) so the state machine is exercisable without pairing. NOTE (EC-C7): on a genuine Self
+    /// proof slot 20 is `hash160(userContextData)`, NOT the address — the real submitter binding lives in
+    /// `submit_zk_passport_proof` (`userContextData[44:64]` + the `hash160` check), not here.
     pub fn submitter_address(&self) -> Address {
         let s = self.signals[SELF_IDX_USER_IDENTIFIER];
         let mut a = [0u8; 20];
@@ -296,8 +298,10 @@ pub fn u64_to_hash(v: u64) -> Hash {
     h
 }
 
-/// Zero-extend a 20-byte address to a 32-byte big-endian [`Hash`] (the `user_identifier` slot form the
-/// runtime binds the tx sender against — spec 06b §4.4). Pure integer.
+/// Zero-extend a 20-byte address to a 32-byte big-endian [`Hash`] (left-padded, EVM word form). Pure
+/// integer. Used to build [`MockZkVerifier`] test vectors for [`ZkPublicInputs::submitter_address`].
+/// NOTE (EC-C7): this is NOT how the runtime binds the submitter anymore — a genuine `user_identifier`
+/// (slot 20) is `hash160(userContextData)`, bound in `submit_zk_passport_proof`, not this encoding.
 pub fn address_to_hash(addr: &Address) -> Hash {
     let mut h = [0u8; 32];
     h[12..32].copy_from_slice(addr);

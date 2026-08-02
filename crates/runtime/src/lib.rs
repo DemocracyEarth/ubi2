@@ -32,10 +32,13 @@ pub mod lifecycle;
 pub use lifecycle::{
     challenge, finalize_registration, pin_self_identity_root, pin_self_ofac_root, register_csca,
     register_juror, request_verification, retire_self_root, revoke, revoke_csca, seed_csca,
-    seed_self_identity_root, seed_self_ofac_root, seed_self_scope, seed_verified_human, submit_verdict,
-    submit_zk_passport_proof, system_challenge, vouch, CscaGovError, LifecycleError,
-    LivenessEvidence, ZkPohError, ZkProofSubmission,
+    seed_self_identity_root, seed_self_ofac_root, seed_self_scope, seed_verified_human,
+    submit_verdict, submit_zk_passport_proof, system_challenge, vouch, CscaGovError,
+    LifecycleError, LivenessEvidence, ZkPohError, ZkProofSubmission,
 };
+
+pub mod hash160;
+pub use hash160::{ripemd160, sha256, user_identifier_hash};
 
 pub mod zkpoh;
 pub use zkpoh::{

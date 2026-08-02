@@ -653,13 +653,15 @@ enum PendingKind {
     },
 
     // ---- M6: ZK-passport ops to HumanityHub ----
-    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)`: verify a Self `vc_and_disclose`
-    /// proof for the signer (spec 06b §4.3). The submitter address is the tx sender (NOT in calldata),
-    /// bound against `publicSignals[user_identifier]` so it cannot be forged (§4.4).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag, userContextData)`: verify a Self
+    /// `vc_and_disclose` proof for the signer (spec 06b §4.3, EC-C7). The submitter address is the tx
+    /// sender (NOT a calldata field), bound TWO ways against `userContextData` (`[32:64]` low-20 ==
+    /// sender, and `hash160(userContextData)` == slot 20) so it cannot be forged (§4.4).
     SubmitZkPassportProof {
         proof: Vec<u8>,
         signals: [[u8; 32]; 21],
         scheme_tag: u8,
+        user_context_data: Vec<u8>,
     },
     /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
@@ -3748,10 +3750,12 @@ fn pending_kind_from_kernel(k: ubi2_exec::KernelKind) -> PendingKind {
             proof,
             signals,
             scheme_tag,
+            user_context_data,
         } => PendingKind::SubmitZkPassportProof {
             proof,
             signals,
             scheme_tag,
+            user_context_data,
         },
         K::RegisterCsca {
             country_code,
@@ -3812,10 +3816,12 @@ fn kernel_tx_from_pending(p: &PendingTx) -> ubi2_exec::KernelTx {
             proof,
             signals,
             scheme_tag,
+            user_context_data,
         } => K::SubmitZkPassportProof {
             proof: proof.clone(),
             signals: *signals,
             scheme_tag: *scheme_tag,
+            user_context_data: user_context_data.clone(),
         },
         PendingKind::RegisterCsca {
             country_code,
@@ -4626,14 +4632,17 @@ fn decode_call_json(tx: &StoredTx) -> Value {
                 proof,
                 signals,
                 scheme_tag,
+                user_context_data,
             }) => json!({
                 "kind": "HubCall", "hub": "HumanityHub", "method": "submitZkPassportProof",
                 // The proof bytes are opaque; we surface only their length (I6 — no PII; the proof never
-                // contains plaintext). The 21 public signals are all on-chain commitments/scalars.
+                // contains plaintext). The 21 public signals are all on-chain commitments/scalars. The
+                // userContextData is surfaced by length only (it carries the submitter address bytes).
                 "args": {
                     "proof_len": proof.len(),
                     "public_signals": signals.iter().map(hash_hex).collect::<Vec<_>>(),
                     "scheme_tag": scheme_tag,
+                    "user_context_data_len": user_context_data.len(),
                 },
             }),
             Ok(HumanityOp::RegisterCsca {

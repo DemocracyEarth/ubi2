@@ -35,6 +35,13 @@ pub const CONTRACT_HUB: [u8; 20] = RT_CONTRACT_HUB;
 /// `crates/rpc::humanity::MAX_ZK_PROOF_BYTES`. An unbounded blob is rejected at decode (DoS guard).
 pub const MAX_ZK_PROOF_BYTES: usize = 1024;
 
+/// Maximum accepted `submitZkPassportProof` `userContextData` size (spec 06b §4.4, EC-C7) — byte-
+/// identical to `crates/rpc::humanity::MAX_USER_CONTEXT_DATA_BYTES`. A genuine buffer is ~106 bytes
+/// (`destChainId(32) || userId(32) || userDefinedData`); an absurd blob is rejected at decode (DoS
+/// guard, mirroring the proof-blob bound). The `< 64`-byte fail-closed lower bound + the two-way
+/// submitter binding are enforced in the runtime (`submit_zk_passport_proof`).
+pub const MAX_USER_CONTEXT_DATA_BYTES: usize = 1024;
+
 // The hub calldata ABIs. `sol!` derives the 4-byte selectors from the canonical signatures, so they
 // equal the wallet's encoding and the rpc/runtime selectors byte-for-byte.
 alloy_sol_types::sol! {
@@ -50,7 +57,8 @@ alloy_sol_types::sol! {
     function submitZkPassportProof(
         bytes proof,
         bytes32[21] publicSignals,
-        uint8 schemeTag
+        uint8 schemeTag,
+        bytes userContextData
     ) external;
     function registerCsca(bytes3 countryCode, bytes32 keyId, bytes pubkey) external;
     function revokeCsca(bytes32 keyId) external;
@@ -107,12 +115,14 @@ pub enum KernelKind {
     },
 
     // ---- M6: ZK-passport ops ----
-    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag)`: verify a Self `vc_and_disclose`
-    /// proof for the signer, carrying the full 21-signal vector (spec 06b §4.3).
+    /// `submitZkPassportProof(proof, publicSignals[21], schemeTag, userContextData)`: verify a Self
+    /// `vc_and_disclose` proof for the signer, carrying the full 21-signal vector + the raw
+    /// `userContextData` buffer the submitter binding recomputes `hash160` over (spec 06b §4.3, EC-C7).
     SubmitZkPassportProof {
         proof: Vec<u8>,
         signals: [[u8; 32]; 21],
         scheme_tag: u8,
+        user_context_data: Vec<u8>,
     },
     /// `registerCsca(countryCode, keyId, pubkey)`: governance-gated CSCA add (§7.3). RETAINED, reserved.
     RegisterCsca {
@@ -388,10 +398,18 @@ fn parse_humanity(data: &[u8]) -> Result<KernelKind, DecodeError> {
         for (i, s) in call.publicSignals.iter().enumerate() {
             signals[i] = s.0;
         }
+        let user_context_data = call.userContextData.to_vec();
+        if user_context_data.len() > MAX_USER_CONTEXT_DATA_BYTES {
+            return Err(DecodeError::BadCalldata(format!(
+                "userContextData length {} exceeds the accepted bound",
+                user_context_data.len()
+            )));
+        }
         Ok(KernelKind::SubmitZkPassportProof {
             proof,
             signals,
             scheme_tag: call.schemeTag,
+            user_context_data,
         })
     } else if selector == registerCscaCall::SELECTOR {
         let call = registerCscaCall::abi_decode(data, true)
