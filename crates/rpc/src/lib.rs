@@ -4115,6 +4115,12 @@ fn poh_nft_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned>
             .get_human(&addr.into_array())
             .filter(|h| h.status == HumanStatus::Verified)
             .ok_or_else(|| execution_reverted("ERC721Metadata: URI query for nonexistent token"))?;
+        // Phase B: decode the human's disclosed Self attributes (nationality/gender/age/OFAC) from the
+        // stored `revealedData_packed` signals and surface them as public NFT traits (empty if none).
+        let attributes = chain
+            .attribute_commitments(&addr.into_array())
+            .map(|c| ubi2_runtime::decode_self_attributes(&c))
+            .unwrap_or_default();
         let card = PohCardData {
             address: addr,
             status: human.status,
@@ -4122,6 +4128,7 @@ fn poh_nft_call(chain: &Chain, data: &[u8]) -> Result<Vec<u8>, ErrorObjectOwned>
             vouches: human.vouches_in.len(),
             reputation: human.reputation,
             assurance: human.assurance,
+            attributes,
         };
         return Ok(encode_string(&render_poh_token_uri(&card)));
     }

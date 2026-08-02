@@ -197,6 +197,10 @@ pub struct CardData {
     /// M6: the assurance level (STD/ENH/DUAL — spec §5.5/EC-6) reflected on the soulbound card. No PII —
     /// only the level string (I6).
     pub assurance: Assurance,
+    /// Phase B: the decoded Self PUBLIC attributes (nationality / gender / age lower-bound / OFAC-clear),
+    /// surfaced as anonymous NFT traits. All-empty (`default`) for a human with no disclosed attributes
+    /// (e.g. an M3 social-path human, or a ZK human whose proof disclosed nothing). Never any PII.
+    pub attributes: ubi2_runtime::SelfAttributes,
 }
 
 /// Render the PoH SVG card (viewBox `0 0 500 500`): a dark card with the gradient-filled fingerprint
@@ -256,8 +260,32 @@ pub fn render_token_uri(card: &CardData) -> String {
          unique human. Fully on-chain on UBI."
     );
 
+    // Phase B: the anonymous public attribute traits, rendered only when disclosed (an undisclosed
+    // field decodes to empty and is omitted — never a placeholder). Identity is never surfaced.
+    let mut extra = String::new();
+    let nationality = card.attributes.nationality_str();
+    if !nationality.is_empty() {
+        extra.push_str(&format!(
+            r#",{{"trait_type":"Nationality","value":"{}"}}"#,
+            json_escape(nationality)
+        ));
+    }
+    let gender = card.attributes.gender_label();
+    if !gender.is_empty() {
+        extra.push_str(&format!(r#",{{"trait_type":"Gender","value":"{gender}"}}"#));
+    }
+    if card.attributes.older_than > 0 {
+        extra.push_str(&format!(
+            r#",{{"trait_type":"Age","value":"{}+"}}"#,
+            card.attributes.older_than
+        ));
+    }
+    if card.attributes.ofac_clear {
+        extra.push_str(r#",{"trait_type":"OFAC","value":"clear"}"#);
+    }
+
     let json = format!(
-        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Assurance","value":"{assurance}"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}]}}"#,
+        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Assurance","value":"{assurance}"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}{extra}]}}"#,
         name = json_escape(&name),
         description = json_escape(&description),
         image = image, // base64, no escaping needed
@@ -267,6 +295,7 @@ pub fn render_token_uri(card: &CardData) -> String {
         verified = json_escape(&verified),
         vouches = card.vouches,
         reputation = card.reputation,
+        extra = extra,
     );
 
     let json_b64 = B64.encode(json.as_bytes());
@@ -286,7 +315,47 @@ mod tests {
             vouches: 2,
             reputation: 7,
             assurance: Assurance::Std,
+            attributes: ubi2_runtime::SelfAttributes::default(),
         }
+    }
+
+    #[test]
+    fn card_surfaces_disclosed_public_attributes_and_omits_undisclosed() {
+        let mut c = card(AlloyAddr::from([0xcd; 20]));
+        c.attributes = ubi2_runtime::SelfAttributes {
+            nationality: *b"USA",
+            gender: b'F',
+            older_than: 18,
+            ofac_clear: true,
+        };
+        let uri = render_token_uri(&c);
+        let b64 = uri.strip_prefix("data:application/json;base64,").unwrap();
+        let json = String::from_utf8(B64.decode(b64).unwrap()).unwrap();
+        assert!(
+            json.contains(r#"{"trait_type":"Nationality","value":"USA"}"#),
+            "nationality trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"Gender","value":"female"}"#),
+            "gender trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"Age","value":"18+"}"#),
+            "age trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"OFAC","value":"clear"}"#),
+            "ofac trait"
+        );
+
+        // A human with no disclosed attributes (default) surfaces none of them — no placeholders.
+        let plain = render_token_uri(&card(AlloyAddr::from([0x11; 20])));
+        let pj = String::from_utf8(
+            B64.decode(plain.strip_prefix("data:application/json;base64,").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!pj.contains("Nationality") && !pj.contains(r#""trait_type":"OFAC""#));
     }
 
     #[test]

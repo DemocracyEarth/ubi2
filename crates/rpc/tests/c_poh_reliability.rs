@@ -122,6 +122,7 @@ fn card(address: AlloyAddr, verified_at: u64, vouches: usize, reputation: i64) -
         vouches,
         reputation,
         assurance: Assurance::Std,
+        attributes: ubi2_runtime::SelfAttributes::default(),
     }
 }
 
@@ -968,6 +969,7 @@ fn c5_two_node_identical_bytes() {
             vouches,
             reputation,
             assurance: Assurance::Std,
+            attributes: ubi2_runtime::SelfAttributes::default(),
         };
         let uri_a = render_token_uri(&card_a);
 
@@ -979,6 +981,7 @@ fn c5_two_node_identical_bytes() {
             vouches,
             reputation,
             assurance: Assurance::Std,
+            attributes: ubi2_runtime::SelfAttributes::default(),
         };
         let uri_b = render_token_uri(&card_b);
 
