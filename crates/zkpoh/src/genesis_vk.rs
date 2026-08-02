@@ -28,18 +28,19 @@
 
 use crate::keys::PinnedVerifyingKey;
 
-/// The SYNTHETIC 21-signal `vc_and_disclose` VK in arkworks canonical-compressed bytes (the
-/// `state_root`-commit form, §5.3). Generated from `fixtures/self_synthetic_vkey.json`; regenerate with
-/// `tests/self_arity21.rs::regen_pinned_synthetic_vk`. A layout/pipeline lock — NOT Self's production VK.
-const PINNED_PASSPORT_VK_BYTES: &[u8] =
-    include_bytes!("../fixtures/self_synthetic_vk.canonical.bin");
+/// Self's **real PRODUCTION** `vc_and_disclose` VK in arkworks canonical-compressed bytes (the
+/// `state_root`-commit form, §5.3). Reconstructed from Self's on-chain Groth16 verifier and adversarially
+/// cross-checked byte-identical vs two independent primary sources (`fixtures/self_prod_vkey.json`, EC-C7);
+/// regenerate with `tests/self_prod_vk_derisk.rs::regen_pinned_prod_vk`. A genuine Self staging proof
+/// verifies TRUE against it end-to-end (`tests/ec_c7_end_to_end.rs`).
+const PINNED_PASSPORT_VK_BYTES: &[u8] = include_bytes!("../fixtures/self_prod_vk.canonical.bin");
 
-/// The genesis-pinned passport-proof verifying key — the **SYNTHETIC 21-signal** layout/pipeline lock
-/// (spec 06b §4.1). Loads the embedded canonical-compressed bytes with full validation (`Validate::Yes`);
-/// returns `None` only if the embed is corrupt (fail-closed). The returned key reports
+/// The genesis-pinned passport-proof verifying key — Self's **real production 21-signal** `vc_and_disclose`
+/// VK (spec 06b §4.1, EC-C7). Loads the embedded canonical-compressed bytes with full validation
+/// (`Validate::Yes`); returns `None` only if the embed is corrupt (fail-closed). The returned key reports
 /// `num_public_inputs() == 21` (the confirmed Self arity) and is consumed in the
-/// [`crate::PassportLayout::SelfDisclose`] layout. Available via `Chain::with_verifier` as a
-/// **staging/opt-in** verifier; the `MockZkVerifier` stays the consensus default (EC-C7 gate).
+/// [`crate::PassportLayout::SelfDisclose`] layout. Wired via `Chain::with_verifier` for a node that runs
+/// the real [`crate::Groth16Verifier`]; the `MockZkVerifier` stays the devnet consensus default.
 pub fn pinned_passport_vk() -> Option<PinnedVerifyingKey> {
     PinnedVerifyingKey::from_canonical_bytes(PINNED_PASSPORT_VK_BYTES).ok()
 }

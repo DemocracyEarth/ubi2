@@ -107,3 +107,25 @@ fn prod_vk_imports_at_confirmed_arity() {
         SELF_NPUBLIC, ic_len, bytes.len()
     );
 }
+
+/// Regenerate the genesis-pinned PRODUCTION VK canonical bytes (`fixtures/self_prod_vk.canonical.bin`,
+/// the file `genesis_vk.rs` embeds). Run with:
+///   `cargo test -p ubi2-zkpoh regen_pinned_prod_vk -- --ignored`
+#[test]
+#[ignore]
+fn regen_pinned_prod_vk() {
+    let (vk, _) = parse_prod_vk();
+    let bytes = vk.to_pinned().unwrap().to_canonical_bytes().unwrap();
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/self_prod_vk.canonical.bin"
+        ),
+        &bytes,
+    )
+    .unwrap();
+    eprintln!(
+        "wrote fixtures/self_prod_vk.canonical.bin ({} bytes)",
+        bytes.len()
+    );
+}
