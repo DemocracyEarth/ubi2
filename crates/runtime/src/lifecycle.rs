@@ -561,7 +561,11 @@ pub fn revoke(state: &mut dyn State, subject: &Address) {
 
 /// Tally the case's votes and set its status (`Committed`/`Escalated`/`Open`). Pure on the case.
 fn apply_tally(case: &mut Case) {
-    match tally(&case.votes, JURY_SIZE, QUORUM) {
+    // (issue #35) Use the ACTUAL selected jury size, not the compile-time `JURY_SIZE`. When the active
+    // juror pool is < JURY_SIZE, `select_jury` returns a smaller jury; feeding `JURY_SIZE` here makes
+    // `quorum_tally` count phantom un-voted jurors and the case stays `Open` forever. The real size makes
+    // an unreachable-quorum jury fail closed (`Escalated`).
+    match tally(&case.votes, case.jury.len(), QUORUM) {
         Tally::Committed(v) => case.status = CaseStatus::Committed(v),
         Tally::Escalated => case.status = CaseStatus::Escalated,
         Tally::Pending => case.status = CaseStatus::Open,

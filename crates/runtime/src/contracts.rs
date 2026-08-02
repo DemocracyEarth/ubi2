@@ -808,7 +808,10 @@ pub fn submit_effect(
 ///     atomically and set `Committed(effect)`; if any op is invalid (over-escrow / non-party refund /
 ///     a pure `Abort`), set `Aborted` and make no state change (I4 fail-closed).
 fn resolve_case(state: &mut dyn State, case: &mut ExecCase, block: u64, now: u64) {
-    match tally_effects(&case.effects, JURY_SIZE, QUORUM) {
+    // (issue #35) Tally against the ACTUAL interpreter-quorum size, not the compile-time `JURY_SIZE` —
+    // a sub-`JURY_SIZE` quorum (small active pool) would otherwise never resolve (phantom un-voted
+    // members keep it `Pending`/`Open` forever). The real size fails an unreachable quorum closed.
+    match tally_effects(&case.effects, case.jury.len(), QUORUM) {
         // Still gathering submissions — the case stays Open and unresolved.
         EffectTally::Pending => case.status = ExecStatus::Open,
         EffectTally::NoQuorum => {
@@ -1653,9 +1656,58 @@ mod tests {
 
     #[test]
     fn submit_effect_authority_and_dedup() {
-        // Build a case via single-interpreter pool so it stays Open after invoke (1 sub < QUORUM 2).
+        // A genuinely-Open exec case: a 3-interpreter jury with only ONE effect submitted so far (the
+        // deferred `submit_effect` path), so 1 < QUORUM=2 and it stays Open. Constructed directly, since
+        // `invoke_contract` eagerly submits ALL jurors (it never leaves a case Open) — and a 1-juror pool
+        // now correctly Aborts (fail-closed) rather than hanging Open (issue #35, the fixed deadlock).
         let mut s = MemState::new();
-        register_juror(&mut s, &addr(101), 0);
+        for j in [101u8, 102, 103] {
+            register_juror(&mut s, &addr(j), 0);
+        }
+        let funder = addr(1);
+        seed_funded(&mut s, funder, 10 * UBI);
+        let id = deploy(&mut s, "two-party escrow agreement", vec![funder, addr(2)]);
+        fund_contract(&mut s, &funder, id, 5 * UBI, 0, 0).unwrap();
+
+        let case_id = s.next_exec_case_id();
+        s.put_exec_case(ExecCase {
+            id: case_id,
+            contract: id,
+            trigger_ref: [0u8; 32],
+            invoker: funder,
+            jury: vec![addr(101), addr(102), addr(103)],
+            effects: vec![(
+                addr(101),
+                CanonicalEffect::new(vec![Op::Transfer {
+                    to: addr(2),
+                    amount: UBI,
+                }]),
+            )],
+            status: ExecStatus::Open,
+            opened_at: 1,
+            resolved_at: None,
+        });
+        assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
+
+        // A non-juror cannot submit.
+        assert_eq!(
+            submit_effect(&mut s, case_id, &addr(200), CanonicalEffect::noop(), 1, 0).unwrap_err(),
+            ContractError::NotOnJury
+        );
+        // A juror who already submitted cannot submit again.
+        assert_eq!(
+            submit_effect(&mut s, case_id, &addr(101), CanonicalEffect::noop(), 1, 0).unwrap_err(),
+            ContractError::AlreadySubmitted
+        );
+    }
+
+    #[test]
+    fn single_interpreter_case_aborts_not_deadlock() {
+        // issue #35: a sub-QUORUM interpreter pool must fail CLOSED (Aborted), not hang Open forever.
+        // (Feeding the compile-time JURY_SIZE to the tally counted phantom un-voted members and left the
+        // case Open indefinitely; tallying against the real jury size aborts an unreachable quorum.)
+        let mut s = MemState::new();
+        register_juror(&mut s, &addr(101), 0); // ONE interpreter (< JURY_SIZE = 3)
         let funder = addr(1);
         seed_funded(&mut s, funder, 10 * UBI);
         let id = deploy(&mut s, "two-party escrow agreement", vec![funder, addr(2)]);
@@ -1664,20 +1716,14 @@ mod tests {
             to: addr(2),
             amount: UBI,
         }]));
-        // Only one interpreter ⇒ one submission ⇒ Pending (needs QUORUM=2).
         let case_id =
             invoke_contract(&mut s, &interp, id, [0u8; 32], b"x", funder, 1, 1, 0).unwrap();
-        assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
-
-        // A non-juror cannot submit.
-        assert_eq!(
-            submit_effect(&mut s, case_id, &addr(200), CanonicalEffect::noop(), 1, 0).unwrap_err(),
-            ContractError::NotOnJury
-        );
-        // The juror already submitted during invoke ⇒ AlreadySubmitted.
-        assert_eq!(
-            submit_effect(&mut s, case_id, &addr(101), CanonicalEffect::noop(), 1, 0).unwrap_err(),
-            ContractError::AlreadySubmitted
+        assert!(
+            matches!(
+                s.get_exec_case(case_id).unwrap().status,
+                ExecStatus::Aborted
+            ),
+            "a 1-interpreter case fails closed (Aborted), not a deadlocked Open"
         );
     }
 }
