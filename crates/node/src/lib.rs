@@ -334,7 +334,7 @@ pub async fn run() -> anyhow::Result<()> {
     // account, the M6 CSCA registry) that a restored snapshot already carries (FU-3).
     let restored_from_snapshot = loaded_snapshot.is_some();
 
-    let chain = if let Some(snap) = loaded_snapshot {
+    let mut chain = if let Some(snap) = loaded_snapshot {
         let tip = snap.tip_height();
         let mut chain = Chain::from_snapshot(&snap)
             .with_oracle_admin(oracle_admin)
@@ -366,6 +366,21 @@ pub async fn run() -> anyhow::Result<()> {
         seed_genesis_validators(&chain, genesis_time);
         chain
     };
+
+    // M6 / EC-C7: a production/staging node runs the REAL `Groth16Verifier` (the genesis-pinned production
+    // `vc_and_disclose` VK — EC-C7 verified end-to-end) when `UBI2_REAL_VERIFIER` is set. The devnet
+    // default stays the deterministic `MockZkVerifier` (from `Chain::new`) so the local ZK dev flow needs
+    // no real Self proof. The verifier is a runtime choice, not persisted state — it does not affect
+    // `state_root`/the pinned anchor, only which proofs are accepted on the ZK path.
+    if std::env::var_os("UBI2_REAL_VERIFIER").is_some() {
+        let vk = ubi2_zkpoh::Groth16Verifier::from_pinned().expect(
+            "UBI2_REAL_VERIFIER set but the genesis-pinned production VK is missing/corrupt",
+        );
+        chain = chain.with_verifier(Arc::new(vk));
+        tracing::info!(
+            "M6/EC-C7: real Groth16Verifier wired (genesis-pinned production vc_and_disclose VK)"
+        );
+    }
 
     // M3 (board M3-T4 §4): the deterministic devnet jurors (Anvil accts #1..#3) are registered above via
     // `seed_canonical_devnet_genesis` so every case has a jury to draw from (the lifecycle fails closed

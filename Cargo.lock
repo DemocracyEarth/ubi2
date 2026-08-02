@@ -4834,6 +4834,7 @@ dependencies = [
  "ubi2-rpc",
  "ubi2-runtime",
  "ubi2-runtime-wasm",
+ "ubi2-zkpoh",
 ]
 
 [[package]]
