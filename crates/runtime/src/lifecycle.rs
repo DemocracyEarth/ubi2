@@ -667,12 +667,12 @@ pub fn seed_verified_human(state: &mut dyn State, addr: &Address, verified_at: u
 // above is UNTOUCHED. This is the ONLY new lifecycle entry point.
 // =============================================================================================
 
+use crate::hash160::user_identifier_hash;
 use crate::zkpoh::{
-    address_to_hash, current_date_to_epoch, self_identity_root_accepted, self_ofac_root_accepted,
-    u64_to_hash, Assurance, CscaEntry, CscaStatus, SelfIdentityRoot, SelfOfacRoot,
-    ZkPassportVerifier, ZkPublicInputs, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO,
+    current_date_to_epoch, self_identity_root_accepted, self_ofac_root_accepted, u64_to_hash,
+    Assurance, CscaEntry, CscaStatus, SelfIdentityRoot, SelfOfacRoot, ZkPassportVerifier,
+    ZkPublicInputs, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO,
     SCHEME_TAG_PASSPORT, SELF_ATTESTATION_ID_EPASSPORT, SELF_DATE_WINDOW_SECS, SELF_NPUBLIC,
-    UBI2_SELF_SCOPE,
 };
 
 /// Why a `submitZkPassportProof` op was rejected (spec §4.2; AC-2/3, AC-F1…F6/F9). Deterministic so two
@@ -685,8 +685,12 @@ pub enum ZkPohError {
     UnexpectedAttestation,
     /// `scope` (slot 19) ≠ `UBI2_SELF_SCOPE` — a different-app nullifier, would break Sybil-uniqueness.
     WrongScope,
-    /// `user_identifier` (slot 20) ≠ the tx sender — a copied/relayed proof (anti-replay / front-run, F-4).
+    /// `userContextData[32:64]` low-20 bytes ≠ the tx sender (or the buffer is < 64 bytes) — a
+    /// copied/relayed proof bound to a different account (anti-replay / front-run, F-4, EC-C7).
     SubmitterMismatch,
+    /// `hash160(userContextData)` ≠ `user_identifier` (slot 20) — the carried `userContextData` does not
+    /// hash to the proof's committed `user_identifier`, so the proof is not bound to it (F-4, EC-C7).
+    UserContextHashMismatch,
     /// `current_date` (slots 10..16) is outside the freshness window around `block.timestamp` (§4.4 step 5).
     StaleProofDate,
     /// `merkle_root` (slot 9) ∉ the accepted Self identity-root set / outside its window (EC-C2, F-2).
@@ -714,7 +718,12 @@ impl std::fmt::Display for ZkPohError {
             UnknownScheme(t) => write!(f, "unknown passport scheme tag {t}"),
             UnexpectedAttestation => write!(f, "attestation_id is not 1 (E-Passport)"),
             WrongScope => write!(f, "scope is not the canonical UBI2_SELF_SCOPE"),
-            SubmitterMismatch => write!(f, "user_identifier does not match the tx sender"),
+            SubmitterMismatch => {
+                write!(f, "userContextData submitter does not match the tx sender")
+            }
+            UserContextHashMismatch => {
+                write!(f, "hash160(userContextData) does not match user_identifier")
+            }
             StaleProofDate => write!(f, "current_date is outside the freshness window"),
             UntrustedSelfRoot => write!(f, "merkle_root is not an accepted Self identity root"),
             UntrustedOfacRoot => write!(f, "an OFAC root is not in the accepted OFAC set"),
@@ -732,10 +741,14 @@ impl std::fmt::Display for ZkPohError {
 impl std::error::Error for ZkPohError {}
 
 /// The decoded `submitZkPassportProof` calldata the runtime hands the lifecycle (spec 06b §4.3). Carries
-/// the Groth16 `proof` + the **full** 21-element public vector + the `scheme_tag`. The submitter address
-/// is NOT carried here — it is the tx sender, supplied separately (`subject`) and bound against
-/// `signals[user_identifier]` so it cannot be forged (§4.4). The runtime derives every policy field by
-/// index; nothing is passed separately (removing the cross-check surface).
+/// the Groth16 `proof` + the **full** 21-element public vector + the `scheme_tag` + the raw
+/// `userContextData` buffer. The submitter address is NOT a slot of its own — it is the tx sender
+/// (`subject`) and is bound TWO ways against `userContextData` (EC-C7 reconcile, §4.4):
+///   * `userContextData[32:64]` low-20 bytes must equal `subject` (anti-replay); AND
+///   * `hash160(userContextData) == signals[user_identifier]` (slot 20 is the `hash160` of this exact
+///     buffer, NOT the address), binding the proof to the carried buffer.
+///
+/// The runtime derives every other policy field by index; nothing is passed separately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZkProofSubmission {
     /// The ~200-byte Groth16 proof (canonical-decoded by the verifier; opaque here).
@@ -744,6 +757,11 @@ pub struct ZkProofSubmission {
     pub signals: [Hash; SELF_NPUBLIC],
     /// The 1-byte document/scheme discriminant (§2.4); `0` = Self e-passport (attestation_id must be 1).
     pub scheme_tag: u8,
+    /// The raw `userContextData` byte buffer the Self proof was requested with (spec 06b §4.4, EC-C7):
+    /// `destChainId(32 BE) || userId_address(32, left-padded) || userDefinedData(ASCII)`. Slot 20
+    /// (`user_identifier`) is `RIPEMD160(SHA256(userContextData))`; the real submitter is the low 20
+    /// bytes of `userContextData[32:64]`. Both are bound in the submitter-binding step (fail-closed).
+    pub user_context_data: Vec<u8>,
 }
 
 /// Verify + commit a ZK-passport proof for `subject` (the tx sender) at block timestamp `now`
@@ -783,16 +801,33 @@ pub fn submit_zk_passport_proof(
         return Err(ZkPohError::UnexpectedAttestation);
     }
 
-    // --- (3) scope (slot 19) == UBI2_SELF_SCOPE — one scope network-wide ⇒ one-passport-one-human. ---
-    if pi.scope() != UBI2_SELF_SCOPE {
+    // --- (3) scope (slot 19) == the deployment's genesis-seeded canonical scope — one scope network-wide
+    //         ⇒ one-passport-one-human. Fail closed if unseeded (`None`). Its value is Self's off-chain
+    //         scope derivation for this deployment's Self endpoint host (EC-C7). ---
+    if state.self_scope() != Some(pi.scope()) {
         return Err(ZkPohError::WrongScope);
     }
 
-    // --- (4) submitter binding: user_identifier (slot 20) == the tx sender (anti-replay, F-4). The
-    //     Self proof was requested with `userId = the ubi2 address`, so a copied/relayed proof from any
-    //     other account is rejected here (§4.4 step: submitter). ---
-    if pi.user_identifier() != address_to_hash(subject) {
+    // --- (4) submitter binding (EC-C7 reconcile, §4.4 step: submitter). A genuine Self proof's
+    //     `user_identifier` (slot 20) is NOT the address — it is `RIPEMD160(SHA256(userContextData))`,
+    //     the Bitcoin-style `hash160` of the FULL `userContextData` buffer. The real submitter address
+    //     is the low 20 bytes of `userContextData[32:64]`. Bind BOTH, fail-closed, so a copied/relayed
+    //     proof cannot be re-bound to another account:
+    //       (a) `userContextData[32:64]` low-20 == the tx sender (`subject`) — anti-replay (F-4); AND
+    //       (b) `hash160(userContextData) == signals[user_identifier]` — ties the proof to this exact
+    //           buffer, so swapping the address in [32:64] breaks the hash match.
+    let ucd = submission.user_context_data.as_slice();
+    if ucd.len() < 64 {
+        // Too short to carry the destChainId + userId chunks — cannot recover a submitter (fail-closed).
         return Err(ZkPohError::SubmitterMismatch);
+    }
+    // The 32-byte `userId_address` chunk is `userContextData[32:64]`, left-padded; its low 20 bytes
+    // (`[44:64]`) are the ubi2 address.
+    if &ucd[44..64] != subject.as_slice() {
+        return Err(ZkPohError::SubmitterMismatch);
+    }
+    if user_identifier_hash(ucd) != pi.user_identifier() {
+        return Err(ZkPohError::UserContextHashMismatch);
     }
 
     // --- (5) freshness: decode current_date (slots 10..16, YYMMDD) and require it within
@@ -1027,4 +1062,11 @@ pub fn seed_self_ofac_root(state: &mut dyn State, kind: u8, root: Hash) {
         root,
         pinned_at_block: 0,
     });
+}
+
+/// Seed the canonical Self `scope` scalar (genesis wiring only). This is the deployment's binding target
+/// for `signals[19]` — Self's off-chain scope derivation for the deployment's Self endpoint host (EC-C7).
+/// Staging (an ephemeral tunnel host) and production (`proofofhumanity.org`) seed different scalars.
+pub fn seed_self_scope(state: &mut dyn State, scope: Hash) {
+    state.put_self_scope(scope);
 }

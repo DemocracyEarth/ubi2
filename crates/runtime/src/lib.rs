@@ -32,10 +32,13 @@ pub mod lifecycle;
 pub use lifecycle::{
     challenge, finalize_registration, pin_self_identity_root, pin_self_ofac_root, register_csca,
     register_juror, request_verification, retire_self_root, revoke, revoke_csca, seed_csca,
-    seed_self_identity_root, seed_self_ofac_root, seed_verified_human, submit_verdict,
-    submit_zk_passport_proof, system_challenge, vouch, CscaGovError, LifecycleError,
-    LivenessEvidence, ZkPohError, ZkProofSubmission,
+    seed_self_identity_root, seed_self_ofac_root, seed_self_scope, seed_verified_human,
+    submit_verdict, submit_zk_passport_proof, system_challenge, vouch, CscaGovError,
+    LifecycleError, LivenessEvidence, ZkPohError, ZkProofSubmission,
 };
+
+pub mod hash160;
+pub use hash160::{ripemd160, sha256, user_identifier_hash};
 
 pub mod zkpoh;
 pub use zkpoh::{
@@ -738,6 +741,16 @@ pub trait State: Send + Sync {
     /// Drop `root` from BOTH the identity + OFAC accepted sets (governance — `retireSelfRoot`;
     /// forward-invalidation, no retroactive nullifier purge — O-C2).
     fn retire_self_root(&mut self, _root: &Hash) {}
+    /// The canonical accepted Self `scope` scalar this deployment binds `signals[19]` against (spec 06b
+    /// §3, EC-C7). Its value is Self's off-chain scope derivation for the deployment's Self endpoint host
+    /// (`poseidon2(flexiblePoseidon(host-chunks), scopeSeed)`), genesis-seeded per deployment — a staging
+    /// tunnel host and `proofofhumanity.org` yield different scalars. `None` until seeded ⇒ the ZK path
+    /// fails closed. Fixed per chain (never mutated post-genesis); folded into `state_root` for I1.
+    fn self_scope(&self) -> Option<Hash> {
+        None
+    }
+    /// Seed the canonical Self scope scalar (genesis wiring only).
+    fn put_self_scope(&mut self, _scope: Hash) {}
 
     // ---- M5: id-counter peeks (read-only; for the deterministic state root) ----
     //
@@ -838,6 +851,8 @@ pub struct MemState {
     self_identity_roots: HashMap<Hash, SelfIdentityRoot>,
     /// M6 Stage C: accepted Self OFAC SMT roots, keyed by `(kind, root)`. Sorted for the `state_root`.
     self_ofac_roots: HashMap<(u8, Hash), SelfOfacRoot>,
+    /// M6 / EC-C7: the canonical accepted Self scope scalar (spec 06b §3). Genesis-seeded per deployment.
+    self_scope: Option<Hash>,
 
     // ---- M5 Stage B: the committed epoch validator snapshot (spec 08 §2.1) ----
     /// The validator set `V` snapshotted at the last epoch boundary — sorted ascending, deduped. It is
@@ -1132,6 +1147,12 @@ impl State for MemState {
     fn retire_self_root(&mut self, root: &Hash) {
         self.self_identity_roots.remove(root);
         self.self_ofac_roots.retain(|(_, r), _| r != root);
+    }
+    fn self_scope(&self) -> Option<Hash> {
+        self.self_scope
+    }
+    fn put_self_scope(&mut self, scope: Hash) {
+        self.self_scope = Some(scope);
     }
 
     fn peek_next_stream_id(&self) -> StreamId {

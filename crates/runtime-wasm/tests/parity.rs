@@ -37,7 +37,8 @@ sol! {
     function submitZkPassportProof(
         bytes proof,
         bytes32[21] publicSignals,
-        uint8 schemeTag
+        uint8 schemeTag,
+        bytes userContextData
     ) external;
 
     function deployContract(string text, address[] parties) external returns (uint256 id);
@@ -869,7 +870,15 @@ fn zk_passport_block_parity() {
     signals[17] = ofac_roots[1].into();
     signals[18] = ofac_roots[2].into();
     signals[19] = ubi2_runtime::UBI2_SELF_SCOPE.into(); // scope
-    signals[20] = addr_to_bytes32(&user).into(); // user_identifier = tx sender
+
+    // userContextData = destChainId(32 BE) || userId_address(32, left-padded) || userDefinedData(ASCII).
+    // Slot 20 (user_identifier) is hash160(userContextData); the submitter is userContextData[44:64]
+    // (the low 20 bytes of the [32:64] chunk) — the tx sender (EC-C7 reconcile).
+    let mut ucd = Vec::new();
+    ucd.extend_from_slice(&u64_bytes32(chain_id)); // destChainId
+    ucd.extend_from_slice(&addr_to_bytes32(&user)); // userId_address, left-padded
+    ucd.extend_from_slice(b"ubi2-poh"); // userDefinedData (arbitrary tail)
+    signals[20] = ubi2_runtime::user_identifier_hash(&ucd).into(); // = hash160(userContextData)
     chain
         .ingest_gossip_tx(&signed_tx(
             &user_sk,
@@ -880,6 +889,7 @@ fn zk_passport_block_parity() {
                 proof: proof.into(),
                 publicSignals: signals,
                 schemeTag: 0,
+                userContextData: ucd.into(),
             }
             .abi_encode(),
             0,

@@ -326,11 +326,13 @@ fn apply_one(
             proof,
             signals,
             scheme_tag,
+            user_context_data,
         } => consume_nonce(state, &tx.from, tx.nonce, timestamp).and_then(|()| {
             let submission = ZkProofSubmission {
                 proof: proof.clone(),
                 signals: *signals,
                 scheme_tag: *scheme_tag,
+                user_context_data: user_context_data.clone(),
             };
             // `timestamp` = block time (freshness window); `number` = block height (root window).
             lc_submit_zk(state, verifier, &tx.from, &submission, timestamp, number)

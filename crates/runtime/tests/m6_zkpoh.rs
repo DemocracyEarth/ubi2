@@ -6,14 +6,14 @@
 //! crypto core) lives in `crates/zkpoh/tests/self_arity21.rs`.
 
 use ubi2_runtime::{
-    address_to_hash, current_date_to_epoch, pin_self_identity_root, retire_self_root,
-    seed_self_identity_root, seed_self_ofac_root, seed_verified_human, state_root,
-    submit_zk_passport_proof, u64_to_hash, Assurance, CscaGovError, HumanStatus, MemState,
-    MockZkVerifier, State, ZkPohError, ZkProofSubmission, EMISSION_PERIOD_SECS, OFAC_KIND_NAMEDOB,
-    OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO, SELF_ATTESTATION_ID_EPASSPORT,
-    SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE, SELF_IDX_MERKLE_ROOT, SELF_IDX_NULLIFIER,
-    SELF_IDX_OFAC_PASSPORTNO, SELF_IDX_REVEALED_DATA, SELF_IDX_SCOPE, SELF_IDX_USER_IDENTIFIER,
-    SELF_NPUBLIC, UBI, UBI2_SELF_SCOPE,
+    current_date_to_epoch, pin_self_identity_root, retire_self_root, seed_self_identity_root,
+    seed_self_ofac_root, seed_self_scope, seed_verified_human, state_root,
+    submit_zk_passport_proof, u64_to_hash, user_identifier_hash, Assurance, CscaGovError,
+    HumanStatus, MemState, MockZkVerifier, State, ZkPohError, ZkProofSubmission,
+    EMISSION_PERIOD_SECS, OFAC_KIND_NAMEDOB, OFAC_KIND_NAMEYOB, OFAC_KIND_PASSPORTNO,
+    SELF_ATTESTATION_ID_EPASSPORT, SELF_IDX_ATTESTATION_ID, SELF_IDX_CURRENT_DATE,
+    SELF_IDX_MERKLE_ROOT, SELF_IDX_NULLIFIER, SELF_IDX_OFAC_PASSPORTNO, SELF_IDX_REVEALED_DATA,
+    SELF_IDX_SCOPE, SELF_IDX_USER_IDENTIFIER, SELF_NPUBLIC, UBI, UBI2_SELF_SCOPE,
 };
 
 type Address = [u8; 20];
@@ -44,6 +44,7 @@ fn bootstrap_self_roots(state: &mut MemState) -> Hash {
     seed_self_ofac_root(state, OFAC_KIND_PASSPORTNO, OFAC_ROOTS[0]);
     seed_self_ofac_root(state, OFAC_KIND_NAMEDOB, OFAC_ROOTS[1]);
     seed_self_ofac_root(state, OFAC_KIND_NAMEYOB, OFAC_ROOTS[2]);
+    seed_self_scope(state, UBI2_SELF_SCOPE);
     IDENTITY_ROOT
 }
 
@@ -65,15 +66,30 @@ fn date_signals(now: u64) -> [Hash; 6] {
     let digits = [yy / 10, yy % 10, m / 10, m % 10, d / 10, d % 10];
     let mut out = [[0u8; 32]; 6];
     for (i, dg) in digits.iter().enumerate() {
-        out[i] = u64_to_hash((b'0' + dg) as u64);
+        // Self emits current_date as RAW decimal digits 0-9 (not ASCII codes) — EC-C7.
+        out[i] = u64_to_hash(*dg as u64);
     }
     out
 }
 
+/// Build a Self `userContextData` buffer binding `submitter` (EC-C7 shape):
+/// `destChainId(32 BE) || userId_address(32, left-padded) || userDefinedData(ASCII)`. The submitter is
+/// the low 20 bytes of the `[32:64]` chunk (`[44:64]`).
+fn ucd_for(submitter: Address) -> Vec<u8> {
+    let mut ucd = Vec::with_capacity(64 + 8);
+    ucd.extend_from_slice(&[0u8; 32]); // destChainId (arbitrary here)
+    ucd.extend_from_slice(&[0u8; 12]); // left-pad of the userId_address chunk
+    ucd.extend_from_slice(&submitter); // userId_address low 20 bytes = [44:64]
+    ucd.extend_from_slice(b"ubi2-poh"); // userDefinedData tail (arbitrary)
+    ucd
+}
+
 /// Build a well-formed 21-signal submission for `submitter` at `now`: `nullifier@7`, `attestation_id@8
 /// = 1`, `merkle_root@9` = the pinned identity root, `current_date@10..16` ≈ `now`, OFAC@16..18 = the
-/// pinned OFAC roots, `scope@19` = UBI2_SELF_SCOPE, `user_identifier@20` = submitter.
+/// pinned OFAC roots, `scope@19` = UBI2_SELF_SCOPE, `user_identifier@20` = `hash160(userContextData)`
+/// (NOT the address — EC-C7), with a matching `userContextData` carrying `submitter` at `[44:64]`.
 fn submission(nullifier: Hash, submitter: Address, now: u64) -> ZkProofSubmission {
+    let ucd = ucd_for(submitter);
     let mut s = [[0u8; 32]; SELF_NPUBLIC];
     s[SELF_IDX_REVEALED_DATA] = h(1);
     s[SELF_IDX_REVEALED_DATA + 1] = h(2);
@@ -87,11 +103,12 @@ fn submission(nullifier: Hash, submitter: Address, now: u64) -> ZkProofSubmissio
     s[SELF_IDX_OFAC_PASSPORTNO + 1] = OFAC_ROOTS[1];
     s[SELF_IDX_OFAC_PASSPORTNO + 2] = OFAC_ROOTS[2];
     s[SELF_IDX_SCOPE] = UBI2_SELF_SCOPE;
-    s[SELF_IDX_USER_IDENTIFIER] = address_to_hash(&submitter);
+    s[SELF_IDX_USER_IDENTIFIER] = user_identifier_hash(&ucd);
     ZkProofSubmission {
         proof: vec![0xAB; 192],
         signals: s,
         scheme_tag: 0,
+        user_context_data: ucd,
     }
 }
 
@@ -288,10 +305,99 @@ fn submitter_mismatch_rejected() {
     bootstrap_self_roots(&mut s);
     let v = MockZkVerifier::default();
     let now = BASE_TS;
-    // A proof whose user_identifier is addr(1), relayed by addr(2) ⇒ SubmitterMismatch (F-4).
+    // A proof whose userContextData[44:64] binds addr(1), relayed by addr(2) ⇒ SubmitterMismatch (F-4,
+    // EC-C7): the carried buffer names a different account than the tx sender.
     let sub = submission(h(7), addr(1), now);
     assert_eq!(
         submit(&mut s, &v, &addr(2), &sub, now).unwrap_err(),
+        ZkPohError::SubmitterMismatch
+    );
+}
+
+// --------------------------------------------------------------------------------------------------
+// EC-C7 submitter binding: a tampered userContextData (whose hash no longer matches signal 20) fails
+// closed even when its [44:64] address still equals the tx sender.
+// --------------------------------------------------------------------------------------------------
+
+#[test]
+fn tampered_user_context_data_rejected() {
+    let mut s = MemState::new();
+    bootstrap_self_roots(&mut s);
+    let v = MockZkVerifier::default();
+    let user = addr(1);
+    let now = BASE_TS;
+
+    // Start from a valid submission, then tamper the userDefinedData tail WITHOUT updating signal 20.
+    // The [44:64] address still equals `user`, so the anti-replay leg passes — but hash160 no longer
+    // matches the committed user_identifier, so the bind fails closed (an attacker cannot swap bytes).
+    let mut sub = submission(h(7), user, now);
+    let last = sub.user_context_data.len() - 1;
+    sub.user_context_data[last] ^= 0xFF;
+    let err = submit(&mut s, &v, &user, &sub, now).unwrap_err();
+    assert_eq!(err, ZkPohError::UserContextHashMismatch);
+    assert!(
+        s.get_human(&user).is_none(),
+        "no state change (fail-closed)"
+    );
+    assert!(!s.nullifier_used(&h(7)));
+
+    // A userContextData shorter than 64 bytes cannot carry a submitter ⇒ SubmitterMismatch (fail-closed).
+    let mut short = submission(h(7), user, now);
+    short.user_context_data.truncate(40);
+    assert_eq!(
+        submit(&mut s, &v, &user, &short, now).unwrap_err(),
+        ZkPohError::SubmitterMismatch
+    );
+}
+
+// --------------------------------------------------------------------------------------------------
+// EC-C7 captured ground truth: a submission carrying the REAL 106-byte userContextData from the Self
+// staging capture, whose signal 20 is the captured publicSignals[20], binds to the recovered address.
+// --------------------------------------------------------------------------------------------------
+
+#[test]
+fn captured_ground_truth_submission_binds_recovered_address() {
+    // The exact captured userContextData (106 bytes) and its recovered submitter address.
+    const UCD_HEX: &str = "000000000000000000000000000000000000000000000000000000000000a4ec\
+000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266\
+307866333946643665353161616438384636463463653661423838323732373963666646623932323636";
+    let ucd: Vec<u8> = (0..UCD_HEX.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&UCD_HEX[i..i + 2], 16).unwrap())
+        .collect();
+    assert_eq!(ucd.len(), 106);
+    // The recovered submitter is userContextData[44:64].
+    let mut recovered = [0u8; 20];
+    recovered.copy_from_slice(&ucd[44..64]);
+
+    // signal 20 = the captured publicSignals[20] = hash160(userContextData) (right-aligned).
+    let signal20 = user_identifier_hash(&ucd);
+
+    let mut s = MemState::new();
+    bootstrap_self_roots(&mut s);
+    let v = MockZkVerifier::default();
+    let now = BASE_TS;
+
+    // Build a submission for the recovered address, then splice in the REAL userContextData + signal 20.
+    // (`h(0x2A)` is a canonical BN254 scalar — MSB 0x2A < the modulus MSB 0x30 — so it clears the
+    // nullifier canonicality guard.)
+    let mut sub = submission(h(0x2A), recovered, now);
+    sub.user_context_data = ucd;
+    sub.signals[SELF_IDX_USER_IDENTIFIER] = signal20;
+
+    // The recovered address submitting it passes the two-way binding ⇒ Verified/ENH.
+    let level = submit(&mut s, &v, &recovered, &sub, now).expect("captured ground truth binds");
+    assert_eq!(level, Assurance::Enh);
+    assert_eq!(
+        s.get_human(&recovered).unwrap().status,
+        HumanStatus::Verified
+    );
+
+    // Any OTHER account relaying the identical proof is rejected (anti-replay).
+    let mut s2 = MemState::new();
+    bootstrap_self_roots(&mut s2);
+    assert_eq!(
+        submit(&mut s2, &v, &addr(0xEE), &sub, now).unwrap_err(),
         ZkPohError::SubmitterMismatch
     );
 }

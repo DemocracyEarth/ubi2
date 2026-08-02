@@ -47,7 +47,7 @@ const PINNED_GENESIS_TIME = 1_700_000_000;
 const PINNED_GENESIS_HASH =
   "0xbc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
 const PINNED_GENESIS_STATE_ROOT =
-  "0xfa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
+  "0xe50660aa38e3be89e6186e1d8473e744a22a2111957a22cc192a03b93fa28825";
 /** The authorized PoA proposer — Anvil acct #2 (the multi-node devnet's designated proposer). */
 const PINNED_VALIDATOR_SET = ["0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"];
 

@@ -76,6 +76,11 @@ const DEVNET_SELF_IDENTITY_ROOT: [u8; 32] = [0x5E; 32];
 /// M6 Stage C: the three curated devnet Self OFAC SMT roots (kinds 0/1/2 — passportno/namedob/nameyob),
 /// so a proof's OFAC slots (16/17/18) each bind an accepted root. Fixed NON-SECRET devnet constants.
 const DEVNET_OFAC_ROOTS: [[u8; 32]; 3] = [[0x0F; 32], [0x1F; 32], [0x2F; 32]];
+/// M6 / EC-C7: the devnet's canonical Self `scope` scalar (the binding target for `signals[19]`). The
+/// deployment-independent placeholder [`ubi2_runtime::UBI2_SELF_SCOPE`] — a real deployment overrides this
+/// with Self's scope derivation for its own Self endpoint host (e.g. `proofofhumanity.org`). Seeded so the
+/// devnet's ZK path has a non-`None` scope; the deterministic `MockZkVerifier` remains the consensus default.
+const DEVNET_SELF_SCOPE: [u8; 32] = ubi2_runtime::UBI2_SELF_SCOPE;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -118,6 +123,7 @@ pub fn seed_canonical_devnet_genesis(chain: &Chain, genesis_time: u64) {
     for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
         chain.seed_self_ofac_root(kind as u8, *root);
     }
+    chain.seed_self_scope(DEVNET_SELF_SCOPE);
 }
 
 /// M5 Stage B (spec 08 §13 setup): seed the multi-validator devnet's validator set into genesis. Each
@@ -232,6 +238,7 @@ fn build_genesis_state(dev_addr: &[u8; 20], genesis_time: u64) -> MemState {
     for (kind, root) in DEVNET_OFAC_ROOTS.iter().enumerate() {
         ubi2_runtime::seed_self_ofac_root(&mut s, kind as u8, *root);
     }
+    ubi2_runtime::seed_self_scope(&mut s, DEVNET_SELF_SCOPE);
     s
 }
 
@@ -327,7 +334,7 @@ pub async fn run() -> anyhow::Result<()> {
     // account, the M6 CSCA registry) that a restored snapshot already carries (FU-3).
     let restored_from_snapshot = loaded_snapshot.is_some();
 
-    let chain = if let Some(snap) = loaded_snapshot {
+    let mut chain = if let Some(snap) = loaded_snapshot {
         let tip = snap.tip_height();
         let mut chain = Chain::from_snapshot(&snap)
             .with_oracle_admin(oracle_admin)
@@ -359,6 +366,21 @@ pub async fn run() -> anyhow::Result<()> {
         seed_genesis_validators(&chain, genesis_time);
         chain
     };
+
+    // M6 / EC-C7: a production/staging node runs the REAL `Groth16Verifier` (the genesis-pinned production
+    // `vc_and_disclose` VK — EC-C7 verified end-to-end) when `UBI2_REAL_VERIFIER` is set. The devnet
+    // default stays the deterministic `MockZkVerifier` (from `Chain::new`) so the local ZK dev flow needs
+    // no real Self proof. The verifier is a runtime choice, not persisted state — it does not affect
+    // `state_root`/the pinned anchor, only which proofs are accepted on the ZK path.
+    if std::env::var_os("UBI2_REAL_VERIFIER").is_some() {
+        let vk = ubi2_zkpoh::Groth16Verifier::from_pinned().expect(
+            "UBI2_REAL_VERIFIER set but the genesis-pinned production VK is missing/corrupt",
+        );
+        chain = chain.with_verifier(Arc::new(vk));
+        tracing::info!(
+            "M6/EC-C7: real Groth16Verifier wired (genesis-pinned production vc_and_disclose VK)"
+        );
+    }
 
     // M3 (board M3-T4 §4): the deterministic devnet jurors (Anvil accts #1..#3) are registered above via
     // `seed_canonical_devnet_genesis` so every case has a jury to draw from (the lifecycle fails closed
@@ -628,7 +650,7 @@ mod tests {
     #[test]
     fn canonical_anchor_matches_pinned_lightnode_constants() {
         let pinned_hash = "bc53563fa41f719abe0358f106b067e31915a6ed68d0656ba7443a36f01224e3";
-        let pinned_root = "fa0360178cd29e57affe89478e19cbdc5bdc94fad00212695a4b241f2dcba1ac";
+        let pinned_root = "e50660aa38e3be89e6186e1d8473e744a22a2111957a22cc192a03b93fa28825";
 
         let (hash_no_key, root_no_key) = canonical_devnet_genesis(1_700_000_000, None);
         assert_eq!(hash_no_key, pinned_hash);

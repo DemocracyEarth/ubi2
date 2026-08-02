@@ -18,7 +18,7 @@
 //!  7       nullifier            = Poseidon(secret, scope)
 //!  8       attestation_id       (== 1 for E-Passport)
 //!  9       merkle_root          (∈ accepted Self identity roots — NOT our CSCA root)
-//! 10..=15  current_date[6]      (YYMMDD ASCII)
+//! 10..=15  current_date[6]      (YYMMDD raw digits 0-9)
 //! 16       ofac_passportno_smt_root
 //! 17       ofac_namedob_smt_root
 //! 18       ofac_nameyob_smt_root

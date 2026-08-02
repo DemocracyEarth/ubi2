@@ -219,7 +219,7 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
     // tag + the nullifier/attribute/CSCA sections), to `/3` for the M5-Stage-B addition: the committed
     // `epoch_validators` snapshot (section 0x0e, spec 08 §2.1/§8), and to `/4` for the M6-Stage-C
     // Self-root anchor registry (sections 0x10 identity roots + 0x11 OFAC roots, spec 06b §2.2/§13).
-    h.bytes(b"ubi2/state-root/4");
+    h.bytes(b"ubi2/state-root/5");
 
     // 1. Accounts — sorted by address.
     let mut accounts = state.accounts();
@@ -387,6 +387,15 @@ pub fn state_root(state: &MemState) -> [u8; 32] {
         h.u8(e.kind);
         h.write(&e.root);
         h.u64(e.pinned_at_block);
+    }
+    // 0x12: the canonical Self scope scalar (EC-C7) — one optional 32-byte value, present-flag prefixed.
+    h.u8(0x12);
+    match state.self_scope() {
+        Some(s) => {
+            h.u8(1);
+            h.write(&s);
+        }
+        None => h.u8(0),
     }
 
     // 8. Contracts — `State::contracts()` already returns sorted-by-id. `vars` is a HashMap; commit it

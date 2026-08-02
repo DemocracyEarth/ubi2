@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 ubi2-runtime = { path = "../runtime" }
 ubi2-rpc = { path = "../rpc" }
+ubi2-zkpoh = { path = "../zkpoh" }
 # M5 (Stage A): the P2P layer (libp2p, isolated here + in crates/network). The node wires the swarm to
 # the chain: routes gossiped txs into the mempool, broadcasts/validates blocks, and runs join-sync. All
 # async/libp2p stays in crates/network; the node only consumes its NetworkHandle/NetEvent API.
