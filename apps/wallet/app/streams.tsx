@@ -23,6 +23,7 @@ import {
   type StreamCard,
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
+import { svgImageSrc } from "./svg-image";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new StreamReader(client);
@@ -137,7 +138,12 @@ function StreamRow({
       {/* NFT card thumbnail */}
       <div className="stream-card-img" aria-label={`Stream #${stream.id} NFT`}>
         {card ? (
-          <div dangerouslySetInnerHTML={{ __html: card.svg }} />
+          // issue #38: render the untrusted on-chain SVG as an inert <img>, never live DOM.
+          <img
+            src={svgImageSrc(card.svg)}
+            alt={`Stream #${stream.id} card`}
+            style={{ width: "100%", display: "block" }}
+          />
         ) : (
           <div style={{ padding: "1rem", color: "var(--faint)", fontSize: ".72rem" }}>
             loading card…

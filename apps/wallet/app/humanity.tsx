@@ -38,6 +38,7 @@ import {
 } from "@ubi2/sdk";
 import { RPC_URL, DEV_ACCOUNT, DEV_PRIVATE_KEY } from "./config";
 import { ZkPassportSection } from "./zk-passport";
+import { svgImageSrc } from "./svg-image";
 
 const client = new Ubi2Client({ url: RPC_URL });
 const reader = new HumanityReader(client);
@@ -326,12 +327,9 @@ function PohNftCard({ account, human }: { account: string; human: HumanRecord })
 
       {card && !loading && (
         <div className="poh-nft-body">
-          {/* On-chain SVG */}
-          <div
-            className="poh-nft-svg"
-            // biome-ignore lint/security/noDangerouslySetInnerHtml: the SVG comes from the trusted local devnet node
-            dangerouslySetInnerHTML={{ __html: card.svg }}
-          />
+          {/* On-chain SVG — rendered as an inert <img> (issue #38): the tokenURI comes from an
+              UNTRUSTED RPC, so it must never be injected as live DOM (script / onerror / onload). */}
+          <img className="poh-nft-svg" src={svgImageSrc(card.svg)} alt="Proof of Humanity card" />
 
           {/* Attributes sidebar */}
           <div className="poh-nft-attrs">
