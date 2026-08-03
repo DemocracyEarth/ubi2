@@ -5045,7 +5045,28 @@ pub fn build_module(chain: Chain) -> RpcModule<Chain> {
 
     m.register_method("eth_getTransactionCount", |params, ctx, _| {
         let addr = parse_addr_param(&params)?;
-        let nonce = ctx.inner.lock().unwrap().state.nonce(&addr);
+        // `eth_getTransactionCount(address, block)`: wallets (MetaMask et al.) read this to choose
+        // the next nonce and expect the PENDING count — the committed `state.nonce` PLUS this
+        // sender's un-mined mempool txs — which is exactly the `expected_nonce` the submit gate
+        // enforces (`ingest_raw_tx`: `acct.nonce + sender_pending`). Returning the committed nonce
+        // alone (issue #36) makes back-to-back sends reuse one nonce and the node rejects the second
+        // "nonce too low". So for the current-state tags (`pending`/`latest`/`safe`/`finalized`, and
+        // the default when the block param is omitted) we add the pending count; a historical tag
+        // (`earliest` or an explicit block) has no pending txs to add and returns the committed nonce.
+        let include_pending = matches!(
+            params
+                .parse::<Vec<Value>>()
+                .ok()
+                .and_then(|s| s.get(1).and_then(|v| v.as_str()).map(str::to_string))
+                .as_deref(),
+            None | Some("pending") | Some("latest") | Some("safe") | Some("finalized")
+        );
+        let want = AlloyAddr::from(addr);
+        let g = ctx.inner.lock().unwrap();
+        let mut nonce = g.state.nonce(&addr);
+        if include_pending {
+            nonce += g.mempool.iter().filter(|p| p.from == want).count() as u64;
+        }
         Ok::<_, ErrorObjectOwned>(json!(hex_u64(nonce)))
     })
     .unwrap();
