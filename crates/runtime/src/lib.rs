@@ -271,6 +271,10 @@ pub fn charge_fee(
 ) -> Result<u128, FeeError> {
     let fee = fee_for_gas(gas);
 
+    // (issue #35) Fold the payer's incoming stream inflow before the fee check, so a stream recipient can
+    // pay fees from accrued-but-undrawn inflow without stopping the stream (matches `State::balance`).
+    settle_incoming(state, from, now);
+
     let mut sender = state.get(from).unwrap_or(Account {
         address: *from,
         ..Default::default()
@@ -1235,6 +1239,11 @@ pub fn apply_transfer(
     nonce: u64,
     now: u64,
 ) -> Result<(), TransferError> {
+    // 0. (issue #35) Fold the sender's incoming stream inflow into its balance FIRST, so accrued-but-
+    //    undrawn streamed funds are spendable without stopping the stream. `State::balance` counts this
+    //    inflow, so the spend path must too, or the sender is told `InsufficientBalance` on funds it "has".
+    settle_incoming(state, from, now);
+
     // 1. Settle the sender (always exists for a recovered, balance-bearing signer).
     let mut sender = state.get(from).unwrap_or(Account {
         address: *from,
@@ -1389,6 +1398,17 @@ pub fn settle_stream(state: &mut dyn State, id: StreamId, now: u64) -> u128 {
     }
     state.put_stream(stream);
     owed
+}
+
+/// Fold ALL of `addr`'s incoming active-stream inflow into its `settled_balance` (via [`settle_stream`]),
+/// so accrued-but-undrawn streamed funds are spendable WITHOUT first stopping the stream (issue #35).
+/// `State::balance` counts incoming inflow, so every spend path (`apply_transfer`, `charge_fee`) must fold
+/// it into `settled_balance` before the balance check — otherwise a recipient is told `InsufficientBalance`
+/// on funds their balance reports. Deterministic, integer-only, idempotent (re-settling folds `0`) — I1/I2.
+fn settle_incoming(state: &mut dyn State, addr: &Address, now: u64) {
+    for id in state.incoming(addr) {
+        settle_stream(state, id, now);
+    }
 }
 
 /// Stop an active stream early (spec §`stopStream`). Only the sender (`caller == from`) may cancel
@@ -1577,6 +1597,40 @@ mod tests {
             last_settled_at: verified_at_t,
             ..Default::default()
         });
+    }
+
+    #[test]
+    fn stream_recipient_can_spend_accrued_inflow_without_stopping(/* issue #35 */) {
+        let mut s = MemState::new();
+        // Funder holds ample balance (not verified — no emission) to fund a stream deposit.
+        s.put(Account {
+            address: addr(1),
+            settled_balance: 200 * UBI,
+            ..Default::default()
+        });
+        let rate: u128 = UBI / 3600; // ~1 UBI/hour (well under MAX_RATE)
+        let deposit: u128 = 100 * UBI;
+        open_stream(&mut s, &addr(1), &addr(2), rate, deposit, 0).unwrap();
+
+        // After one hour the recipient has accrued (but not drawn) ~1 UBI of inflow.
+        let t = 3600;
+        let accrued = rate * t as u128;
+        // `balance()` SEES the inflow ...
+        assert_eq!(
+            s.balance(&addr(2), t),
+            accrued,
+            "recipient balance includes accrued stream inflow"
+        );
+        // ... and (issue #35) the recipient can now SPEND it without stopping the stream.
+        let spend = accrued / 2;
+        apply_transfer(&mut s, &addr(2), &addr(3), spend, 0, t)
+            .expect("recipient can spend accrued stream inflow without stopping the stream");
+        assert_eq!(s.get(&addr(3)).unwrap().settled_balance, spend);
+        // The stream is still Active — the recipient never had to stop it.
+        assert!(matches!(
+            s.get_stream(0).unwrap().status,
+            StreamStatus::Active
+        ));
     }
 
     #[test]

@@ -45,7 +45,7 @@
 
 use ubi2_runtime::{
     contract_address, deploy_contract, fund_contract, invoke_contract, register_juror,
-    submit_effect, CanonicalEffect, ContractError, ContractId, ExecStatus, MemState,
+    submit_effect, CanonicalEffect, ContractError, ContractId, ExecCase, ExecStatus, MemState,
     MockInterpreter, Op, State, UBI,
 };
 
@@ -245,13 +245,18 @@ fn r1_three_way_split_aborts_deterministically() {
     let id2 = deploy_c(&mut s2, hash(0x01), vec![f, addr(2)]).unwrap();
     fund_contract(&mut s2, &f, id2, 10 * UBI, 0, 0).unwrap();
 
-    // Invoke with 1-interpreter pool → 1 sub → Open (needs QUORUM=2).
+    // A 1-interpreter pool now fails CLOSED: 1 sub < QUORUM=2 with the REAL jury size ⇒ Aborted
+    // (issue #35 — the JURY_SIZE-based tally previously left it Open forever). The 3-way-split
+    // determinism proof is `r1_property_quorum_determinism_and_split_aborts` below.
     let interp1 = MockInterpreter::always(CanonicalEffect::new(vec![Op::Transfer {
         to: addr(2),
         amount: UBI,
     }]));
     let case_id = invoke_c(&mut s2, &interp1, id2, b"t", hash(0x00), b"x", f, 1, 0).unwrap();
-    assert_eq!(s2.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
+    assert_eq!(
+        s2.get_exec_case(case_id).unwrap().status,
+        ExecStatus::Aborted
+    );
 
     // Now the jury has only addr(100) (from invoke); we'd need to register more jurors then
     // force divergent submissions. Instead we directly use the tally primitives to prove the
@@ -1680,9 +1685,15 @@ fn r7_soak_mixed_effects_no_partial_state() {
 /// a second submit_effect from the same effect_hash group commits the case.
 #[test]
 fn r7_submit_effect_deferred_path_commits_deterministically() {
+    // The deferred path: a genuinely-Open case (a 2-interpreter jury with only ONE effect submitted so
+    // far) reaches quorum and COMMITS when a second, matching effect arrives. Constructed directly, since
+    // invoke_contract eagerly submits all jurors (a case never stays Open through invoke) and a 1-juror
+    // pool now correctly Aborts (issue #35, the fixed deadlock).
     let mut s = MemState::new();
     let j1 = addr(101);
+    let j2 = addr(102);
     register_juror(&mut s, &j1, 0);
+    register_juror(&mut s, &j2, 0);
     let funder = addr(1);
     let payee = addr(2);
     seed_funded(&mut s, funder, 100 * UBI);
@@ -1694,36 +1705,41 @@ fn r7_submit_effect_deferred_path_commits_deterministically() {
         amount: 3 * UBI,
     }]);
 
-    // With 1 juror, invoke produces 1 sub → still Open (QUORUM=2 not reached).
-    let interp = MockInterpreter::always(effect.clone());
-    let case_id = invoke_c(&mut s, &interp, id, b"t", hash(0x11), b"x", funder, 7, 0).unwrap();
+    // Open case: jury [j1, j2]; only j1 has submitted so far (1 < QUORUM=2 ⇒ Open).
+    let case_id = s.next_exec_case_id();
+    s.put_exec_case(ExecCase {
+        id: case_id,
+        contract: id,
+        trigger_ref: hash(0x11),
+        invoker: funder,
+        jury: vec![j1, j2],
+        effects: vec![(j1, effect.clone())],
+        status: ExecStatus::Open,
+        opened_at: 0,
+        resolved_at: None,
+    });
     assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
 
-    // Register a second juror and submit the same effect → quorum reached → Committed.
-    let j2 = addr(102);
-    register_juror(&mut s, &j2, 0);
-    // The case's jury was selected when it was invoked (1-juror pool → jury=[j1]).
-    // We can't add j2 to an already-opened case's jury. So we demonstrate submit_effect
-    // from a non-jury member is rejected (NotOnJury) — fail closed (I4).
-    let status = submit_effect(&mut s, case_id, &j2, effect.clone(), 1, 0);
+    // Fail-closed guards (I4): a non-jury member is rejected, and j1 cannot double-submit — neither
+    // leaves partial state.
     assert_eq!(
-        status.unwrap_err(),
-        ContractError::NotOnJury,
-        "non-jury submit must be rejected (I4)"
+        submit_effect(&mut s, case_id, &addr(200), effect.clone(), 1, 0).unwrap_err(),
+        ContractError::NotOnJury
     );
-    // The case is still Open (no partial state from a rejected submit).
-    assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
-
-    // AlreadySubmitted is also rejected (j1 already submitted during invoke).
-    let status = submit_effect(&mut s, case_id, &j1, effect.clone(), 1, 0);
     assert_eq!(
-        status.unwrap_err(),
-        ContractError::AlreadySubmitted,
-        "double-submit from same juror must be rejected (I4)"
+        submit_effect(&mut s, case_id, &j1, effect.clone(), 1, 0).unwrap_err(),
+        ContractError::AlreadySubmitted
     );
     assert_eq!(s.get_exec_case(case_id).unwrap().status, ExecStatus::Open);
-
-    // Escrow and payee unchanged throughout — no partial state from rejected submits.
     assert_eq!(s.get_contract(id).unwrap().escrow, 6 * UBI);
-    assert_eq!(s.balance(&payee, 0), 0);
+
+    // j2 submits the SAME effect → 2 matching on a 2-jury ⇒ quorum ⇒ Committed + applied atomically.
+    let status = submit_effect(&mut s, case_id, &j2, effect.clone(), 1, 0).unwrap();
+    assert!(
+        matches!(status, ExecStatus::Committed(_)),
+        "the deferred path commits deterministically once quorum forms"
+    );
+    // The effect was applied: payee received 3 UBI, escrow dropped 6 → 3.
+    assert_eq!(s.balance(&payee, 0), 3 * UBI);
+    assert_eq!(s.get_contract(id).unwrap().escrow, 3 * UBI);
 }
