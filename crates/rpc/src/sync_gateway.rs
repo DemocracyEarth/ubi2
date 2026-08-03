@@ -33,7 +33,9 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use ubi2_network::consts::{PROTOCOL_VERSION, SYNC_MAX_BATCH};
-use ubi2_network::wire::{Blocks, Genesis, Hello, SyncRequest, SyncResponse, WireBlock};
+use ubi2_network::wire::{
+    Blocks, Genesis, Hello, SyncFrame, SyncRequest, SyncResponse, WireBlock, SYNC_LIVE_PUSH_ID,
+};
 
 use crate::Chain;
 
@@ -137,15 +139,18 @@ async fn run_session(
         }
     };
 
-    let req = match SyncRequest::decode(&hello_bytes) {
-        Ok(r) => r,
+    // The first frame MUST be a Hello. Decode the WS envelope (issue #37): an 8-byte `req_id` prefix
+    // in front of the body. We echo that id on the reply so the client can correlate it.
+    let hello_frame = match SyncFrame::<SyncRequest>::decode(&hello_bytes) {
+        Ok(f) => f,
         Err(e) => {
             tracing::debug!(%peer, error = %e, "sync gateway: bad first message");
             return Ok(());
         }
     };
+    let hello_req_id = hello_frame.req_id;
 
-    let client_hello = match req {
+    let client_hello = match hello_frame.body {
         SyncRequest::Hello(h) => h,
         _ => {
             tracing::debug!(%peer, "sync gateway: expected Hello first");
@@ -167,7 +172,13 @@ async fn run_session(
         return Ok(());
     }
 
-    // Reply with our Hello (tip + genesis).
+    // Subscribe to new heads BEFORE snapshotting our tip (issue #37 handshake gap). If we read the
+    // tip first and subscribed second, a block produced in that window would be missed by BOTH the
+    // Hello tip AND the live subscription, leaving the client permanently behind. Subscribing first
+    // guarantees every block with `number > tip_h` is delivered on `heads_rx`.
+    let mut heads_rx = chain.subscribe_heads();
+
+    // Reply with our Hello (tip + genesis), echoing the client's Hello req_id.
     let (tip_h, tip_hash) = chain.tip();
     let our_hello = Hello {
         genesis_hash: our_genesis,
@@ -177,13 +188,10 @@ async fn run_session(
         peer_proof: vec![],
         protocol_ver: PROTOCOL_VERSION,
     };
-    let resp = SyncResponse::Hello(our_hello);
+    let resp = SyncFrame::new(hello_req_id, SyncResponse::Hello(our_hello));
     sink.send(Message::Binary(resp.encode())).await?;
 
     tracing::debug!(%peer, tip = tip_h, "sync gateway: hello exchange complete");
-
-    // Subscribe to new heads BEFORE entering the request loop so we never miss a block.
-    let mut heads_rx = chain.subscribe_heads();
 
     // ---- Step 2: serve GetBlocks requests and push live blocks ----
     loop {
@@ -204,12 +212,16 @@ async fn run_session(
                 }
             }
 
-            // Live block pushed to light-client subscribers.
+            // Live block pushed to light-client subscribers. An UNSOLICITED push is framed with the
+            // reserved `SYNC_LIVE_PUSH_ID` (0) so the client never mistakes it for a request reply.
             block = heads_rx.recv() => {
                 match block {
                     Ok(b) => {
                         let wb = block_to_wire(&b, &chain);
-                        let resp = SyncResponse::Blocks(Blocks { blocks: vec![wb] });
+                        let resp = SyncFrame::new(
+                            SYNC_LIVE_PUSH_ID,
+                            SyncResponse::Blocks(Blocks { blocks: vec![wb] }),
+                        );
                         if sink.send(Message::Binary(resp.encode())).await.is_err() {
                             return Ok(());
                         }
@@ -231,15 +243,19 @@ async fn handle_request(
     chain: &Chain,
     sink: &mut (impl SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let req = match SyncRequest::decode(bytes) {
-        Ok(r) => r,
+    // Decode the WS envelope (issue #37): an 8-byte `req_id` prefix in front of the body. Every reply
+    // ECHOES this id so the client — which shares one socket for replies and live pushes — can match
+    // the reply to its request and never consume a live push in its place.
+    let frame = match SyncFrame::<SyncRequest>::decode(bytes) {
+        Ok(f) => f,
         Err(e) => {
             tracing::debug!(error = %e, "sync gateway: bad request");
             return Ok(());
         }
     };
+    let req_id = frame.req_id;
 
-    match req {
+    match frame.body {
         SyncRequest::GetBlocks(gb) => {
             // Clamp `to` by SYNC_MAX_BATCH (AC-F8 — bounds sync-response size).
             let from = gb.from;
@@ -251,9 +267,12 @@ async fn handle_request(
                     None => break, // beyond tip
                 }
             }
-            let resp = SyncResponse::Blocks(Blocks {
-                blocks: wire_blocks,
-            });
+            let resp = SyncFrame::new(
+                req_id,
+                SyncResponse::Blocks(Blocks {
+                    blocks: wire_blocks,
+                }),
+            );
             sink.send(Message::Binary(resp.encode())).await?;
         }
         // Spec 07 §3.4 (`ln-trust-2`): serve the seeded genesis anchor — the block-0 hash, the seeded
@@ -264,14 +283,17 @@ async fn handle_request(
         // anchor that the client could mistake for a real seeded genesis (fail-closed).
         SyncRequest::GetGenesis(_) => match chain.genesis_anchor() {
             Some(anchor) => {
-                let resp = SyncResponse::Genesis(Genesis {
-                    genesis_hash: chain.genesis_hash(),
-                    chain_id: chain.chain_id(),
-                    state_root: anchor.state_root,
-                    genesis_time: chain.genesis_time(),
-                    proposer: chain.genesis_proposer().unwrap_or_default(),
-                    snapshot: anchor.snapshot,
-                });
+                let resp = SyncFrame::new(
+                    req_id,
+                    SyncResponse::Genesis(Genesis {
+                        genesis_hash: chain.genesis_hash(),
+                        chain_id: chain.chain_id(),
+                        state_root: anchor.state_root,
+                        genesis_time: chain.genesis_time(),
+                        proposer: chain.genesis_proposer().unwrap_or_default(),
+                        snapshot: anchor.snapshot,
+                    }),
+                );
                 sink.send(Message::Binary(resp.encode())).await?;
             }
             None => {
@@ -279,8 +301,22 @@ async fn handle_request(
                 sink.send(Message::Close(None)).await.ok();
             }
         },
-        // A second Hello is a no-op (clients may re-send after a network hiccup).
-        SyncRequest::Hello(_) => {}
+        // A re-sent Hello is a TIP RE-QUERY (issue #37): the client uses it after the initial catch-up
+        // to learn the gateway's *current* tip and close the handshake gap (blocks mined between the
+        // first Hello and going live). We reply with a fresh Hello carrying the live tip, echoing the id.
+        SyncRequest::Hello(_) => {
+            let (tip_h, tip_hash) = chain.tip();
+            let our_hello = Hello {
+                genesis_hash: chain.genesis_hash(),
+                chain_id: chain.chain_id(),
+                tip: (tip_h, tip_hash),
+                validator: None,
+                peer_proof: vec![],
+                protocol_ver: PROTOCOL_VERSION,
+            };
+            let resp = SyncFrame::new(req_id, SyncResponse::Hello(our_hello));
+            sink.send(Message::Binary(resp.encode())).await?;
+        }
     }
     Ok(())
 }

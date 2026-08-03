@@ -34,6 +34,9 @@ export type { SnapshotStore } from "./store.js";
 export {
   encodeSyncRequest,
   decodeSyncResponse,
+  decodeSyncFrame,
+  wireBlockNumber,
+  SYNC_LIVE_PUSH_ID,
   encodeWireBlock,
   decodeWireBlock,
   encodeHello,
@@ -56,6 +59,7 @@ export type {
   Genesis,
   SyncRequest,
   SyncResponse,
+  SyncFrame,
 } from "./wire.js";
 
 // Re-export SDK utilities useful in light-client contexts (projectBalance, formatUbi, EMISSION_RATE).

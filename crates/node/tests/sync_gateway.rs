@@ -27,7 +27,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use ubi2_network::consts::PROTOCOL_VERSION;
-use ubi2_network::wire::{GetBlocks, GetGenesis, Hello, SyncRequest, SyncResponse};
+use ubi2_network::wire::{
+    GetBlocks, GetGenesis, Hello, SyncFrame, SyncRequest, SyncResponse, SYNC_LIVE_PUSH_ID,
+};
 use ubi2_rpc::{serve_sync_gateway, Block, Chain, ProposerKey, DEVNET_CHAIN_ID};
 use ubi2_runtime::{Account, UBI};
 use ubi2_runtime_wasm::kernel::LightCore;
@@ -36,6 +38,9 @@ use ubi2_runtime_wasm::kernel::LightCore;
 const SYNC_PORT: u16 = 19800;
 const WRONG_NET_PORT: u16 = 19801;
 const GENESIS_ANCHOR_PORT: u16 = 19802;
+const LIVE_GENESIS_PORT: u16 = 19803;
+const LIVE_GETBLOCKS_PORT: u16 = 19804;
+const TIP_REQUERY_PORT: u16 = 19805;
 
 // ─── Devnet constants ────────────────────────────────────────────────────────
 const GENESIS_TIME: u64 = 1_700_100_000;
@@ -148,26 +153,67 @@ fn wait_port(port: u16, timeout: Duration) -> bool {
 
 // ─── Wire client helpers ──────────────────────────────────────────────────────
 
+/// Send a `SyncRequest` framed with the WS-gateway `req_id` prefix (issue #37). The gateway echoes
+/// this id on the matching response.
 async fn send_req(
     sink: &mut (impl SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
+    req_id: u64,
     req: &SyncRequest,
 ) {
-    sink.send(Message::Binary(req.encode()))
-        .await
-        .expect("send sync request");
+    sink.send(Message::Binary(
+        SyncFrame::new(req_id, req.clone()).encode(),
+    ))
+    .await
+    .expect("send sync request");
 }
 
-async fn recv_resp(
+/// Receive the next binary response frame (`req_id` + body), skipping ping/pong/text.
+async fn recv_frame(
     stream: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
-) -> SyncResponse {
+) -> SyncFrame<SyncResponse> {
     loop {
         match stream.next().await.expect("stream open") {
             Ok(Message::Binary(b)) => {
-                return SyncResponse::decode(&b).expect("decode SyncResponse")
+                return SyncFrame::<SyncResponse>::decode(&b).expect("decode SyncFrame")
             }
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Text(_)) => continue,
             other => panic!("unexpected WS frame: {other:?}"),
         }
+    }
+}
+
+/// Receive just the response body (the common case where a test controls timing so no live push is
+/// interleaved). Asserts the frame echoed the expected request id.
+async fn recv_resp_id(
+    stream: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    want_id: u64,
+) -> SyncResponse {
+    let frame = recv_frame(stream).await;
+    assert_eq!(
+        frame.req_id, want_id,
+        "response must echo the request's req_id"
+    );
+    frame.body
+}
+
+/// Read frames until one echoes `want_id`, returning its body. Any frame with a *different* id
+/// (e.g. an interleaved live-block push, `req_id = 0`) is handed to `on_other` and skipped — this is
+/// exactly the demultiplexing the browser client does. Bounded by a timeout so a missing reply fails
+/// the test instead of hanging.
+async fn recv_until_id(
+    stream: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    want_id: u64,
+    mut on_other: impl FnMut(SyncFrame<SyncResponse>),
+) -> SyncResponse {
+    let deadline = Duration::from_secs(5);
+    loop {
+        let frame = tokio::time::timeout(deadline, recv_frame(stream))
+            .await
+            .expect("timed out waiting for the correlated response");
+        if frame.req_id == want_id {
+            return frame.body;
+        }
+        on_other(frame);
     }
 }
 
@@ -212,6 +258,7 @@ async fn sync_and_verify() {
     // Hello handshake.
     send_req(
         &mut sink,
+        1,
         &SyncRequest::Hello(Hello {
             genesis_hash,
             chain_id: DEVNET_CHAIN_ID,
@@ -223,7 +270,7 @@ async fn sync_and_verify() {
     )
     .await;
 
-    let resp = recv_resp(&mut stream).await;
+    let resp = recv_resp_id(&mut stream, 1).await;
     let gw_hello = match resp {
         SyncResponse::Hello(h) => h,
         other => panic!("expected Hello, got {other:?}"),
@@ -247,11 +294,12 @@ async fn sync_and_verify() {
     // ---- Request blocks 2→5 (above the anchor) ----
     send_req(
         &mut sink,
+        2,
         &SyncRequest::GetBlocks(GetBlocks { from: 2, to: 5 }),
     )
     .await;
 
-    let resp = recv_resp(&mut stream).await;
+    let resp = recv_resp_id(&mut stream, 2).await;
     let wire_blocks = match resp {
         SyncResponse::Blocks(b) => b.blocks,
         other => panic!("expected Blocks, got {other:?}"),
@@ -297,10 +345,11 @@ async fn sync_and_verify() {
     // Re-request block 5 and mutate its state_root.
     send_req(
         &mut sink,
+        5,
         &SyncRequest::GetBlocks(GetBlocks { from: 5, to: 5 }),
     )
     .await;
-    let resp = recv_resp(&mut stream).await;
+    let resp = recv_resp_id(&mut stream, 5).await;
     let tampered_blocks = match resp {
         SyncResponse::Blocks(b) => b.blocks,
         other => panic!("expected Blocks for tampered test, got {other:?}"),
@@ -316,10 +365,11 @@ async fn sync_and_verify() {
     // Sync it to block 4 first.
     send_req(
         &mut sink,
+        6,
         &SyncRequest::GetBlocks(GetBlocks { from: 2, to: 4 }),
     )
     .await;
-    let resp = recv_resp(&mut stream).await;
+    let resp = recv_resp_id(&mut stream, 6).await;
     let blocks_2_4 = match resp {
         SyncResponse::Blocks(b) => b.blocks,
         other => panic!("expected Blocks 2..4, got {other:?}"),
@@ -385,6 +435,7 @@ async fn wrong_network_rejected() {
     // Send Hello with a WRONG genesis_hash (simulate a client on a different network).
     send_req(
         &mut sink,
+        1,
         &SyncRequest::Hello(Hello {
             genesis_hash: alloy_primitives::B256::repeat_byte(0xde), // wrong!
             chain_id: DEVNET_CHAIN_ID,
@@ -460,6 +511,7 @@ async fn genesis_anchor_pinned_and_reproduced() {
     // Hello handshake (the client pins the genesis hash and rejects a mismatch).
     send_req(
         &mut sink,
+        1,
         &SyncRequest::Hello(Hello {
             genesis_hash: chain.genesis_hash(),
             chain_id: DEVNET_CHAIN_ID,
@@ -470,15 +522,15 @@ async fn genesis_anchor_pinned_and_reproduced() {
         }),
     )
     .await;
-    let gw_hello = match recv_resp(&mut stream).await {
+    let gw_hello = match recv_resp_id(&mut stream, 1).await {
         SyncResponse::Hello(h) => h,
         other => panic!("expected Hello, got {other:?}"),
     };
     assert_eq!(gw_hello.genesis_hash.0, pinned_hash, "pinned genesis hash");
 
     // ---- Fetch the genesis anchor via GetGenesis ----
-    send_req(&mut sink, &SyncRequest::GetGenesis(GetGenesis)).await;
-    let genesis = match recv_resp(&mut stream).await {
+    send_req(&mut sink, 2, &SyncRequest::GetGenesis(GetGenesis)).await;
+    let genesis = match recv_resp_id(&mut stream, 2).await {
         SyncResponse::Genesis(g) => g,
         other => panic!("expected Genesis, got {other:?}"),
     };
@@ -512,10 +564,11 @@ async fn genesis_anchor_pinned_and_reproduced() {
     // ---- Sync block #1..3 and re-execute on the verified seeded state ----
     send_req(
         &mut sink,
+        3,
         &SyncRequest::GetBlocks(GetBlocks { from: 1, to: 3 }),
     )
     .await;
-    let blocks = match recv_resp(&mut stream).await {
+    let blocks = match recv_resp_id(&mut stream, 3).await {
         SyncResponse::Blocks(b) => b.blocks,
         other => panic!("expected Blocks, got {other:?}"),
     };
@@ -539,4 +592,217 @@ async fn genesis_anchor_pinned_and_reproduced() {
     }
 
     println!("[genesis_anchor_pinned_and_reproduced] PASS: pinned anchor verified + seeded chain reproduced");
+}
+
+// ─── Issue #37: the sync race is closed by the req_id correlation + tip re-query ───────────────
+//
+// These drive the RAW wire protocol (no TS client) to prove the GATEWAY-side guarantees that make the
+// browser client's demultiplexing possible:
+//   * an unsolicited live-block push is framed with `req_id = 0`, never the id of an in-flight request,
+//     so a push mined DURING a `GetGenesis` / `GetBlocks` window is delivered on its own frame and can
+//     never be mistaken for (or corrupt) the correlated reply;
+//   * a re-sent `Hello` is answered with the gateway's CURRENT tip, so the client can close the
+//     handshake gap (blocks mined between the first Hello and going live).
+// The end-to-end client demux + strict in-order application is proven in
+// `packages/light-client/src/sync.test.ts`.
+
+/// Handshake helper: send the client Hello (req_id 1), await the correlated Hello reply, return the
+/// gateway's advertised tip height. Starts the gateway + connects.
+async fn connect_and_handshake(
+    chain: &Chain,
+    port: u16,
+) -> (
+    impl SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+    impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    u64,
+) {
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let gw = serve_sync_gateway(addr, chain.clone())
+        .await
+        .expect("start gateway");
+    // Leak the handle so the gateway stays up for the whole test (dropping it stops accepting).
+    Box::leak(Box::new(gw));
+    assert!(
+        wait_port(port, Duration::from_secs(3)),
+        "gateway did not start"
+    );
+    let (ws, _) = connect_async(format!("ws://127.0.0.1:{port}"))
+        .await
+        .expect("ws connect");
+    let (mut sink, mut stream) = ws.split();
+    send_req(
+        &mut sink,
+        1,
+        &SyncRequest::Hello(Hello {
+            genesis_hash: chain.genesis_hash(),
+            chain_id: DEVNET_CHAIN_ID,
+            tip: (0, alloy_primitives::B256::ZERO),
+            validator: None,
+            peer_proof: vec![],
+            protocol_ver: PROTOCOL_VERSION,
+        }),
+    )
+    .await;
+    let tip = match recv_resp_id(&mut stream, 1).await {
+        SyncResponse::Hello(h) => h.tip.0,
+        other => panic!("expected Hello, got {other:?}"),
+    };
+    (sink, stream, tip)
+}
+
+/// Scenario 1 (issue #37): a live block pushed DURING the `GetGenesis` window is NOT mis-consumed as
+/// the Genesis reply. It arrives on its own `req_id = 0` frame; the Genesis reply carries the request's
+/// id and the correct anchor. (Before the fix, the first frame — the live push — was taken as the
+/// Genesis reply and `tag != "Genesis"` aborted sync.)
+#[tokio::test]
+#[ignore]
+async fn live_push_during_getgenesis_is_demuxed_by_req_id() {
+    let (chain, _first) = make_test_chain_sealed();
+    let pinned_root = chain.genesis_state_root().expect("genesis sealed").0;
+    let (mut sink, mut stream, _tip) = connect_and_handshake(&chain, LIVE_GENESIS_PORT).await;
+
+    // Mine a block AFTER the handshake (the gateway is already subscribed) so a live push is in flight
+    // exactly as the client asks for the genesis anchor.
+    chain.produce_block(GENESIS_TIME + 50);
+
+    // Ask for the genesis anchor (req_id = 2).
+    send_req(&mut sink, 2, &SyncRequest::GetGenesis(GetGenesis)).await;
+
+    // Collect frames until we have seen BOTH the correlated Genesis reply AND the id-0 live push —
+    // regardless of the order the gateway's select! loop emits them.
+    let mut genesis_root: Option<[u8; 32]> = None;
+    let mut saw_live_push = false;
+    let deadline = Duration::from_secs(5);
+    while genesis_root.is_none() || !saw_live_push {
+        let frame = tokio::time::timeout(deadline, recv_frame(&mut stream))
+            .await
+            .expect("timed out collecting genesis + live-push frames");
+        match (frame.req_id, frame.body) {
+            (2, SyncResponse::Genesis(g)) => genesis_root = Some(g.state_root.0),
+            (id, SyncResponse::Blocks(b)) if id == SYNC_LIVE_PUSH_ID => {
+                assert_eq!(
+                    b.blocks.len(),
+                    1,
+                    "a live push carries exactly the one new block"
+                );
+                saw_live_push = true;
+            }
+            other => panic!("unexpected frame during GetGenesis window: {other:?}"),
+        }
+    }
+    assert_eq!(
+        genesis_root.unwrap(),
+        pinned_root,
+        "the Genesis reply (req_id 2) carries the correct anchor — the live push did NOT overwrite it"
+    );
+    println!("[live_push_during_getgenesis] PASS: live push (req_id 0) demuxed from Genesis reply (req_id 2)");
+}
+
+/// Scenario 2 (issue #37): a live block pushed DURING a `GetBlocks` window does not corrupt the batch
+/// response. The batch reply (req_id echoed) contains EXACTLY the requested range; the live block
+/// arrives separately on `req_id = 0`. (Before the fix, the live push was consumed as the batch reply,
+/// dropping the real batch and opening a height gap that failed the parent-hash chain.)
+#[tokio::test]
+#[ignore]
+async fn live_push_during_getblocks_does_not_corrupt_batch() {
+    let (chain, _first) = make_test_chain_sealed(); // height 1 already produced
+    chain.produce_block(GENESIS_TIME + 10); // height 2
+    chain.produce_block(GENESIS_TIME + 20); // height 3
+    let (mut sink, mut stream, tip) = connect_and_handshake(&chain, LIVE_GETBLOCKS_PORT).await;
+    assert_eq!(tip, 3, "gateway tip is 3 at handshake");
+
+    // Mine height 4 AFTER handshake → a live push (req_id 0) races the batch request below.
+    chain.produce_block(GENESIS_TIME + 30);
+
+    // Request the batch [1, 3] (req_id = 2).
+    send_req(
+        &mut sink,
+        2,
+        &SyncRequest::GetBlocks(GetBlocks { from: 1, to: 3 }),
+    )
+    .await;
+
+    let mut batch_numbers: Option<Vec<u64>> = None;
+    let mut live_number: Option<u64> = None;
+    let deadline = Duration::from_secs(5);
+    while batch_numbers.is_none() || live_number.is_none() {
+        let frame = tokio::time::timeout(deadline, recv_frame(&mut stream))
+            .await
+            .expect("timed out collecting batch + live-push frames");
+        match (frame.req_id, frame.body) {
+            (2, SyncResponse::Blocks(b)) => {
+                batch_numbers = Some(b.blocks.iter().map(|wb| wb.number).collect());
+            }
+            (id, SyncResponse::Blocks(b)) if id == SYNC_LIVE_PUSH_ID => {
+                assert_eq!(b.blocks.len(), 1);
+                live_number = Some(b.blocks[0].number);
+            }
+            other => panic!("unexpected frame during GetBlocks window: {other:?}"),
+        }
+    }
+    assert_eq!(
+        batch_numbers.unwrap(),
+        vec![1, 2, 3],
+        "the correlated batch reply is EXACTLY [1,2,3] — the live block 4 did not corrupt it"
+    );
+    assert_eq!(
+        live_number.unwrap(),
+        4,
+        "the live block (req_id 0) is delivered separately for the client to buffer + apply in order"
+    );
+    println!("[live_push_during_getblocks] PASS: batch [1,2,3] intact; live block 4 on its own req_id-0 frame");
+}
+
+/// Scenario 3 (issue #37): blocks mined between the first `Hello` and going live are fetchable. A
+/// re-sent `Hello` (a tip re-query) is answered with the gateway's CURRENT tip, echoing the request id,
+/// so the client can `GetBlocks` the gap before/while it goes live. (Interleaved live pushes for the
+/// new blocks also arrive on `req_id = 0` and are skipped by the correlation.)
+#[tokio::test]
+#[ignore]
+async fn tip_requery_catches_blocks_mined_after_hello() {
+    let (chain, _first) = make_test_chain_sealed(); // tip 1
+    let (mut sink, mut stream, tip0) = connect_and_handshake(&chain, TIP_REQUERY_PORT).await;
+    assert_eq!(tip0, 1, "initial handshake tip is 1");
+
+    // Mine three more blocks AFTER the handshake (heights 2,3,4).
+    for i in 0..3u64 {
+        chain.produce_block(GENESIS_TIME + 100 + i * 10);
+    }
+
+    // Re-query the tip with a second Hello (req_id = 7). Interleaved id-0 live pushes are skipped.
+    send_req(
+        &mut sink,
+        7,
+        &SyncRequest::Hello(Hello {
+            genesis_hash: chain.genesis_hash(),
+            chain_id: DEVNET_CHAIN_ID,
+            tip: (tip0, alloy_primitives::B256::ZERO),
+            validator: None,
+            peer_proof: vec![],
+            protocol_ver: PROTOCOL_VERSION,
+        }),
+    )
+    .await;
+    let requeried = match recv_until_id(&mut stream, 7, |_push| {}).await {
+        SyncResponse::Hello(h) => h.tip.0,
+        other => panic!("expected Hello re-query reply, got {other:?}"),
+    };
+    assert_eq!(
+        requeried, 4,
+        "the tip re-query reports the ADVANCED tip (4), so the client can fetch the handshake gap"
+    );
+
+    // And the gap blocks [2,4] are actually served.
+    send_req(
+        &mut sink,
+        8,
+        &SyncRequest::GetBlocks(GetBlocks { from: 2, to: 4 }),
+    )
+    .await;
+    let gap: Vec<u64> = match recv_until_id(&mut stream, 8, |_push| {}).await {
+        SyncResponse::Blocks(b) => b.blocks.iter().map(|wb| wb.number).collect(),
+        other => panic!("expected Blocks, got {other:?}"),
+    };
+    assert_eq!(gap, vec![2, 3, 4], "the handshake-gap blocks are fetchable");
+    println!("[tip_requery] PASS: re-sent Hello reports tip 4; gap blocks [2,3,4] served");
 }

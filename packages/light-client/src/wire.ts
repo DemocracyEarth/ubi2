@@ -339,8 +339,29 @@ const SYNC_TAG_HELLO = 0;
 const SYNC_TAG_BLOCKS = 1;
 const SYNC_TAG_GENESIS = 2;
 
-export function encodeSyncRequest(req: SyncRequest): Uint8Array {
+/**
+ * The `req_id` reserved for an UNSOLICITED live-block push on the WS sync gateway (issue #37). A
+ * *request* MUST carry a nonzero id; its matching response ECHOES it; a live-block frame the gateway
+ * pushes on its own initiative uses this reserved zero — so this client, which shares one socket for
+ * request replies AND live pushes, can never mistake a push for a reply.
+ */
+export const SYNC_LIVE_PUSH_ID = 0n;
+
+/** A decoded WS-gateway frame: the correlation `reqId` and the response body. */
+export interface SyncFrame {
+  reqId: bigint;
+  resp: SyncResponse;
+}
+
+/**
+ * Encode a framed `ubi2/sync/1` request for the WS sync gateway (issue #37):
+ * `[req_id: u64 big-endian][tag][payload]`. The body bytes (`[tag][payload]`) are byte-identical to the
+ * Rust `SyncRequest::encode`; only the leading 8-byte `req_id` prefix is new. The gateway echoes
+ * `reqId` on the matching response so this client can demultiplex replies from live pushes.
+ */
+export function encodeSyncRequest(reqId: bigint, req: SyncRequest): Uint8Array {
   const w = new Writer();
+  w.u64(reqId);
   if (req.tag === "Hello") {
     w.u8(SYNC_TAG_HELLO);
     w.bytes(encodeHello(req.hello));
@@ -354,6 +375,7 @@ export function encodeSyncRequest(req: SyncRequest): Uint8Array {
   return w.finish();
 }
 
+/** Decode a response BODY (`[tag][payload]`, no `req_id` prefix). Used by {@link decodeSyncFrame}. */
 export function decodeSyncResponse(buf: Uint8Array): SyncResponse {
   if (buf.length === 0) throw new Error("wire: empty SyncResponse");
   const tag = buf[0]!;
@@ -366,6 +388,27 @@ export function decodeSyncResponse(buf: Uint8Array): SyncResponse {
     return { tag: "Genesis", genesis: decodeGenesis(rest) };
   }
   throw new Error(`wire: unknown SyncResponse tag ${tag}`);
+}
+
+/**
+ * Decode a framed `ubi2/sync/1` response from the WS gateway: `[req_id: u64 big-endian][tag][payload]`.
+ * Returns the correlation `reqId` (0 = an unsolicited live-block push) and the decoded body.
+ */
+export function decodeSyncFrame(buf: Uint8Array): SyncFrame {
+  if (buf.length < 8) {
+    throw new Error("wire: SyncFrame truncated (need an 8-byte req_id prefix)");
+  }
+  const reqId = new DataView(buf.buffer, buf.byteOffset, 8).getBigUint64(0, false);
+  const resp = decodeSyncResponse(buf.subarray(8));
+  return { reqId, resp };
+}
+
+/** Read a WireBlock's leading `number` (u64 big-endian) without decoding the whole block. The block
+ * number is the first field of the canonical encoding, so this lets the client order/demux opaque
+ * block blobs (from {@link decodeBlocks}) without depending on the full block layout. */
+export function wireBlockNumber(bytes: Uint8Array): bigint {
+  if (bytes.length < 8) throw new Error("wire: block blob too short for a number");
+  return new DataView(bytes.buffer, bytes.byteOffset, 8).getBigUint64(0, false);
 }
 
 // ---------------------------------------------------------------------------

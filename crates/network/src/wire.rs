@@ -663,6 +663,94 @@ impl SyncResponse {
 }
 
 // ---------------------------------------------------------------------------------------------
+// SyncFrame — the WebSocket sync-gateway envelope (issue #37): an 8-byte big-endian `req_id`
+// prefix in front of the un-prefixed `SyncRequest`/`SyncResponse` body.
+// ---------------------------------------------------------------------------------------------
+
+/// `req_id` reserved for an UNSOLICITED live-block push on the WS sync gateway (issue #37). A
+/// *request* MUST carry a client-assigned NONZERO id; the matching response ECHOES it; a live-block
+/// frame the gateway pushes on its own initiative uses this reserved zero — so the browser client,
+/// which shares one socket for replies AND pushes, can never mistake a push for a request reply.
+pub const SYNC_LIVE_PUSH_ID: u64 = 0;
+
+/// A `ubi2/sync/1` message as it travels over the **WebSocket sync gateway** (spec 07 §3.1): an
+/// 8-byte big-endian `req_id` prefix followed by the un-prefixed body (`[tag][payload]` — exactly the
+/// bytes [`SyncRequest`]/[`SyncResponse`] already encode). New framing: `[req_id: u64 BE][tag][payload]`.
+///
+/// WHY only the WS gateway carries the prefix: the libp2p request-response transport
+/// (`crates/network::codec`) correlates a response to its request natively (per-substream) and never
+/// multiplexes unsolicited pushes onto a request stream, so it keeps encoding the bare body. The
+/// browser light client, by contrast, shares ONE WebSocket for request replies AND live-block pushes
+/// (`sync_gateway.rs`), so it needs an explicit id to demultiplex (issue #37: without it, a live push
+/// mined during a `recv()` window was consumed as the reply). The body layout is byte-identical on
+/// both transports — only the WS frame adds the leading `req_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncFrame<B> {
+    /// Client-assigned NONZERO correlation id on a request; echoed on its response; [`SYNC_LIVE_PUSH_ID`]
+    /// (0) on an unsolicited live-block push.
+    pub req_id: u64,
+    /// The message body: a [`SyncRequest`] toward the gateway, a [`SyncResponse`] back.
+    pub body: B,
+}
+
+/// Prepend the 8-byte big-endian `req_id` to an already-encoded body.
+#[inline]
+fn write_framed(req_id: u64, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + body.len());
+    out.extend_from_slice(&req_id.to_be_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
+/// Split the leading 8-byte big-endian `req_id` off a framed buffer, returning `(req_id, body_bytes)`.
+#[inline]
+fn read_req_id(buf: &[u8]) -> Result<(u64, &[u8]), WireError> {
+    if buf.len() < 8 {
+        return Err(WireError::Truncated);
+    }
+    let req_id = u64::from_be_bytes(buf[0..8].try_into().unwrap());
+    Ok((req_id, &buf[8..]))
+}
+
+impl<B> SyncFrame<B> {
+    /// Wrap a body with a correlation `req_id`. Callers assign a NONZERO id on a request; the gateway
+    /// echoes it on the reply, or uses [`SYNC_LIVE_PUSH_ID`] (0) for an unsolicited live-block push.
+    pub fn new(req_id: u64, body: B) -> Self {
+        SyncFrame { req_id, body }
+    }
+}
+
+impl SyncFrame<SyncRequest> {
+    /// Encode as `[req_id: u64 BE][tag][payload]` — the body bytes are unchanged from [`SyncRequest::encode`].
+    pub fn encode(&self) -> Vec<u8> {
+        write_framed(self.req_id, &self.body.encode())
+    }
+    /// Decode the 8-byte prefix, then the body via the unchanged [`SyncRequest::decode`].
+    pub fn decode(buf: &[u8]) -> Result<Self, WireError> {
+        let (req_id, rest) = read_req_id(buf)?;
+        Ok(SyncFrame {
+            req_id,
+            body: SyncRequest::decode(rest)?,
+        })
+    }
+}
+
+impl SyncFrame<SyncResponse> {
+    /// Encode as `[req_id: u64 BE][tag][payload]` — the body bytes are unchanged from [`SyncResponse::encode`].
+    pub fn encode(&self) -> Vec<u8> {
+        write_framed(self.req_id, &self.body.encode())
+    }
+    /// Decode the 8-byte prefix, then the body via the unchanged [`SyncResponse::decode`].
+    pub fn decode(buf: &[u8]) -> Result<Self, WireError> {
+        let (req_id, rest) = read_req_id(buf)?;
+        Ok(SyncFrame {
+            req_id,
+            body: SyncResponse::decode(rest)?,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // secp256k1 ecrecover — the same scheme `rpc::recover_proposer` uses (65-byte r‖s‖v, v = 27 + recid).
 // Kept here so the network can verify proposer sigs / peer proofs without depending on crates/rpc.
 // ---------------------------------------------------------------------------------------------
@@ -885,5 +973,64 @@ mod tests {
         } else {
             panic!("expected Genesis response");
         }
+    }
+
+    /// The WS-gateway `SyncFrame` prepends an 8-byte big-endian `req_id` and leaves the body bytes
+    /// byte-identical to the bare `SyncRequest`/`SyncResponse` encoding (issue #37). This is the exact
+    /// layout the TS light client must mirror, so the assertions pin the concrete bytes.
+    #[test]
+    fn sync_frame_prefix_and_body_unchanged() {
+        // A request frame: the prefix is the raw big-endian id; the remainder is the UNCHANGED body.
+        let body = SyncRequest::GetBlocks(GetBlocks { from: 1, to: 5 });
+        let req_id: u64 = 0x0102_0304_0506_0708;
+        let frame = SyncFrame::new(req_id, body.clone());
+        let enc = frame.encode();
+        assert_eq!(
+            &enc[0..8],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            "leading 8 bytes are the big-endian req_id"
+        );
+        assert_eq!(
+            &enc[8..],
+            &body.encode()[..],
+            "body bytes are unchanged by framing"
+        );
+        let back = SyncFrame::<SyncRequest>::decode(&enc).unwrap();
+        assert_eq!(back.req_id, req_id);
+        assert_eq!(back.body, body);
+
+        // A response frame round-trips and echoes the same id.
+        let rbody = SyncResponse::Blocks(Blocks { blocks: vec![] });
+        let rframe = SyncFrame::new(req_id, rbody.clone());
+        let renc = rframe.encode();
+        assert_eq!(&renc[0..8], &req_id.to_be_bytes());
+        assert_eq!(&renc[8..], &rbody.encode()[..]);
+        let rback = SyncFrame::<SyncResponse>::decode(&renc).unwrap();
+        assert_eq!(rback, rframe);
+    }
+
+    /// A concrete cross-language vector: `GetGenesis` (body = `[tag=2]`) with `req_id = 1` is exactly
+    /// nine bytes: `00 00 00 00 00 00 00 01 02`. The TS `sync.test.ts` pins the identical bytes.
+    #[test]
+    fn sync_frame_cross_lang_vector() {
+        let enc = SyncFrame::new(1u64, SyncRequest::GetGenesis(GetGenesis)).encode();
+        assert_eq!(enc, vec![0, 0, 0, 0, 0, 0, 0, 1, 2]);
+
+        // A live-block push uses the reserved id 0 (an empty `Blocks` body = `[tag=1][count=0]`).
+        let push = SyncFrame::new(
+            SYNC_LIVE_PUSH_ID,
+            SyncResponse::Blocks(Blocks { blocks: vec![] }),
+        )
+        .encode();
+        assert_eq!(
+            push,
+            vec![0, 0, 0, 0, 0, 0, 0, 0, /*tag*/ 1, /*count u32*/ 0, 0, 0, 0]
+        );
+
+        // A frame shorter than the 8-byte prefix is truncated, never a panic.
+        assert_eq!(
+            SyncFrame::<SyncRequest>::decode(&[0, 0, 0]),
+            Err(WireError::Truncated)
+        );
     }
 }

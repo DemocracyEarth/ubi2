@@ -8,9 +8,12 @@
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx src/sync.test.ts"
   },
   "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.22.4",
     "typescript": "^5.5.0"
   },
   "dependencies": {

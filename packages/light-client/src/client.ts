@@ -15,11 +15,14 @@
 
 import {
   bytesEqual,
-  decodeSyncResponse,
+  decodeSyncFrame,
   encodeSyncRequest,
   fromHex,
   toHex,
+  wireBlockNumber,
+  SYNC_LIVE_PUSH_ID,
 } from "./wire.js";
+import type { SyncRequest, SyncResponse } from "./wire.js";
 import type {
   ILightState,
   LightStateFactory,
@@ -33,6 +36,26 @@ import { defaultStore } from "./store.js";
 const SYNC_MAX_BATCH = 128n;
 const FINALITY_DEPTH = 6n;
 const PROTOCOL_VERSION = 1;
+
+/**
+ * How many times, after the initial catch-up to the Hello tip, we RE-QUERY the gateway's current tip
+ * and fetch the gap before going live (issue #37 handshake gap). Bounded so steady block production
+ * cannot spin this loop forever — once live, buffered pushes + gap-fill keep the client at the tip.
+ */
+const HANDSHAKE_CATCHUP_ROUNDS = 8;
+
+/** Default per-request timeout (ms). A reply that never arrives rejects the request instead of hanging. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+
+/**
+ * The subset of the WHATWG `WebSocket` API the client uses. Declared as a seam so tests can inject a
+ * deterministic in-process mock gateway (issue #37 race tests) without a real socket; production passes
+ * the global `WebSocket`.
+ */
+export type WebSocketLike = Pick<
+  WebSocket,
+  "binaryType" | "send" | "close" | "addEventListener" | "removeEventListener"
+>;
 
 export type VerifyMode = "full"; // "header" is a backlog degraded mode (never auto-selected)
 
@@ -116,6 +139,13 @@ export interface LightClientOptions {
   verifyMode?: VerifyMode;
   /** Emit log messages (optional; defaults to console.error for errors, silent otherwise). */
   logger?: (level: "info" | "warn" | "error", msg: string) => void;
+  /**
+   * Factory for the WebSocket (test seam, issue #37). Defaults to the global `WebSocket`. Tests inject
+   * an in-process mock gateway to drive the request/response + live-push race deterministically.
+   */
+  wsFactory?: (url: string) => WebSocketLike;
+  /** Per-request reply timeout in ms (default {@link DEFAULT_REQUEST_TIMEOUT_MS}). */
+  requestTimeoutMs?: number;
 }
 
 export interface VerifiedBalanceSample {
@@ -153,12 +183,33 @@ export class LightClient {
   private readonly log: (level: "info" | "warn" | "error", msg: string) => void;
 
   private state: ILightState | null = null;
-  private ws: WebSocket | null = null;
+  private ws: WebSocketLike | null = null;
   private closed = false;
   private verificationBadge: "unverified" | "verified" | "error" = "unverified";
   private lastVerificationError: string | null = null;
   private gatewayTip: bigint = 0n;
   private store: SnapshotStore;
+  private readonly wsFactory: (url: string) => WebSocketLike;
+  private readonly requestTimeoutMs: number;
+
+  // ---- issue #37: request/response correlation + strict in-order application ----
+  /** In-flight requests keyed by their client-assigned `req_id`; resolved by the single message handler. */
+  private readonly pending = new Map<
+    bigint,
+    { resolve: (r: SyncResponse) => void; reject: (e: Error) => void }
+  >();
+  /** Next correlation id to assign. Starts at 1 — `0` is reserved for unsolicited live pushes. */
+  private nextReqId = 1n;
+  /** Live-pushed (and gap-filled) blocks awaiting strict in-order application, keyed by block number. */
+  private readonly liveBuffer = new Map<bigint, Uint8Array>();
+  /** The last block number applied to the kernel — the SINGLE source of truth for ordering. */
+  private localTip = 0n;
+  /** Serialize the applier: `true` while `drain()` runs; `drainQueued` re-runs it for a late enqueue. */
+  private draining = false;
+  private drainQueued = false;
+  /** After initial sync we go "live": the message handler then kicks `drain()` on every push. */
+  private live = false;
+  private snapKey = "";
 
   constructor(opts: LightClientOptions) {
     this.gatewayUrl = opts.gatewayUrl;
@@ -191,6 +242,8 @@ export class LightClient {
     this.verifyMode = opts.verifyMode ?? "full";
     this.log = opts.logger ?? (() => {});
     this.store = opts.store ?? defaultStore();
+    this.wsFactory = opts.wsFactory ?? ((url: string) => new WebSocket(url));
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   /** The current verification badge (`"unverified"` / `"verified"` / `"error"`). */
@@ -241,19 +294,23 @@ export class LightClient {
     // `setValidatorSet` and re-verify the restored root against the pinned tip before trusting it; until
     // then re-syncing from the verified seeded genesis is the correct, trust-preserving default.
     const snapKey = `lightState:${this.chainId}`;
+    this.snapKey = snapKey;
     const snapBytes = await this.store.load(snapKey);
     if (snapBytes) {
       log("info", `snapshot found (${snapBytes.length} bytes); re-syncing from the pinned genesis anchor`);
     }
 
-    // ---- Open WebSocket ----
-    const ws = await this.connect();
+    // ---- Open WebSocket + install the SINGLE persistent frame handler ----
+    // From the very first byte, every inbound frame is demultiplexed by its `req_id` (issue #37): a
+    // correlated reply resolves its pending request; an unsolicited live push (`req_id = 0`) is buffered.
+    // So a block mined during ANY request window can never be consumed as that request's response.
+    const ws = await this.openSocket();
     this.ws = ws;
 
     // ---- Hello handshake ----
     // We always send our PINNED genesis hash. The gateway closes on a mismatch, AND we re-check the
     // gateway's advertised hash below — we NEVER adopt the gateway's genesis (ln-trust-1).
-    const helloMsg = encodeSyncRequest({
+    const helloResp = await this.request({
       tag: "Hello",
       hello: {
         genesisHash: fromHex(this.genesisHash),
@@ -265,15 +322,10 @@ export class LightClient {
         protocolVer: PROTOCOL_VERSION,
       },
     });
-    ws.send(helloMsg);
-
-    // Wait for the gateway's Hello response.
-    const gatewayHelloBytes = await this.recv(ws);
-    const gatewayResp = decodeSyncResponse(gatewayHelloBytes);
-    if (gatewayResp.tag !== "Hello") {
+    if (helloResp.tag !== "Hello") {
       throw new GatewayError("expected Hello response");
     }
-    const gwHello = gatewayResp.hello;
+    const gwHello = helloResp.hello;
 
     // Validate chain id + genesis hash against the PINNED constants (AC-F-LN4, ln-trust-1).
     if (gwHello.chainId !== BigInt(this.chainId)) {
@@ -293,9 +345,9 @@ export class LightClient {
     // ---- Fetch the seeded genesis anchor and verify it against the PINNED constants ----
     // (ln-trust-2/3): the gateway serves the seeded genesis snapshot; the WASM kernel re-derives its
     // state_root LOCALLY and throws unless it equals the pinned root. A lying gateway is CAUGHT here.
-    ws.send(encodeSyncRequest({ tag: "GetGenesis" }));
-    const genesisRespBytes = await this.recv(ws);
-    const genesisResp = decodeSyncResponse(genesisRespBytes);
+    // A live block pushed DURING this window carries `req_id = 0` → it is buffered, never taken as the
+    // Genesis reply (the original issue #37 abort).
+    const genesisResp = await this.request({ tag: "GetGenesis" });
     if (genesisResp.tag !== "Genesis") {
       throw new GatewayError("expected Genesis response to GetGenesis");
     }
@@ -343,44 +395,45 @@ export class LightClient {
       throw new WrongNetworkError(`genesis snapshot failed pinned-root verification: ${msg}`);
     }
 
-    // ---- Sync loop: fetch blocks genesis→tip in SYNC_MAX_BATCH batches ----
-    let localTip = 0n; // we always start from genesis in this implementation
-    while (localTip < this.gatewayTip) {
-      const from = localTip + 1n;
-      const to = localTip + SYNC_MAX_BATCH < this.gatewayTip
-        ? localTip + SYNC_MAX_BATCH
-        : this.gatewayTip;
+    // The applied tip starts wherever the imported verified state sits (genesis import → 0).
+    this.localTip = BigInt(this.state.tip().number);
 
-      const getBlocksMsg = encodeSyncRequest({
-        tag: "GetBlocks",
-        getBlocks: { from, to },
-      });
-      ws.send(getBlocksMsg);
+    // ---- Catch up to the Hello tip (in-order, via the shared applier) ----
+    await this.catchUpTo(this.gatewayTip);
 
-      const blocksBytes = await this.recv(ws);
-      const blocksResp = decodeSyncResponse(blocksBytes);
-      if (blocksResp.tag !== "Blocks") {
-        throw new GatewayError("expected Blocks response, got Hello");
-      }
-
-      const { blocks } = blocksResp.blocks;
-      if (blocks.length === 0) {
-        // Gateway has no more blocks — break.
-        break;
-      }
-
-      for (const wireBlockBytes of blocks) {
-        localTip = await this.applyWireBlock(wireBlockBytes);
-      }
-
-      // Persist snapshot after each batch.
-      await this.persist(snapKey);
+    // ---- Close the handshake gap (issue #37) ----
+    // Blocks mined between the first Hello and now must be fetched, or the light node stays behind the
+    // real tip forever. RE-QUERY the gateway's CURRENT tip and GetBlocks the gap, repeating until the
+    // tip stops advancing (bounded). Live pushes buffered during the handshake are also applied here.
+    for (let round = 0; round < HANDSHAKE_CATCHUP_ROUNDS; round++) {
+      const currentTip = await this.requestTip();
+      if (currentTip <= this.localTip) break;
+      await this.catchUpTo(currentTip);
     }
 
-    log("info", `initial sync complete at block ${localTip}`);
+    log("info", `initial sync complete at block ${this.localTip}`);
 
-    // ---- Stay live: the gateway pushes new blocks as SyncResponse::Blocks(count=1) ----
-    this.listenLive(ws, snapKey);
+    // ---- Go live: flush buffered pushes, then apply every future push in strict order ----
+    // Marking `live` makes the message handler kick `drain()` on each push; the explicit drain here
+    // flushes anything buffered during the handshake/catch-up.
+    this.live = true;
+    await this.drain();
+  }
+
+  /**
+   * Fetch and apply blocks in contiguous `SYNC_MAX_BATCH` batches until the applied tip reaches
+   * `target`. Each batch is enqueued and applied through the SINGLE in-order applier ({@link drain}),
+   * so a live push interleaved during a batch window is ordered correctly, never applied out of turn.
+   */
+  private async catchUpTo(target: bigint): Promise<void> {
+    while (this.localTip < target) {
+      const from = this.localTip + 1n;
+      const to = from + SYNC_MAX_BATCH - 1n <= target ? from + SYNC_MAX_BATCH - 1n : target;
+      const blocks = await this.requestBlocks(from, to);
+      if (blocks.length === 0) break; // gateway has no more — stop (avoid a spin)
+      this.enqueueBlocks(blocks);
+      await this.drain();
+    }
   }
 
   /** Apply a single wire-encoded block to the WASM kernel.  Throws `VerificationError` on failure. */
@@ -408,38 +461,70 @@ export class LightClient {
     }
   }
 
-  /** Listen for live pushed blocks after initial sync completes. */
-  private listenLive(ws: WebSocket, snapKey: string): void {
-    const log = this.log;
-    ws.addEventListener("message", async (event: MessageEvent) => {
-      if (this.closed) return;
-      try {
-        const raw = event.data as ArrayBuffer | Uint8Array;
-        const bytes =
-          raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer);
-        const resp = decodeSyncResponse(bytes);
-        if (resp.tag !== "Blocks") return;
-        for (const wireBlockBytes of resp.blocks.blocks) {
-          await this.applyWireBlock(wireBlockBytes);
-        }
-        await this.persist(snapKey);
-      } catch (e) {
-        if (e instanceof VerificationError) {
-          log("error", e.message);
-        }
-        // Other decode errors: log + continue (don't crash the live listener).
+  /**
+   * Buffer live-pushed / gap-filled block blobs for strict in-order application, keyed by block number.
+   * Blocks at or below the applied tip (or already buffered) are ignored — dedup is by number.
+   */
+  private enqueueBlocks(blocks: Uint8Array[]): void {
+    for (const b of blocks) {
+      const n = wireBlockNumber(b);
+      if (n > this.localTip && !this.liveBuffer.has(n)) {
+        this.liveBuffer.set(n, b);
       }
-    });
+    }
+  }
 
-    ws.addEventListener("close", () => {
-      if (!this.closed) {
-        log("warn", "sync gateway connection closed");
-      }
-    });
-
-    ws.addEventListener("error", (e: Event) => {
-      log("error", `sync gateway error: ${String(e)}`);
-    });
+  /**
+   * The SINGLE in-order applier (issue #37). Applies a buffered block ONLY when its number is exactly
+   * `localTip + 1`; on a gap (a buffered block sits above a missing height) it `GetBlocks` the missing
+   * range and applies in order. Serialized by `draining`/`drainQueued` so no two applications ever race
+   * — the parent-hash chain in `applyWireBlock` therefore never sees an out-of-order block. Fail-closed:
+   * a block that fails verification stops application and surfaces the error (never a wrong balance).
+   */
+  private async drain(): Promise<void> {
+    if (this.draining) {
+      // Another drain is running — ask it to re-scan the buffer after its current pass (no lost wakeup).
+      this.drainQueued = true;
+      return;
+    }
+    this.draining = true;
+    try {
+      do {
+        this.drainQueued = false;
+        for (;;) {
+          const next = this.localTip + 1n;
+          const bytes = this.liveBuffer.get(next);
+          if (bytes) {
+            this.liveBuffer.delete(next);
+            try {
+              this.localTip = await this.applyWireBlock(bytes);
+            } catch (e) {
+              // Fail-closed: stop applying; the badge is already "error". Do NOT advance the tip.
+              if (e instanceof VerificationError) {
+                this.log("error", e.message);
+                return;
+              }
+              throw e;
+            }
+            continue;
+          }
+          // `next` is missing. If a HIGHER block is buffered we missed a push → fetch the gap.
+          let lowestHigher: bigint | null = null;
+          for (const k of this.liveBuffer.keys()) {
+            if (k > next && (lowestHigher === null || k < lowestHigher)) lowestHigher = k;
+          }
+          if (lowestHigher === null) break; // nothing applicable right now
+          const cap = next + SYNC_MAX_BATCH - 1n;
+          const to = cap < lowestHigher - 1n ? cap : lowestHigher - 1n;
+          const fetched = await this.requestBlocks(next, to);
+          if (fetched.length === 0) break; // gateway can't serve the gap yet — stop (avoid a spin)
+          this.enqueueBlocks(fetched);
+        }
+      } while (this.drainQueued);
+      await this.persist(this.snapKey);
+    } finally {
+      this.draining = false;
+    }
   }
 
   /** Persist the current verified state to the store. */
@@ -463,49 +548,150 @@ export class LightClient {
   /** Close the WS connection and mark the client as closed. */
   close(): void {
     this.closed = true;
+    this.rejectAllPending(new GatewayError("client closed"));
     this.ws?.close();
     this.ws = null;
   }
 
   // ---------------------------------------------------------------------------
-  // WebSocket helpers
+  // WebSocket helpers — request/response correlation + live-push demux (issue #37)
   // ---------------------------------------------------------------------------
 
-  private connect(): Promise<WebSocket> {
+  /**
+   * Open the socket and install the SINGLE persistent frame handler. Resolves on `open`. From this
+   * point every inbound frame flows through {@link onMessage}, which demultiplexes by `req_id`.
+   */
+  private openSocket(): Promise<WebSocketLike> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.gatewayUrl);
+      let opened = false;
+      const ws = this.wsFactory(this.gatewayUrl);
       ws.binaryType = "arraybuffer";
-      ws.addEventListener("open", () => resolve(ws));
-      ws.addEventListener("error", (e) => reject(new GatewayError(`connect failed: ${String(e)}`)));
+      ws.addEventListener("open", () => {
+        opened = true;
+        resolve(ws);
+      });
+      ws.addEventListener("message", (event: MessageEvent) => this.onMessage(event));
+      ws.addEventListener("close", () => {
+        // Reject any in-flight requests so awaiters fail instead of hanging.
+        this.rejectAllPending(new GatewayError("connection closed"));
+        if (!this.closed) this.log("warn", "sync gateway connection closed");
+      });
+      ws.addEventListener("error", (e: Event) => {
+        if (!opened) reject(new GatewayError(`connect failed: ${String(e)}`));
+        this.rejectAllPending(new GatewayError(`WebSocket error: ${String(e)}`));
+        this.log("error", `sync gateway error: ${String(e)}`);
+      });
     });
   }
 
   /**
-   * Receive the next binary message from the WebSocket.  Rejects on close or error.
-   * Used only during the sequential handshake + sync-loop phases.
+   * The single message handler. Demultiplexes every frame by its `req_id` (issue #37):
+   *  - `req_id != 0` → resolve the matching pending request (never mis-consumed by a live push);
+   *  - `req_id == 0` → an unsolicited live-block push: buffer the block(s) and, once live, kick the
+   *    strict in-order applier.
    */
-  private recv(ws: WebSocket): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
-      const onMessage = (event: MessageEvent) => {
-        ws.removeEventListener("message", onMessage);
-        ws.removeEventListener("close", onClose);
-        ws.removeEventListener("error", onError);
-        const raw = event.data as ArrayBuffer | Uint8Array;
-        resolve(raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer));
-      };
-      const onClose = () => {
-        ws.removeEventListener("message", onMessage);
-        ws.removeEventListener("error", onError);
-        reject(new GatewayError("connection closed before response"));
-      };
-      const onError = (e: Event) => {
-        ws.removeEventListener("message", onMessage);
-        ws.removeEventListener("close", onClose);
-        reject(new GatewayError(`WebSocket error: ${String(e)}`));
-      };
-      ws.addEventListener("message", onMessage);
-      ws.addEventListener("close", onClose);
-      ws.addEventListener("error", onError);
+  private onMessage(event: MessageEvent): void {
+    if (this.closed) return;
+    let reqId: bigint;
+    let resp: SyncResponse;
+    try {
+      const raw = event.data as ArrayBuffer | Uint8Array;
+      const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer);
+      ({ reqId, resp } = decodeSyncFrame(bytes));
+    } catch (e) {
+      // A malformed frame is dropped — it must not crash the socket handler.
+      this.log("warn", `dropping undecodable frame: ${String(e)}`);
+      return;
+    }
+
+    if (reqId !== SYNC_LIVE_PUSH_ID) {
+      const pend = this.pending.get(reqId);
+      if (pend) {
+        this.pending.delete(reqId);
+        pend.resolve(resp);
+      } else {
+        this.log("warn", `unmatched response req_id ${reqId} (dropped)`);
+      }
+      return;
+    }
+
+    // Unsolicited live push (req_id 0): buffer for strict in-order application.
+    if (resp.tag === "Blocks") {
+      this.enqueueBlocks(resp.blocks.blocks);
+      if (this.live) void this.drain();
+    }
+  }
+
+  /**
+   * Send a correlated request and await the matching reply. Assigns the next `req_id`, sends the framed
+   * request, and resolves when {@link onMessage} routes the echoed-id reply back — so a live push can
+   * NEVER be consumed in place of this response. Rejects on timeout / socket close.
+   */
+  private request(req: SyncRequest): Promise<SyncResponse> {
+    const ws = this.ws;
+    if (!ws) return Promise.reject(new GatewayError("socket not open"));
+    const reqId = this.nextReqId++;
+    return new Promise<SyncResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(reqId)) {
+          reject(new GatewayError(`request ${reqId} timed out after ${this.requestTimeoutMs}ms`));
+        }
+      }, this.requestTimeoutMs);
+      this.pending.set(reqId, {
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      try {
+        ws.send(encodeSyncRequest(reqId, req));
+      } catch (e) {
+        this.pending.delete(reqId);
+        clearTimeout(timer);
+        reject(new GatewayError(`send failed: ${String(e)}`));
+      }
     });
+  }
+
+  /** Request a block range, returning the raw (opaque) block blobs. Throws if the reply is not `Blocks`. */
+  private async requestBlocks(from: bigint, to: bigint): Promise<Uint8Array[]> {
+    const resp = await this.request({ tag: "GetBlocks", getBlocks: { from, to } });
+    if (resp.tag !== "Blocks") {
+      throw new GatewayError(`expected Blocks response, got ${resp.tag}`);
+    }
+    return resp.blocks.blocks;
+  }
+
+  /**
+   * Re-query the gateway's CURRENT tip (issue #37 handshake gap). A re-sent Hello is answered by the
+   * gateway with a fresh Hello carrying its live tip; we read the height off the correlated reply.
+   */
+  private async requestTip(): Promise<bigint> {
+    const resp = await this.request({
+      tag: "Hello",
+      hello: {
+        genesisHash: fromHex(this.genesisHash),
+        chainId: BigInt(this.chainId),
+        tipHeight: this.localTip,
+        tipHash: new Uint8Array(32),
+        validator: null,
+        peerProof: new Uint8Array(0),
+        protocolVer: PROTOCOL_VERSION,
+      },
+    });
+    if (resp.tag !== "Hello") {
+      throw new GatewayError(`expected Hello (tip re-query), got ${resp.tag}`);
+    }
+    return resp.hello.tipHeight;
+  }
+
+  /** Reject and clear every in-flight request (on socket close / client close). */
+  private rejectAllPending(err: Error): void {
+    for (const pend of this.pending.values()) pend.reject(err);
+    this.pending.clear();
   }
 }
