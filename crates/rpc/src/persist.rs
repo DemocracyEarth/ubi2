@@ -338,6 +338,52 @@ pub struct ChainSnapshot {
     state: StateDto,
 }
 
+/// Why a loaded snapshot was refused (issue #39 / FU-20). A snapshot that fails any of these checks
+/// is rejected at [`load`] rather than booted, so a corrupt / hand-edited / swapped `chain.json`
+/// cannot bring the node up with divergent balances or a forged block history — the node fails
+/// closed and falls back to genesis instead.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SnapshotError {
+    /// The snapshot has no blocks, or its first block is not block number 0.
+    BadGenesis,
+    /// A block's stored `hash` does not equal `keccak(header)` recomputed from the block's own
+    /// header fields — the block was tampered with.
+    BlockHashMismatch { number: u64 },
+    /// Blocks do not form a contiguous, parent-linked chain (a non-sequential height, or a
+    /// `parent_hash` that does not point at the previous block's hash).
+    BrokenChain { number: u64 },
+    /// The `state_root` recomputed over the loaded `MemState` does not match the tip block's
+    /// committed `state_root` — the on-disk account/stream/registry state was tampered with.
+    StateRootMismatch { expected: B256, got: B256 },
+}
+
+impl std::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotError::BadGenesis => {
+                write!(f, "snapshot has no genesis block (block 0)")
+            }
+            SnapshotError::BlockHashMismatch { number } => {
+                write!(
+                    f,
+                    "block {number}: stored hash does not match its recomputed header hash"
+                )
+            }
+            SnapshotError::BrokenChain { number } => {
+                write!(
+                    f,
+                    "block {number}: broken parent linkage or non-sequential height"
+                )
+            }
+            SnapshotError::StateRootMismatch { expected, got } => write!(
+                f,
+                "state_root mismatch: tip block committed {expected} but the loaded state hashes to {got}"
+            ),
+        }
+    }
+}
+impl std::error::Error for SnapshotError {}
+
 // ---- mapping helpers ----
 
 fn verdict_to_dto(v: &CanonicalVerdict) -> VerdictDto {
@@ -1007,6 +1053,62 @@ impl ChainSnapshot {
     pub fn tip_height(&self) -> u64 {
         self.blocks.last().map(|b| b.number).unwrap_or(0)
     }
+
+    /// Verify the snapshot is internally consistent before it is trusted (issue #39 / FU-20). A
+    /// restart loads the persisted `(blocks, state)` pair directly instead of re-executing from
+    /// genesis, so nothing else re-derives it — this is the check that makes that trust sound:
+    ///
+    /// 1. **Genesis** — there is at least one block and the first is block number 0.
+    /// 2. **Block integrity + linkage** — every block's stored `hash` equals `keccak(header)`
+    ///    recomputed from its own fields (so a mutated header/`state_root`/`txs_root` is caught),
+    ///    and the blocks form a contiguous chain (`number` increments by 1, `parent_hash` points at
+    ///    the previous block).
+    /// 3. **State ↔ tip** — the `state_root` recomputed over the loaded `MemState` (the same
+    ///    `ubi2_runtime::state_root` the proposer commits at block time) matches the tip block's
+    ///    committed `state_root`, so any tampering with a balance / stream / registry entry diverges
+    ///    from the signed tip and is rejected.
+    ///
+    /// Returns the first mismatch; the caller ([`load`]) fails closed on any error.
+    pub fn verify(&self) -> Result<(), SnapshotError> {
+        // (1) Genesis present + rooted at block 0.
+        if self.blocks.first().map(|b| b.number) != Some(0) {
+            return Err(SnapshotError::BadGenesis);
+        }
+        // (2) Recompute each block's hash from its own header fields and check parent linkage.
+        let mut prev: Option<(u64, B256)> = None; // (number, hash) of the previous block
+        for dto in &self.blocks {
+            let blk = import_block(dto);
+            let recomputed = Block::compute_hash(
+                blk.number,
+                blk.parent_hash,
+                blk.timestamp,
+                blk.view,
+                blk.txs_root,
+                blk.state_root,
+                &blk.proposer,
+            );
+            if recomputed != blk.hash {
+                return Err(SnapshotError::BlockHashMismatch { number: blk.number });
+            }
+            if let Some((prev_number, prev_hash)) = prev {
+                if blk.number != prev_number + 1 || blk.parent_hash != prev_hash {
+                    return Err(SnapshotError::BrokenChain { number: blk.number });
+                }
+            }
+            prev = Some((blk.number, blk.hash));
+        }
+        // (3) The loaded state must hash to the tip block's committed state_root.
+        let tip_root = B256::from(unhex32(&self.blocks.last().expect("non-empty").state_root));
+        let state = import_state(&self.state);
+        let recomputed_root = B256::from(ubi2_runtime::state_root(&state));
+        if recomputed_root != tip_root {
+            return Err(SnapshotError::StateRootMismatch {
+                expected: tip_root,
+                got: recomputed_root,
+            });
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1045,6 +1147,12 @@ pub fn load(data_dir: &Path) -> std::io::Result<Option<ChainSnapshot>> {
     let bytes = std::fs::read(&target)?;
     let snap: ChainSnapshot = serde_json::from_slice(&bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // FU-20 (issue #39): never trust the on-disk snapshot verbatim. Recompute the `state_root` over
+    // the loaded state and re-derive every block hash + linkage; a corrupt / hand-edited / swapped
+    // `chain.json` is refused here (fail closed) so the node falls back to genesis instead of booting
+    // with divergent balances or a forged history.
+    snap.verify()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(Some(snap))
 }
 
@@ -1149,5 +1257,96 @@ mod tests {
             next.parent_hash, tip_before.1,
             "new block must link to the restored tip"
         );
+    }
+
+    // ---- issue #39 / FU-20: a loaded snapshot must be verified, not trusted verbatim ----
+
+    /// A pristine, un-tampered snapshot passes verification (this also proves `import_state` is
+    /// lossless w.r.t. the `state_root` — the loaded state hashes back to the committed tip root).
+    #[test]
+    fn verify_accepts_pristine_snapshot() {
+        let snap = populated_chain().export_snapshot();
+        assert_eq!(snap.verify(), Ok(()), "an honest snapshot must load");
+    }
+
+    /// Tampering with an account balance diverges the recomputed `state_root` from the tip block's
+    /// committed root — the exact "boots with divergent balances" attack FU-20 guards against.
+    #[test]
+    fn verify_rejects_tampered_balance() {
+        let mut snap = populated_chain().export_snapshot();
+        assert!(!snap.state.accounts.is_empty(), "seeded account present");
+        // Hand-edit: mint an arbitrary balance onto the first account.
+        snap.state.accounts[0].settled_balance = "999999999999999999999".to_string();
+        assert!(
+            matches!(snap.verify(), Err(SnapshotError::StateRootMismatch { .. })),
+            "a mutated balance must be rejected"
+        );
+    }
+
+    /// Mutating a block header field (here the timestamp) breaks that block's stored hash.
+    #[test]
+    fn verify_rejects_tampered_block_header() {
+        let mut snap = populated_chain().export_snapshot();
+        assert!(snap.blocks.len() >= 2, "genesis + at least one block");
+        snap.blocks[1].timestamp ^= 0x5a5a; // edit a header field without re-deriving the hash
+        assert_eq!(
+            snap.verify(),
+            Err(SnapshotError::BlockHashMismatch { number: 1 }),
+            "a mutated header must be rejected"
+        );
+    }
+
+    /// Dropping a middle block breaks parent-hash linkage / height contiguity.
+    #[test]
+    fn verify_rejects_broken_linkage() {
+        let mut snap = populated_chain().export_snapshot();
+        assert!(
+            snap.blocks.len() >= 3,
+            "need >=3 blocks to drop a middle one"
+        );
+        snap.blocks.remove(1); // now block 2 follows block 0
+        assert_eq!(
+            snap.verify(),
+            Err(SnapshotError::BrokenChain { number: 2 }),
+            "a gap in the chain must be rejected"
+        );
+    }
+
+    /// A snapshot with no genesis block is refused.
+    #[test]
+    fn verify_rejects_missing_genesis() {
+        let mut snap = populated_chain().export_snapshot();
+        snap.blocks.clear();
+        assert_eq!(snap.verify(), Err(SnapshotError::BadGenesis));
+    }
+
+    /// End-to-end: a tampered `chain.json` on disk is refused by `load` (fail closed) so the node
+    /// falls back to genesis instead of booting the forged state. This is the gap issue #39 reports.
+    #[test]
+    fn load_fails_closed_on_tampered_disk_snapshot() {
+        let chain = populated_chain();
+        let dir = std::env::temp_dir().join(format!("ubi2-persist-tamper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // An honest snapshot loads fine.
+        save(&dir, &chain.export_snapshot()).unwrap();
+        assert!(load(&dir).unwrap().is_some(), "honest snapshot loads");
+
+        // Rewrite the data dir with a hand-edited snapshot that mints a balance.
+        let mut tampered = chain.export_snapshot();
+        tampered.state.accounts[0].settled_balance = "42000000000000000000".to_string();
+        save(&dir, &tampered).unwrap();
+
+        // `unwrap_err` would require `Option<ChainSnapshot>: Debug`, so match instead.
+        match load(&dir) {
+            Err(e) => assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::InvalidData,
+                "load must reject a tampered snapshot: {e}"
+            ),
+            Ok(_) => panic!("load accepted a tampered snapshot — fail-closed check missing"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
