@@ -40,9 +40,12 @@ export { SELF_ENDPOINT, UBI2_SELF_SCOPE_SEED };
  *    Self's mock/test passports for de-risking the plumbing before a real passport / production
  *    VK is pinned, spec §4.1 VK STATUS note). Mainnet would use `"https"` — never mix them
  *    (spec EC-F-C1).
- *  - `disclosures` kept minimal (OFAC only) — the scope-bound nullifier is the Sybil key; we do
- *    not request more personal disclosure than the runtime currently binds (spec §10 "Config/
- *    disclosure lockstep").
+ *  - `disclosures` requests the PUBLIC anonymous PoH traits (Phase B): `nationality` (ISO-3166
+ *    alpha-3) + `gender` + `ofac`. These are low-entropy, non-identifying fields the runtime decodes
+ *    from `revealedData_packed` and surfaces on the soulbound PoH NFT. Identity fields (`name`,
+ *    `date_of_birth`, `passport_number`) are NEVER requested. Age flags (18+/21+/…) are added later via
+ *    an OPTIONAL additional `minimumAge` proof — the deterministic nullifier accumulates them onto the
+ *    same human without a DOB ever being disclosed.
  *
  * Throws if `endpoint` is empty or is a `localhost`/`127.0.0.1` URL — `@selfxyz/sdk-common`
  * enforces this because the Self app runs on a phone that cannot reach your laptop's loopback
@@ -60,6 +63,8 @@ export function buildSelfApp(address: string, endpoint: string): SelfApp {
     userIdType: "hex",
     userDefinedData: address,
     disclosures: {
+      nationality: true,
+      gender: true,
       ofac: true,
     },
   }).build();
