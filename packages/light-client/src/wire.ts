@@ -4,7 +4,7 @@
  * Byte-for-byte compatible with `crates/network::wire` Rust implementation:
  *  - Fixed-width integers: big-endian.
  *  - Variable-length byte fields: u32 big-endian length prefix.
- *  - WireBlock: number(u64) | parent_hash(32) | timestamp(u64) | txs_root(32) | state_root(32)
+ *  - WireBlock: number(u64) | parent_hash(32) | timestamp(u64) | view(u32) | txs_root(32) | state_root(32)
  *               | proposer(20) | proposer_sig(u32-prefixed) | tx_count(u32) | [tx(u32-prefixed)]
  *  - Hello: genesis_hash(32) | chain_id(u64) | tip_height(u64) | tip_hash(32)
  *           | validator_tag(u8) [+ addr(20)] | peer_proof(u32-prefixed) | protocol_ver(u16)
@@ -126,6 +126,7 @@ export interface WireBlock {
   number: bigint;
   parentHash: Uint8Array; // 32 bytes
   timestamp: bigint;
+  view: number; // u32 — M5 Stage B (spec 08 §2.2/§9): inserted after `timestamp`, before `txsRoot`
   txsRoot: Uint8Array; // 32 bytes
   stateRoot: Uint8Array; // 32 bytes
   proposer: Uint8Array; // 20 bytes
@@ -190,6 +191,7 @@ export function encodeWireBlock(b: WireBlock): Uint8Array {
   w.u64(b.number);
   w.bytes(b.parentHash);
   w.u64(b.timestamp);
+  w.u32(b.view);
   w.bytes(b.txsRoot);
   w.bytes(b.stateRoot);
   w.bytes(b.proposer);
@@ -206,6 +208,7 @@ export function decodeWireBlock(buf: Uint8Array): WireBlock {
   const number = r.u64();
   const parentHash = r.take(32);
   const timestamp = r.u64();
+  const view = r.u32();
   const txsRoot = r.take(32);
   const stateRoot = r.take(32);
   const proposer = r.take(20);
@@ -217,7 +220,7 @@ export function decodeWireBlock(buf: Uint8Array): WireBlock {
     txs.push(r.blob(MAX_TX_BYTES));
   }
   r.finish();
-  return { number, parentHash, timestamp, txsRoot, stateRoot, proposer, proposerSig, txs };
+  return { number, parentHash, timestamp, view, txsRoot, stateRoot, proposer, proposerSig, txs };
 }
 
 // ---------------------------------------------------------------------------

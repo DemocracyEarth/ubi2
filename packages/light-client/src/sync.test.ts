@@ -24,18 +24,21 @@
 
 import { LightClient } from "./client.js";
 import {
+  bytesEqual,
   decodeGetBlocks,
   decodeHello,
   decodeSyncFrame,
+  decodeWireBlock,
   encodeBlocks,
   encodeGenesis,
   encodeHello,
   encodeSyncRequest,
+  encodeWireBlock,
   fromHex,
   toHex,
   wireBlockNumber,
 } from "./wire.js";
-import type { SyncRequest } from "./wire.js";
+import type { SyncRequest, WireBlock } from "./wire.js";
 import type { BlockOutcome, ILightState, TipInfo } from "./wasm-types.js";
 import type { WebSocketLike } from "./client.js";
 
@@ -291,6 +294,71 @@ async function main(): Promise<void> {
     const { reqId, resp } = decodeSyncFrame(push);
     assertEq(reqId, 0n, "live-push req_id is 0");
     assertEq(resp.tag, "Blocks", "live-push body tag");
+  });
+
+  await test("WireBlock codec round-trips and matches the Rust byte layout (view: u32 after timestamp)", () => {
+    // A block with every field distinctively populated, incl. a NONZERO `view`, a 65-byte sig, and txs.
+    const block: WireBlock = {
+      number: 5n,
+      parentHash: new Uint8Array(32).fill(0x11),
+      timestamp: 1_700_000_010n,
+      view: 7,
+      txsRoot: new Uint8Array(32).fill(0x22),
+      stateRoot: new Uint8Array(32).fill(0x33),
+      proposer: new Uint8Array(20).fill(0x44),
+      proposerSig: new Uint8Array(65).fill(0x55),
+      txs: [new Uint8Array([0xaa, 0xbb]), new Uint8Array([0xcc])],
+    };
+
+    // (1) Round-trip: encode → decode preserves every field, including `view`.
+    const enc = encodeWireBlock(block);
+    const back = decodeWireBlock(enc);
+    assertEq(back.number, block.number, "rt number");
+    assert(bytesEqual(back.parentHash, block.parentHash), "rt parentHash");
+    assertEq(back.timestamp, block.timestamp, "rt timestamp");
+    assertEq(back.view, block.view, "rt view");
+    assert(bytesEqual(back.txsRoot, block.txsRoot), "rt txsRoot");
+    assert(bytesEqual(back.stateRoot, block.stateRoot), "rt stateRoot");
+    assert(bytesEqual(back.proposer, block.proposer), "rt proposer");
+    assert(bytesEqual(back.proposerSig, block.proposerSig), "rt proposerSig");
+    assertEq(back.txs.length, block.txs.length, "rt txs length");
+    for (let i = 0; i < block.txs.length; i++) {
+      assert(bytesEqual(back.txs[i]!, block.txs[i]!), `rt tx ${i}`);
+    }
+
+    // (2) Cross-language layout: rebuild the expected bytes INDEPENDENTLY of the Writer, in Rust field
+    // order (crates/network::wire `WireBlock::encode`):
+    //   number(u64) | parent_hash(32) | timestamp(u64) | view(u32) | txs_root(32) | state_root(32)
+    //     | proposer(20) | proposer_sig(u32-prefixed) | tx_count(u32) | [tx(u32-prefixed)]
+    const parts: number[] = [];
+    const pushU32 = (v: number): void => {
+      parts.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+    };
+    const pushU64 = (v: bigint): void => {
+      for (let i = 7; i >= 0; i--) parts.push(Number((v >> BigInt(i * 8)) & 0xffn));
+    };
+    const pushBytes = (b: Uint8Array): void => {
+      for (const x of b) parts.push(x);
+    };
+    const pushBlob = (b: Uint8Array): void => {
+      pushU32(b.length);
+      pushBytes(b);
+    };
+    pushU64(block.number);
+    pushBytes(block.parentHash);
+    pushU64(block.timestamp);
+    pushU32(block.view);
+    pushBytes(block.txsRoot);
+    pushBytes(block.stateRoot);
+    pushBytes(block.proposer);
+    pushBlob(block.proposerSig);
+    pushU32(block.txs.length);
+    for (const tx of block.txs) pushBlob(tx);
+    assert(bytesEqual(enc, new Uint8Array(parts)), "encoded bytes match the Rust WireBlock layout");
+
+    // (3) Pin `view` at its exact offset: number(8) + parent_hash(32) + timestamp(8) = 48. A u32 BE.
+    const viewAt48 = new DataView(enc.buffer, enc.byteOffset + 48, 4).getUint32(0, false);
+    assertEq(viewAt48, block.view, "view is a u32 big-endian at offset 48 (between timestamp and txsRoot)");
   });
 
   await test("scenario 1: live push DURING GetGenesis is not mis-consumed as the Genesis reply", async () => {
