@@ -279,16 +279,16 @@ fn d3_token_uri_structure_and_brand() {
     assert!(svg.contains("</svg>"), "D3: SVG must close");
     assert!(svg.contains("Proof of Humanity"), "D3: SVG missing brand");
     assert!(
-        svg.contains("#FFFF00"),
-        "D3: SVG missing yellow gradient stop"
+        svg.contains("#FFE24B"),
+        "D3: SVG missing gold gradient stop"
     );
     assert!(
-        svg.contains("#FF6699"),
+        svg.contains("#FF6B8A"),
         "D3: SVG missing pink gradient stop"
     );
     assert!(
-        svg.contains("url(#poh)"),
-        "D3: SVG fingerprint not gradient-filled"
+        svg.contains("url(#g)"),
+        "D3: SVG head emblem not gradient-filled"
     );
     // No float: the gradient coords are integer literals in the SVG.
     assert!(

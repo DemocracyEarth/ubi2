@@ -75,6 +75,7 @@ use humanity::{
     u64_topic as h_u64_topic, HumanityOp, HUMANITY_HUB,
 };
 
+pub mod poh_countries;
 pub mod poh_nft;
 use poh_nft::{
     addr_of_token_id, render_token_uri as render_poh_token_uri, token_id_of,
