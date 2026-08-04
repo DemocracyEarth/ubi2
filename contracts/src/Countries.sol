@@ -21,7 +21,9 @@ library Countries {
             uint8 len = uint8(d[i + 5]);
             if (d[i] == a3[0] && d[i + 1] == a3[1] && d[i + 2] == a3[2]) {
                 bytes memory nm = new bytes(len);
-                for (uint256 j = 0; j < len; j++) nm[j] = d[i + 6 + j];
+                for (uint256 j = 0; j < len; j++) {
+                    nm[j] = d[i + 6 + j];
+                }
                 return (true, _flag(d[i + 3], d[i + 4]), string(nm));
             }
             i += 6 + len;
@@ -33,8 +35,14 @@ library Countries {
     ///      (U+1F1E6 + (letter - 'A')), each 4 UTF-8 bytes F0 9F 87 (A6+idx).
     function _flag(bytes1 c0, bytes1 c1) private pure returns (string memory) {
         bytes memory f = new bytes(8);
-        f[0] = 0xF0; f[1] = 0x9F; f[2] = 0x87; f[3] = bytes1(uint8(0xA6) + (uint8(c0) - 65));
-        f[4] = 0xF0; f[5] = 0x9F; f[6] = 0x87; f[7] = bytes1(uint8(0xA6) + (uint8(c1) - 65));
+        f[0] = 0xF0;
+        f[1] = 0x9F;
+        f[2] = 0x87;
+        f[3] = bytes1(uint8(0xA6) + (uint8(c0) - 65));
+        f[4] = 0xF0;
+        f[5] = 0x9F;
+        f[6] = 0x87;
+        f[7] = bytes1(uint8(0xA6) + (uint8(c1) - 65));
         return string(f);
     }
 }

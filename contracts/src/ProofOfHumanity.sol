@@ -369,9 +369,7 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
         string memory image = cardRenderer == address(0)
             ? ""
             : string.concat(
-                ',"image":"',
-                IPoHCardRenderer(cardRenderer).render(tokenId, a.ageFlags, a.nationality, a.gender),
-                '"'
+                ',"image":"', IPoHCardRenderer(cardRenderer).render(tokenId, a.ageFlags, a.nationality, a.gender), '"'
             );
 
         string memory json = string.concat(

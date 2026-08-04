@@ -128,7 +128,9 @@ contract PoHCardRendererTest is Test {
 
     function test_Render_AgeUsesHighestBit() public view {
         // 13+ and 18+ set -> highest disclosed threshold shown.
-        string memory svg = string(_base64Decode(_afterPrefix(renderer.render(1, 0x03, bytes3("ARG"), SEX_F), "data:image/svg+xml;base64,")));
+        string memory svg = string(
+            _base64Decode(_afterPrefix(renderer.render(1, 0x03, bytes3("ARG"), SEX_F), "data:image/svg+xml;base64,"))
+        );
         assertTrue(_contains(svg, "18 or older"));
         assertFalse(_contains(svg, "13 or older"));
     }
