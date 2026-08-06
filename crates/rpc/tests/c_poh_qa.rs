@@ -9,7 +9,7 @@
 //!   * `setApprovalForAll` reverts (soulbound).
 //!   * `safeTransferFrom` reverts (soulbound).
 //!   * The address in the SVG card matches the verified human's address.
-//!   * The fingerprint gradient colours (#FFFF00 / #FF6699) appear in the inline SVG.
+//!   * The locked card gradient colours (#FFE24B / #FF6B8A) appear in the inline SVG.
 //!
 //! Uses the same in-process `ubi2_rpc::serve` server + devnet Chain as the existing poh_nft suite.
 
@@ -248,8 +248,8 @@ async fn token_uri_attributes_contain_date_vouches_reputation() {
         "SVG must embed (part of) the verified address, got none of {dev_hex}"
     );
     assert!(
-        svg.contains("#FFFF00") && svg.contains("#FF6699"),
-        "SVG must contain yellow→pink gradient stops #FFFF00 and #FF6699"
+        svg.contains("#FFE24B") && svg.contains("#FF6B8A"),
+        "SVG must contain the locked gold→pink gradient stops #FFE24B and #FF6B8A"
     );
     assert!(
         svg.contains("Proof of Humanity"),

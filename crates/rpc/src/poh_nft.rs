@@ -197,45 +197,143 @@ pub struct CardData {
     /// M6: the assurance level (STD/ENH/DUAL — spec §5.5/EC-6) reflected on the soulbound card. No PII —
     /// only the level string (I6).
     pub assurance: Assurance,
+    /// Phase B: the decoded Self PUBLIC attributes (nationality / gender / age lower-bound / OFAC-clear),
+    /// surfaced as anonymous NFT traits. All-empty (`default`) for a human with no disclosed attributes
+    /// (e.g. an M3 social-path human, or a ZK human whose proof disclosed nothing). Never any PII.
+    pub attributes: ubi2_runtime::SelfAttributes,
 }
 
-/// Render the PoH SVG card (viewBox `0 0 500 500`): a dark card with the gradient-filled fingerprint
-/// mark, "Proof of Humanity", "Verified human", the short address, verified date, vouch count and
-/// reputation. Pure string-templating; all interpolated text is XML-escaped.
-pub fn render_svg(card: &CardData) -> String {
-    let short = xml_escape(&truncate_addr(&card.address));
-    let verified = xml_escape(&fmt_date(card.verified_at));
-    let vouches = card.vouches;
-    let reputation = card.reputation;
-    // M6: the assurance level badge (STD/ENH/DUAL — EC-6). No PII, only the level string (I6).
-    let level = card.assurance.as_str();
-    let level_label = assurance_label(card.assurance);
+// ---------------------------------------------------------------------------------------------
+// Locked card (viewBox 640x900). Ported verbatim from the reference generator (`card.mjs`,
+// `renderCard`): the same gradients, coordinates and static chrome. Only the three DISCLOSED
+// ATTRIBUTE rows + the TOKEN ID slot are dynamic; everything else is copied byte-for-byte.
+// ---------------------------------------------------------------------------------------------
 
+/// A green check tick (distinct from the gold/pink brand accents) centred at `(cx, cy)`.
+fn card_tick(cx: i32, cy: i32) -> String {
+    let a = cx - 6;
     format!(
-        r##"<svg width="100%" viewBox="0 0 500 500" role="img" xmlns="http://www.w3.org/2000/svg"><title>Proof of Humanity</title><desc>Verified human {short}, {level_label}, verified {verified}, {vouches} vouches, reputation {reputation}.</desc>
-<defs><linearGradient id="poh" gradientUnits="userSpaceOnUse" x1="190" y1="70" x2="310" y2="250"><stop offset="0%" stop-color="#FFFF00"/><stop offset="100%" stop-color="#FF6699"/></linearGradient></defs>
-<rect x="0" y="0" width="500" height="500" rx="28" fill="#0b0b0f" stroke="#2a2a36"/>
-<g transform="translate(186,52) scale(0.34)"><path fill="url(#poh)" stroke="none" d="{FINGERPRINT_PATH}"/></g>
-<text x="250" y="232" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="30" font-weight="700" fill="#ffffff">Proof of Humanity</text>
-<g transform="translate(250,262)"><rect x="-78" y="-16" width="156" height="30" rx="15" fill="#0d2419" stroke="#009966"/><circle cx="-58" cy="-1" r="4" fill="#009966"/><text x="6" y="4" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#34d399">Verified human</text></g>
-<g transform="translate(250,300)"><rect x="-40" y="-14" width="80" height="24" rx="12" fill="#1a1430" stroke="#7c5cff"/><text x="0" y="3" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12" font-weight="700" fill="#b9a6ff">{level}</text></g>
-<text x="250" y="340" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="18" fill="#e8e8ec">{short}</text>
-<line x1="60" y1="368" x2="440" y2="368" stroke="#1b1b24"/>
-<text x="78" y="396" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Verified since</text><text x="78" y="416" font-size="15" fill="#e8e8ec" font-family="ui-sans-serif,system-ui,sans-serif">{verified}</text>
-<text x="250" y="396" text-anchor="middle" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Vouches</text><text x="250" y="416" text-anchor="middle" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{vouches}</text>
-<text x="422" y="396" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">Reputation</text><text x="422" y="416" text-anchor="end" font-size="15" fill="#e8e8ec" font-family="ui-monospace,Menlo,monospace">{reputation}</text>
-<line x1="60" y1="448" x2="440" y2="448" stroke="#1b1b24"/>
-<text x="78" y="474" font-size="12" fill="#6f6f78" font-family="ui-monospace,Menlo,monospace">soulbound · proof of humanity</text><text x="422" y="474" text-anchor="end" font-size="12" fill="#6f6f78" font-family="ui-sans-serif,system-ui,sans-serif">POH</text></svg>"##
+        r##"<circle cx="{cx}" cy="{cy}" r="13" fill="none" stroke="url(#ok)" stroke-width="1.6"/><path d="M{a} {cy} l4 4 l8 -8.5" fill="none" stroke="url(#ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"##
     )
 }
 
-/// A human-readable assurance-level label for the card `desc` / metadata (no PII — only the level).
-fn assurance_label(a: Assurance) -> &'static str {
-    match a {
-        Assurance::Std => "standard assurance",
-        Assurance::Enh => "ZK-passport enhanced",
-        Assurance::Dual => "dual (vouching + ZK-passport)",
-    }
+/// The gold globe icon (Nationality row), vertically centred on `cy`.
+fn card_globe(cy: i32) -> String {
+    let up = cy - 6;
+    let dn = cy + 6;
+    format!(
+        r##"<circle cx="84" cy="{cy}" r="12" fill="none" stroke="url(#g)" stroke-width="1.5"/><ellipse cx="84" cy="{cy}" rx="5" ry="12" fill="none" stroke="url(#g)" stroke-width="1.5"/><line x1="72.5" y1="{cy}" x2="95.5" y2="{cy}" stroke="url(#g)" stroke-width="1.5"/><line x1="75.5" y1="{up}" x2="92.5" y2="{up}" stroke="url(#g)" stroke-width="1.2" stroke-opacity="0.75"/><line x1="75.5" y1="{dn}" x2="92.5" y2="{dn}" stroke="url(#g)" stroke-width="1.2" stroke-opacity="0.75"/>"##
+    )
+}
+
+/// The gold shield icon (Legal age row), vertically centred on `cy`.
+fn card_shield(cy: i32) -> String {
+    let a = cy - 13;
+    let b = cy - 1;
+    format!(
+        r##"<path d="M84 {a} l11 4 v7 q0 9 -11 15 q-11 -6 -11 -15 v-7 z" fill="none" stroke="url(#g)" stroke-width="1.5" stroke-linejoin="round"/><path d="M79 {b} l3.5 3.5 l6 -7" fill="none" stroke="url(#g)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"##
+    )
+}
+
+/// The gold person icon (Gender row), vertically centred on `cy`.
+fn card_person(cy: i32) -> String {
+    let a = cy - 5;
+    let b = cy + 11;
+    format!(
+        r##"<circle cx="84" cy="{a}" r="5.5" fill="none" stroke="url(#g)" stroke-width="1.5"/><path d="M73 {b} q11 -13 22 0" fill="none" stroke="url(#g)" stroke-width="1.5" stroke-linecap="round"/>"##
+    )
+}
+
+/// One attribute row: icon + label (left), value + green tick (right). `value_fill` is the raw SVG
+/// paint for the value text (`#F2F2F4` or `url(#g)`); `label`/`value` are XML-escaped.
+fn card_row(cy: i32, icon: &str, label: &str, value: &str, value_fill: &str) -> String {
+    let top = cy - 26;
+    let text_y = cy + 6;
+    let label = xml_escape(label);
+    let value = xml_escape(value);
+    let tick = card_tick(558, cy);
+    format!(
+        r##"<rect x="52" y="{top}" width="536" height="52" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>{icon}<text x="116" y="{text_y}" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="#EAEAEE">{label}</text><text x="524" y="{text_y}" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="{value_fill}">{value}</text>{tick}"##
+    )
+}
+
+/// Render the locked PoH card (viewBox `0 0 640 900`): the "Proof of Humanity" hero, "Verified with
+/// Self", the centred head emblem + orbital ring, a "DISCLOSED ATTRIBUTES" panel with three rows
+/// (Nationality / Legal age / Gender) driven by the disclosed [`ubi2_runtime::SelfAttributes`], and the
+/// zero-knowledge footer. Pure string-templating; all interpolated text is XML-escaped (invariant I1).
+pub fn render_svg(card: &CardData) -> String {
+    // TOKEN ID: the short address form (e.g. `0xf3f3…f3f3`).
+    let token_id = xml_escape(&truncate_addr(&card.address));
+
+    // Nationality: alpha-3 → "<flag> <name>" via the country table, else "Not disclosed" (no flag).
+    let nationality = match crate::poh_countries::lookup(&card.attributes.nationality) {
+        Some((flag, name)) => format!("{flag} {name}"),
+        None => "Not disclosed".to_string(),
+    };
+    // Legal age: the proven lower bound → "<n> or older", else "Not disclosed".
+    let age = if card.attributes.older_than > 0 {
+        format!("{} or older", card.attributes.older_than)
+    } else {
+        "Not disclosed".to_string()
+    };
+    // Gender: the title-cased card label; undisclosed → "Not disclosed".
+    let gender = match card.attributes.gender_label() {
+        "male" => "Male",
+        "female" => "Female",
+        "other" => "Other",
+        _ => "Not disclosed",
+    };
+
+    let rows = format!(
+        "{}{}{}",
+        card_row(
+            602,
+            &card_globe(602),
+            "Nationality",
+            &nationality,
+            "#F2F2F4"
+        ),
+        card_row(664, &card_shield(664), "Legal age", &age, "url(#g)"),
+        card_row(726, &card_person(726), "Gender", gender, "url(#g)"),
+    );
+
+    format!(
+        r##"<svg width="640" height="900" viewBox="0 0 640 900" xmlns="http://www.w3.org/2000/svg" role="img"><title>Proof of Humanity</title>
+<defs>
+<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFE24B"/><stop offset="52%" stop-color="#FF9A55"/><stop offset="100%" stop-color="#FF6B8A"/></linearGradient>
+<linearGradient id="ok" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#6EE7B7"/><stop offset="100%" stop-color="#22C55E"/></linearGradient>
+<linearGradient id="card" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#101016"/><stop offset="100%" stop-color="#08080B"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="40%" r="42%"><stop offset="0%" stop-color="#FF7A66" stop-opacity="0.15"/><stop offset="100%" stop-color="#000000" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="640" height="900" fill="#000000"/>
+<rect width="640" height="900" fill="url(#glow)"/>
+<path d="M54 24 H562 L616 78 V846 A30 30 0 0 1 586 876 H54 A30 30 0 0 1 24 846 V54 A30 30 0 0 1 54 24 Z" fill="url(#card)" stroke="url(#g)" stroke-width="2"/>
+<path d="M70 58 L74 74 L90 78 L74 82 L70 98 L66 82 L50 78 L66 74 Z" fill="url(#g)" opacity="0.9"/>
+<text x="584" y="62" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="3" fill="#C9A24E">TOKEN ID</text>
+<text x="584" y="86" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="16" fill="#E8E8EC">{token_id}</text>
+<text x="54" y="156" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="800" letter-spacing="-1.5" fill="#F5F5F7">Proof of</text>
+<text x="54" y="212" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="800" letter-spacing="-1.5" fill="#F5F5F7">Humanity</text>
+<text x="56" y="250" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="23" font-weight="600" fill="url(#g)">Verified with Self</text>
+<circle cx="320" cy="400" r="120" fill="none" stroke="url(#g)" stroke-opacity="0.30" stroke-width="1" stroke-dasharray="1.5 7"/>
+<circle cx="200" cy="400" r="3.5" fill="url(#g)"/>
+<circle cx="440" cy="400" r="3.5" fill="url(#g)"/>
+<circle cx="320" cy="400" r="94" fill="#0B0B10" stroke="url(#g)" stroke-opacity="0.55" stroke-width="1.5"/>
+<g transform="translate(269,340) scale(0.276)"><path fill="url(#g)" d="{FINGERPRINT_PATH}"/></g>
+<line x1="64" y1="556" x2="212" y2="556" stroke="url(#g)" stroke-opacity="0.4"/>
+<line x1="428" y1="556" x2="576" y2="556" stroke="url(#g)" stroke-opacity="0.4"/>
+<text x="320" y="561" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" letter-spacing="5" fill="#C9A24E">DISCLOSED ATTRIBUTES</text>
+{rows}
+<rect x="52" y="768" width="536" height="64" rx="16" fill="#100C0E" stroke="url(#g)" stroke-opacity="0.32"/>
+<path d="M92 786 l14 5 v9 q0 11 -14 19 q-14 -8 -14 -19 v-9 z" fill="none" stroke="url(#g)" stroke-width="1.6" stroke-linejoin="round"/>
+<path d="M85 801 l4.5 4.5 l8 -9" fill="none" stroke="url(#g)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="122" y="795" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="700" fill="#F5F5F7">Verified · Privacy Preserved</text>
+<text x="122" y="817" font-family="Helvetica,Arial,sans-serif" font-size="13" fill="#8A8A92">Zero-Knowledge Proof</text>
+<circle cx="548" cy="800" r="17" fill="none" stroke="url(#ok)" stroke-width="1.6" stroke-dasharray="2 4"/>
+<path d="M540 800 l5 5 l10 -11" fill="none" stroke="url(#ok)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M70 852 l9 14 l-9 5 z" fill="url(#g)" opacity="0.85"/><path d="M70 852 l-9 14 l9 5 z" fill="url(#g)" opacity="0.55"/>
+<text x="96" y="862" font-family="Helvetica,Arial,sans-serif" font-size="12" letter-spacing="0.4" fill="#C9A24E">UBI Chain · Native · Soulbound</text>
+</svg>"##
+    )
 }
 
 /// Build the full `tokenURI` data document for `card`: a `data:application/json;base64,…` whose
@@ -256,8 +354,32 @@ pub fn render_token_uri(card: &CardData) -> String {
          unique human. Fully on-chain on UBI."
     );
 
+    // Phase B: the anonymous public attribute traits, rendered only when disclosed (an undisclosed
+    // field decodes to empty and is omitted — never a placeholder). Identity is never surfaced.
+    let mut extra = String::new();
+    let nationality = card.attributes.nationality_str();
+    if !nationality.is_empty() {
+        extra.push_str(&format!(
+            r#",{{"trait_type":"Nationality","value":"{}"}}"#,
+            json_escape(nationality)
+        ));
+    }
+    let gender = card.attributes.gender_label();
+    if !gender.is_empty() {
+        extra.push_str(&format!(r#",{{"trait_type":"Gender","value":"{gender}"}}"#));
+    }
+    if card.attributes.older_than > 0 {
+        extra.push_str(&format!(
+            r#",{{"trait_type":"Age","value":"{}+"}}"#,
+            card.attributes.older_than
+        ));
+    }
+    if card.attributes.ofac_clear {
+        extra.push_str(r#",{"trait_type":"OFAC","value":"clear"}"#);
+    }
+
     let json = format!(
-        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Assurance","value":"{assurance}"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}]}}"#,
+        r#"{{"name":"{name}","description":"{description}","image":"{image}","attributes":[{{"trait_type":"Status","value":"Verified"}},{{"trait_type":"Assurance","value":"{assurance}"}},{{"trait_type":"Address","value":"{addr}"}},{{"display_type":"date","trait_type":"Verified since","value":{verified_at}}},{{"trait_type":"Verified date","value":"{verified}"}},{{"trait_type":"Vouches","value":{vouches}}},{{"trait_type":"Reputation","value":{reputation}}}{extra}]}}"#,
         name = json_escape(&name),
         description = json_escape(&description),
         image = image, // base64, no escaping needed
@@ -267,6 +389,7 @@ pub fn render_token_uri(card: &CardData) -> String {
         verified = json_escape(&verified),
         vouches = card.vouches,
         reputation = card.reputation,
+        extra = extra,
     );
 
     let json_b64 = B64.encode(json.as_bytes());
@@ -286,7 +409,47 @@ mod tests {
             vouches: 2,
             reputation: 7,
             assurance: Assurance::Std,
+            attributes: ubi2_runtime::SelfAttributes::default(),
         }
+    }
+
+    #[test]
+    fn card_surfaces_disclosed_public_attributes_and_omits_undisclosed() {
+        let mut c = card(AlloyAddr::from([0xcd; 20]));
+        c.attributes = ubi2_runtime::SelfAttributes {
+            nationality: *b"USA",
+            gender: b'F',
+            older_than: 18,
+            ofac_clear: true,
+        };
+        let uri = render_token_uri(&c);
+        let b64 = uri.strip_prefix("data:application/json;base64,").unwrap();
+        let json = String::from_utf8(B64.decode(b64).unwrap()).unwrap();
+        assert!(
+            json.contains(r#"{"trait_type":"Nationality","value":"USA"}"#),
+            "nationality trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"Gender","value":"female"}"#),
+            "gender trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"Age","value":"18+"}"#),
+            "age trait"
+        );
+        assert!(
+            json.contains(r#"{"trait_type":"OFAC","value":"clear"}"#),
+            "ofac trait"
+        );
+
+        // A human with no disclosed attributes (default) surfaces none of them — no placeholders.
+        let plain = render_token_uri(&card(AlloyAddr::from([0x11; 20])));
+        let pj = String::from_utf8(
+            B64.decode(plain.strip_prefix("data:application/json;base64,").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!pj.contains("Nationality") && !pj.contains(r#""trait_type":"OFAC""#));
     }
 
     #[test]
@@ -323,16 +486,40 @@ mod tests {
 
     #[test]
     fn svg_contains_brand_and_live_values() {
-        let svg = render_svg(&card(AlloyAddr::from([0xf3; 20])));
+        let mut c = card(AlloyAddr::from([0xf3; 20]));
+        c.attributes = ubi2_runtime::SelfAttributes {
+            nationality: *b"ARG",
+            gender: b'F',
+            older_than: 18,
+            ofac_clear: false,
+        };
+        let svg = render_svg(&c);
         assert!(svg.starts_with("<svg") && svg.ends_with("</svg>"));
         assert!(svg.contains("Proof of Humanity"));
-        assert!(svg.contains("Verified human"));
-        assert!(svg.contains("0xf3f3…f3f3"));
-        // The PoH gradient stops are present.
-        assert!(svg.contains("#FFFF00") && svg.contains("#FF6699"));
-        // The fingerprint mark path is embedded with the gradient fill.
-        assert!(svg.contains("url(#poh)"));
+        // The locked brand gradient stops (gold → pink).
+        assert!(svg.contains("#FFE24B") && svg.contains("#FF6B8A"));
+        // The head emblem path is embedded with the gradient fill.
+        assert!(svg.contains("url(#g)"));
         assert!(svg.contains("M 347.25 181.1"));
+        // TOKEN ID is the short address form.
+        assert!(svg.contains("0xf3f3…f3f3"));
+        // The disclosed attributes are wired into the three rows.
+        assert!(svg.contains("Argentina"), "nationality name");
+        assert!(svg.contains("🇦🇷"), "nationality flag");
+        assert!(svg.contains("Female"), "gender");
+        assert!(svg.contains("18 or older"), "legal age");
+    }
+
+    #[test]
+    fn svg_undisclosed_attributes_show_not_disclosed() {
+        // A human with no disclosed attributes (default) renders "Not disclosed" in all three rows —
+        // no flag, no placeholder age/gender.
+        let svg = render_svg(&card(AlloyAddr::from([0x11; 20])));
+        assert_eq!(
+            svg.matches("Not disclosed").count(),
+            3,
+            "nationality + age + gender all undisclosed"
+        );
     }
 
     #[test]
@@ -352,8 +539,6 @@ mod tests {
                 json.contains(&format!("\"trait_type\":\"Assurance\",\"value\":\"{tag}\"")),
                 "tokenURI carries the {tag} assurance attribute"
             );
-            // The SVG badge carries the level too.
-            assert!(render_svg(&c).contains(tag));
         }
     }
 

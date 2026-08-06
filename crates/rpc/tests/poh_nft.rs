@@ -342,13 +342,10 @@ async fn verified_human_is_a_poh_token() {
     assert!(svg.starts_with("<svg") && svg.contains("</svg>"));
     assert!(svg.contains("Proof of Humanity"));
     assert!(
-        svg.contains("#FFFF00") && svg.contains("#FF6699"),
-        "card uses the yellow→pink PoH gradient"
+        svg.contains("#FFE24B") && svg.contains("#FF6B8A"),
+        "card uses the locked gold→pink PoH gradient"
     );
-    assert!(
-        svg.contains("url(#poh)"),
-        "fingerprint mark is gradient-filled"
-    );
+    assert!(svg.contains("url(#g)"), "head emblem is gradient-filled");
     println!(
         "[poh-nft] Verified DEV is token #{token_id}; tokenURI = {}",
         meta["name"]

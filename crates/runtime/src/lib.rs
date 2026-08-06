@@ -40,6 +40,9 @@ pub use lifecycle::{
 pub mod hash160;
 pub use hash160::{ripemd160, sha256, user_identifier_hash};
 
+pub mod self_attributes;
+pub use self_attributes::{decode_self_attributes, SelfAttributes};
+
 pub mod zkpoh;
 pub use zkpoh::{
     address_to_hash, csca_registry_root, current_date_to_epoch, self_identity_root_accepted,

@@ -91,6 +91,17 @@ interface IHumanityProofVerifier {
         returns (uint256 nullifier, Attributes memory attrs, address subject);
 }
 
+/// @title On-chain PoH card renderer seam.
+/// @notice Pluggable renderer that turns a token's public traits into an SVG image
+///         data-URI for {ProofOfHumanity.tokenURI}. Implemented by {PoHCardRenderer};
+///         kept as a separate contract so the ~8 KB card art never bloats the token.
+interface IPoHCardRenderer {
+    function render(uint256 tokenId, uint8 ageFlags, bytes3 nationality, uint8 gender)
+        external
+        pure
+        returns (string memory);
+}
+
 /*//////////////////////////////////////////////////////////////
                         PROOF OF HUMANITY
 //////////////////////////////////////////////////////////////*/
@@ -139,6 +150,11 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     ///         a threshold multisig via {setIssuer}.
     address public issuer;
 
+    /// @notice Optional on-chain card renderer ({IPoHCardRenderer}). When unset
+    ///         (`address(0)`), {tokenURI} omits the `"image"` field. Set via
+    ///         {setCardRenderer}.
+    address public cardRenderer;
+
     /// @notice Next token id to mint. Token ids start at 1; 0 means "unused".
     uint256 public nextId = 1;
 
@@ -162,6 +178,9 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
 
     /// @notice Emitted when the authorized voucher issuer is set or rotated.
     event IssuerUpdated(address indexed previousIssuer, address indexed newIssuer);
+
+    /// @notice Emitted when the on-chain card renderer is set, changed or cleared.
+    event CardRendererUpdated(address indexed previousRenderer, address indexed newRenderer);
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -208,6 +227,15 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
         address previous = issuer;
         issuer = newIssuer;
         emit IssuerUpdated(previous, newIssuer);
+    }
+
+    /// @notice Set (or clear) the on-chain card renderer used by {tokenURI}.
+    /// @dev Only the owner (same auth as {setIssuer}). Pass `address(0)` to unset,
+    ///      which makes {tokenURI} omit the `"image"` field again.
+    function setCardRenderer(address newRenderer) external onlyOwner {
+        address previous = cardRenderer;
+        cardRenderer = newRenderer;
+        emit CardRendererUpdated(previous, newRenderer);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -335,12 +363,23 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
                 string.concat('{"display_type":"date","trait_type":"Expiry","value":', Strings.toString(a.expiry), "}");
         }
 
+        // Optional fully on-chain card art. Omitted (valid JSON) when no renderer
+        // is configured. The renderer returns a self-contained data-URI whose only
+        // characters are the data-URI prefix + base64, so it needs no JSON-escaping.
+        string memory image = cardRenderer == address(0)
+            ? ""
+            : string.concat(
+                ',"image":"', IPoHCardRenderer(cardRenderer).render(tokenId, a.ageFlags, a.nationality, a.gender), '"'
+            );
+
         string memory json = string.concat(
             '{"name":"Proof of Humanity #',
             Strings.toString(tokenId),
             '","description":"',
             DESCRIPTION,
-            '","attributes":[',
+            '"',
+            image,
+            ',"attributes":[',
             _join(parts, n),
             "]}"
         );
