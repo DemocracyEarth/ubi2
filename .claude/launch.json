@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@ubi2/wallet", "dev"],
       "port": 3000
+    },
+    {
+      "name": "proofofhumanity",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@ubi2/proofofhumanity", "dev", "--port", "3007"],
+      "port": 3007
     }
   ]
 }

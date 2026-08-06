@@ -3,10 +3,9 @@
  *
  * Hand-mirrored from `contracts/src/ProofOfHumanity.sol`. The `HumanityVoucher` tuple field order
  * here MUST match the Solidity struct AND `app/lib/voucher.ts::VOUCHER_TYPES`:
- *   (address to, uint256 nullifier, uint8 ageFlags, bytes3 nationality, uint8 gender,
- *    bool ofacClear, uint64 expiry)
- * and the `Attributes` tuple returned by `attributesOf`:
- *   (uint8 ageFlags, bytes3 nationality, uint8 gender, bool ofacClear, uint64 expiry)
+ *   (address to, uint256 nullifier, uint32 epoch)
+ * The credential is minimal: per token the contract stores only `nullifier` + `epoch`. There are
+ * NO attribute getters — nationality / gender / age never touch the chain.
  */
 export const proofOfHumanityAbi = [
   {
@@ -20,11 +19,7 @@ export const proofOfHumanityAbi = [
         components: [
           { name: "to", type: "address" },
           { name: "nullifier", type: "uint256" },
-          { name: "ageFlags", type: "uint8" },
-          { name: "nationality", type: "bytes3" },
-          { name: "gender", type: "uint8" },
-          { name: "ofacClear", type: "bool" },
-          { name: "expiry", type: "uint64" },
+          { name: "epoch", type: "uint32" },
         ],
       },
       { name: "signature", type: "bytes" },
@@ -40,25 +35,6 @@ export const proofOfHumanityAbi = [
   },
   {
     type: "function",
-    name: "attributesOf",
-    stateMutability: "view",
-    inputs: [{ name: "tokenId", type: "uint256" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "ageFlags", type: "uint8" },
-          { name: "nationality", type: "bytes3" },
-          { name: "gender", type: "uint8" },
-          { name: "ofacClear", type: "bool" },
-          { name: "expiry", type: "uint64" },
-        ],
-      },
-    ],
-  },
-  {
-    type: "function",
     name: "hashVoucher",
     stateMutability: "view",
     inputs: [
@@ -68,15 +44,25 @@ export const proofOfHumanityAbi = [
         components: [
           { name: "to", type: "address" },
           { name: "nullifier", type: "uint256" },
-          { name: "ageFlags", type: "uint8" },
-          { name: "nationality", type: "bytes3" },
-          { name: "gender", type: "uint8" },
-          { name: "ofacClear", type: "bool" },
-          { name: "expiry", type: "uint64" },
+          { name: "epoch", type: "uint32" },
         ],
       },
     ],
     outputs: [{ name: "", type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "currentEpoch",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "isValid",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "", type: "bool" }],
   },
   {
     type: "function",
@@ -121,12 +107,3 @@ export const proofOfHumanityAbi = [
     outputs: [{ name: "", type: "bool" }],
   },
 ] as const;
-
-/** Decoded `Attributes` struct shape returned by `attributesOf`. */
-export interface OnChainAttributes {
-  ageFlags: number;
-  nationality: `0x${string}`;
-  gender: number;
-  ofacClear: boolean;
-  expiry: bigint;
-}

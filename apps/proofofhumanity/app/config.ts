@@ -112,6 +112,3 @@ export const SELF_MOCK_PASSPORT = SELF_ENV !== "production";
  */
 export const ISSUER_PRIVATE_KEY = (process.env.ISSUER_PRIVATE_KEY ??
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d") as Hex;
-
-/** Voucher deadline / credential lifetime: now + 365 days (uint64 seconds). */
-export const VOUCHER_TTL_SECONDS = 365n * 24n * 60n * 60n;

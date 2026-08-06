@@ -31,8 +31,10 @@ import { SELF_APP_NAME, SELF_SCOPE, SELF_ENDPOINT_TYPE } from "./config";
  *   - `userId`/`userDefinedData` = the connected EVM address (`userIdType: "hex"`). This is what
  *                      binds the proof to the wallet: the disclosed `userIdentifier` the backend
  *                      reads out is exactly this address, and the voucher's `to` is set from it.
- *   - `disclosures`  = { nationality, gender, ofac } — the public anonymous traits the PoH token
- *                      carries. (Age flags come from an OPTIONAL second proof; see page.tsx.)
+ *   - `disclosures`  = { ofac } only. The credential is MINIMAL — the proof asserts a unique human
+ *                      (the nullifier) and a sanctions screen; it discloses NO nationality / gender
+ *                      / age. Those stay zero-knowledge predicates a holder proves on demand, never
+ *                      stored on-chain and never mapped into the voucher.
  *
  * Throws if `endpoint` is empty or a loopback URL — callers should catch and show the caveat.
  */
@@ -47,8 +49,6 @@ export function buildSelfApp(address: string, endpoint: string): SelfApp {
     userIdType: "hex",
     userDefinedData: address,
     disclosures: {
-      nationality: true,
-      gender: true,
       ofac: true,
     },
   }).build();

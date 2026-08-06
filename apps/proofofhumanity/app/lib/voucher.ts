@@ -1,17 +1,24 @@
 /**
  * THE CRITICAL INTEGRATION SEAM — the EIP-712 "humanity voucher".
  *
- * This module builds and signs the exact `HumanityVoucher` that Phase C's on-chain
+ * This module builds and signs the exact `HumanityVoucher` that the on-chain
  * `ProofOfHumanity.mintWithVoucher(voucher, signature)` recovers a signer from. If the domain,
  * the type, or the field encoding here diverge from the contract by a single byte, the on-chain
  * `ECDSA.recover` yields a different address and the mint reverts `InvalidSigner`.
+ *
+ * The voucher is DELIBERATELY MINIMAL: it carries no personal data. It asserts only
+ *   - `to`         : the address that receives the soulbound credential;
+ *   - `nullifier`  : Self's deterministic per-identity nullifier (proves ONE unique human,
+ *                    reveals nothing about who they are);
+ *   - `epoch`      : the coarse 90-day validity epoch the human was verified in.
+ * No nationality / gender / age / OFAC values ever enter the voucher — those remain zero-knowledge
+ * predicates a holder can prove on demand, never stored on-chain.
  *
  * It is mirrored 1:1 against `contracts/src/ProofOfHumanity.sol`:
  *
  *   - EIP712("ProofOfHumanity", "1")  → domain { name:"ProofOfHumanity", version:"1", ... }
  *   - VOUCHER_TYPEHASH = keccak256(
- *       "HumanityVoucher(address to,uint256 nullifier,uint8 ageFlags,bytes3 nationality,"
- *       "uint8 gender,bool ofacClear,uint64 expiry)")  → the VOUCHER_TYPES field list below.
+ *       "HumanityVoucher(address to,uint256 nullifier,uint32 epoch)")  → VOUCHER_TYPES below.
  *
  * The `chainId` + `verifyingContract` in the domain are the target chain's id and the
  * ProofOfHumanity address deployed on THAT chain (the contract uses `block.chainid` +
@@ -34,11 +41,7 @@ export const VOUCHER_TYPES = {
   HumanityVoucher: [
     { name: "to", type: "address" },
     { name: "nullifier", type: "uint256" },
-    { name: "ageFlags", type: "uint8" },
-    { name: "nationality", type: "bytes3" },
-    { name: "gender", type: "uint8" },
-    { name: "ofacClear", type: "bool" },
-    { name: "expiry", type: "uint64" },
+    { name: "epoch", type: "uint32" },
   ],
 } as const;
 
@@ -48,38 +51,39 @@ export const VOUCHER_PRIMARY_TYPE = "HumanityVoucher" as const;
 export const DOMAIN_NAME = "ProofOfHumanity" as const;
 export const DOMAIN_VERSION = "1" as const;
 
-/** A voucher as viem/the contract ABI expect it (bigint numerics, hex bytes3). */
+/**
+ * The coarse validity epoch, in seconds. Mirrors the contract's
+ * `uint256 constant EPOCH = 90 days;`. `epochNow()` == the contract's `currentEpoch()`.
+ * A credential stores the epoch it was verified in; validity is a small window of epochs after it,
+ * so the ONLY time-derived fact on-chain is a coarse ~90-day bucket — never a passport date.
+ */
+export const EPOCH_SECONDS = 90 * 24 * 60 * 60;
+
+/** `floor(now / 90 days)` as a uint32 — equal to the contract's `currentEpoch()`. */
+export function epochNow(nowMs: number = Date.now()): number {
+  return Math.floor(nowMs / 1000 / EPOCH_SECONDS);
+}
+
+/** A voucher as viem/the contract ABI expect it (bigint nullifier, uint32 epoch as number). */
 export interface HumanityVoucher {
   to: Address;
   nullifier: bigint;
-  ageFlags: number;
-  /** bytes3 as a 3-byte (6 hex char) hex string, e.g. "0x415247" for "ARG". */
-  nationality: Hex;
-  gender: number;
-  ofacClear: boolean;
-  expiry: bigint;
+  /** The 90-day validity epoch the human was verified in (uint32). */
+  epoch: number;
 }
 
-/** JSON-safe voucher for transport over the relay (bigints as decimal strings). */
+/** JSON-safe voucher for transport over the relay (bigint nullifier as decimal string). */
 export interface SerializedVoucher {
   to: Address;
   nullifier: string;
-  ageFlags: number;
-  nationality: Hex;
-  gender: number;
-  ofacClear: boolean;
-  expiry: string;
+  epoch: number;
 }
 
 export function serializeVoucher(v: HumanityVoucher): SerializedVoucher {
   return {
     to: v.to,
     nullifier: v.nullifier.toString(),
-    ageFlags: v.ageFlags,
-    nationality: v.nationality,
-    gender: v.gender,
-    ofacClear: v.ofacClear,
-    expiry: v.expiry.toString(),
+    epoch: v.epoch,
   };
 }
 
@@ -87,11 +91,7 @@ export function deserializeVoucher(v: SerializedVoucher): HumanityVoucher {
   return {
     to: v.to,
     nullifier: BigInt(v.nullifier),
-    ageFlags: v.ageFlags,
-    nationality: v.nationality,
-    gender: v.gender,
-    ofacClear: v.ofacClear,
-    expiry: BigInt(v.expiry),
+    epoch: v.epoch,
   };
 }
 
@@ -121,8 +121,7 @@ export function voucherDigest(voucher: HumanityVoucher, chainId: number, verifyi
 
 /**
  * Sign a voucher with the issuer key. This is THE signature `mintWithVoucher` recovers and
- * requires `== issuer`. Uses viem's `privateKeyToAccount(...).signTypedData(...)` exactly as the
- * task specifies.
+ * requires `== issuer`. Uses viem's `privateKeyToAccount(...).signTypedData(...)`.
  */
 export async function signVoucher(
   issuerPrivateKey: Hex,
@@ -140,86 +139,30 @@ export async function signVoucher(
 }
 
 /*//////////////////////////////////////////////////////////////
-              ATTRIBUTE MAPPING (Self discloseOutput → voucher)
+              PROOF → VOUCHER (minimal: nullifier only)
 //////////////////////////////////////////////////////////////*/
 
-const AGE_13 = 0x01;
-const AGE_18 = 0x02;
-const AGE_21 = 0x04;
-const AGE_65 = 0x08;
-
 /**
- * ISO-3166-1 alpha-3 nationality string ("USA", "ARG", …) → `bytes3` = the 3 ASCII bytes.
- * "" / not exactly 3 chars → `0x000000` ("not disclosed"), matching `bytes3(0)` in the contract.
+ * The single field this app reads out of Self's verified proof: the nullifier that proves a
+ * unique human. Nationality / gender / age / OFAC are intentionally NOT mapped into the
+ * credential — they stay zero-knowledge predicates, provable on demand.
  */
-export function nationalityToBytes3(nat: string | undefined | null): Hex {
-  if (!nat || nat.length !== 3) return "0x000000";
-  let hex = "0x";
-  for (let i = 0; i < 3; i++) {
-    hex += (nat.charCodeAt(i) & 0xff).toString(16).padStart(2, "0");
-  }
-  return hex as Hex;
-}
-
-/**
- * Gender MRZ sex string ("M" / "F" / "<") → `uint8` = `charCodeAt(0)`.
- * "" / absent → 0 ("not disclosed"). The contract renders 0x4D→"male", 0x46→"female", else "other".
- */
-export function genderToUint8(gender: string | undefined | null): number {
-  if (!gender || gender.length === 0) return 0;
-  return gender.charCodeAt(0) & 0xff;
-}
-
-/**
- * `olderThan` lower bound (the proven minimum age, 0 if not disclosed) → `ageFlags` bitfield.
- * Because a proof of "≥ N" implies every ladder threshold ≤ N, we OR in each satisfied bit.
- */
-export function olderThanToAgeFlags(olderThan: number): number {
-  let flags = 0;
-  if (olderThan >= 13) flags |= AGE_13;
-  if (olderThan >= 18) flags |= AGE_18;
-  if (olderThan >= 21) flags |= AGE_21;
-  if (olderThan >= 65) flags |= AGE_65;
-  return flags;
-}
-
-/**
- * Self OFAC result → `ofacClear`. Self returns `boolean[]` (one entry per OFAC list check;
- * `true` = passed/clear). `ofacClear` is true only if EVERY check passed. An older `boolean`
- * shape is tolerated. An empty array (OFAC not requested) → false (not attested clear).
- */
-export function ofacToClear(ofac: boolean | boolean[] | undefined | null): boolean {
-  if (Array.isArray(ofac)) return ofac.length > 0 && ofac.every(Boolean);
-  return Boolean(ofac);
-}
-
-/** The subset of Self's `GenericDiscloseOutput` this app maps into a voucher. */
 export interface DiscloseLike {
   nullifier: string;
-  nationality?: string;
-  gender?: string;
-  /** Self's `minimumAge` is the proven lower bound ("olderThan"); "0"/absent = not disclosed. */
-  minimumAge?: string;
-  ofac?: boolean | boolean[];
 }
 
 /**
- * Map a verified Self `discloseOutput` + the bound recipient + an expiry into a full voucher.
- * `expiry` is the voucher deadline AND the on-chain credential expiry (Phase C uses one field).
+ * Map a verified Self proof + the bound recipient + the current epoch into a minimal voucher.
+ * `epoch` defaults to `epochNow()`; pass one explicitly only for deterministic tests.
  */
-export function buildVoucherFromDisclose(opts: {
+export function buildVoucher(opts: {
   discloseOutput: DiscloseLike;
   to: Address;
-  expiry: bigint;
+  epoch?: number;
 }): HumanityVoucher {
-  const olderThan = opts.discloseOutput.minimumAge ? Number.parseInt(opts.discloseOutput.minimumAge, 10) || 0 : 0;
   return {
     to: opts.to,
     nullifier: BigInt(opts.discloseOutput.nullifier),
-    ageFlags: olderThanToAgeFlags(olderThan),
-    nationality: nationalityToBytes3(opts.discloseOutput.nationality),
-    gender: genderToUint8(opts.discloseOutput.gender),
-    ofacClear: ofacToClear(opts.discloseOutput.ofac),
-    expiry: opts.expiry,
+    epoch: opts.epoch ?? epochNow(),
   };
 }

@@ -12,45 +12,24 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
                         SHARED TYPES
 //////////////////////////////////////////////////////////////*/
 
-/// @notice Public, anonymous attributes carried by a Proof-of-Humanity token.
-/// @dev These are the ONLY things the token ever exposes. It never stores or
-///      reveals identity (no name, date of birth, passport number, MRZ, etc).
-/// @param ageFlags   Monotone age-threshold bitfield: bit0=13+, bit1=18+,
-///                   bit2=21+, bit3=65+. Upper bits are reserved (must be 0).
-/// @param nationality ISO-3166-1 alpha-3 country code packed as 3 ASCII bytes
-///                   (e.g. "ARG"). `bytes3(0)` means "not disclosed".
-/// @param gender     Raw MRZ sex byte: 'M' (0x4D), 'F' (0x46) or '<' (0x3C,
-///                   unspecified). `0` means "not disclosed".
-/// @param ofacClear  True if the issuer attests the human is not on an OFAC list.
-/// @param expiry     Unix timestamp after which the credential is stale.
-struct Attributes {
-    uint8 ageFlags;
-    bytes3 nationality;
-    uint8 gender;
-    bool ofacClear;
-    uint64 expiry;
-}
-
 /// @notice Signed off-chain attestation ("humanity voucher") that a backend
 ///         which already verified a Self (self.xyz) ZK passport proof issues to
 ///         a human, to be redeemed on-chain via {ProofOfHumanity.mintWithVoucher}.
-/// @param to         The address that will hold (or already holds) the token.
-/// @param nullifier  Self's deterministic per-identity nullifier (a BN254 field
-///                   element). Enforces one-human-one-token PER chain.
-/// @param ageFlags   See {Attributes.ageFlags}.
-/// @param nationality See {Attributes.nationality}.
-/// @param gender     See {Attributes.gender}.
-/// @param ofacClear  See {Attributes.ofacClear}.
-/// @param expiry     Voucher deadline AND resulting credential expiry. The
-///                   voucher is only redeemable while `expiry > block.timestamp`.
+/// @dev MINIMAL by design: it carries NO personal attributes (no nationality,
+///      gender, age or expiry date). It only asserts "this address belongs to a
+///      unique verified human, first seen in `epoch`". Predicates over identity
+///      (age / nationality / sanctions) are proven off-chain on demand via
+///      zero-knowledge, never stored on-chain.
+/// @param to        The address that will hold (or already holds) the token.
+/// @param nullifier Self's deterministic per-identity nullifier (a BN254 field
+///                  element). Enforces one-human-one-token PER chain.
+/// @param epoch     The coarse validity epoch in which the human was verified
+///                  (`block.timestamp / EPOCH`). Stored on-chain to derive a
+///                  coarse credential validity window; carries no exact date.
 struct HumanityVoucher {
     address to;
     uint256 nullifier;
-    uint8 ageFlags;
-    bytes3 nationality;
-    uint8 gender;
-    bool ofacClear;
-    uint64 expiry;
+    uint32 epoch;
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -80,26 +59,25 @@ interface IERC5192 {
 ///         that bridges Self's root cross-chain). A `mintWithProof(bytes proof,
 ///         uint256[] publicSignals, bytes userContextData)` entrypoint would call
 ///         {verifyAndExtract} on an implementation of this interface, then apply
-///         the exact same nullifier-uniqueness / accumulation logic that
+///         the exact same nullifier-uniqueness logic that
 ///         {ProofOfHumanity.mintWithVoucher} uses today.
 /// @dev INTENTIONALLY UNIMPLEMENTED in this MVP. Declared only to fix the ABI
-///      seam so the trustless path is an additive, non-breaking change.
+///      seam so the trustless path is an additive, non-breaking change. It
+///      extracts only the nullifier + subject — no personal attributes ever
+///      cross the on-chain boundary.
 interface IHumanityProofVerifier {
     function verifyAndExtract(bytes calldata proof, uint256[] calldata publicSignals, bytes calldata userContextData)
         external
         view
-        returns (uint256 nullifier, Attributes memory attrs, address subject);
+        returns (uint256 nullifier, address subject);
 }
 
 /// @title On-chain PoH card renderer seam.
-/// @notice Pluggable renderer that turns a token's public traits into an SVG image
+/// @notice Pluggable renderer that turns a token's anonymous id into an SVG image
 ///         data-URI for {ProofOfHumanity.tokenURI}. Implemented by {PoHCardRenderer};
-///         kept as a separate contract so the ~8 KB card art never bloats the token.
+///         kept as a separate contract so the card art never bloats the token.
 interface IPoHCardRenderer {
-    function render(uint256 tokenId, uint8 ageFlags, bytes3 nationality, uint8 gender)
-        external
-        pure
-        returns (string memory);
+    function render(uint256 tokenId, uint256 nullifier) external pure returns (string memory);
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -109,8 +87,10 @@ interface IPoHCardRenderer {
 /// @title Proof of Humanity
 /// @notice A soulbound (ERC-5192), anonymous, cross-chain "unique human"
 ///         credential minted for anyone verified via a Self ZK passport proof.
-///         The token carries only PUBLIC anonymous traits (nationality, age
-///         flags, gender, OFAC-clear) and NEVER identity.
+///         The token carries NO personal data whatsoever — only a unique-human
+///         nullifier and a coarse validity epoch. It never stores or reveals
+///         nationality, gender, age or identity. Predicates over those live
+///         off-chain as zero-knowledge proofs, revealed only on demand.
 /// @dev MVP trust model: proofofhumanity.org's backend verifies the Self proof
 ///      off-chain and signs an EIP-712 {HumanityVoucher}; the human (or a
 ///      relayer on their behalf) redeems it here. Uniqueness is enforced per
@@ -127,24 +107,29 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     bytes4 public constant ERC5192_INTERFACE_ID = 0xb45a3c0e;
 
     /// @notice EIP-712 type hash of {HumanityVoucher}.
-    /// @dev Type string:
-    ///      "HumanityVoucher(address to,uint256 nullifier,uint8 ageFlags,bytes3 nationality,uint8 gender,bool ofacClear,uint64 expiry)"
-    bytes32 public constant VOUCHER_TYPEHASH = keccak256(
-        "HumanityVoucher(address to,uint256 nullifier,uint8 ageFlags,bytes3 nationality,uint8 gender,bool ofacClear,uint64 expiry)"
-    );
+    /// @dev Type string: "HumanityVoucher(address to,uint256 nullifier,uint32 epoch)".
+    bytes32 public constant VOUCHER_TYPEHASH = keccak256("HumanityVoucher(address to,uint256 nullifier,uint32 epoch)");
 
-    /// @dev Age-threshold bit masks.
-    uint8 private constant AGE_13 = 0x01;
-    uint8 private constant AGE_18 = 0x02;
-    uint8 private constant AGE_21 = 0x04;
-    uint8 private constant AGE_65 = 0x08;
+    /// @notice Length of a validity epoch. `currentEpoch() = block.timestamp / EPOCH`.
+    uint256 public constant EPOCH = 90 days;
+
+    /// @notice How many epochs a credential stays valid after its verified epoch.
+    ///         `VALIDITY_EPOCHS = 4` epochs of 90 days is ~1 year.
+    uint32 public constant VALIDITY_EPOCHS = 4;
 
     string private constant DESCRIPTION =
-        "Soulbound, anonymous proof of unique humanity verified via a zero-knowledge passport proof. Carries only public anonymous traits; never identity.";
+        "Soulbound, anonymous proof of unique humanity verified via a zero-knowledge passport proof. No personal data on-chain; predicates are proven off-chain on demand.";
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
+
+    /// @notice Minimal per-token state: the anonymous nullifier + the epoch the
+    ///         human was (re)verified in. NO personal attributes are ever stored.
+    struct TokenData {
+        uint256 nullifier;
+        uint32 epoch;
+    }
 
     /// @notice Address whose EIP-712 signature authorizes vouchers. Rotatable to
     ///         a threshold multisig via {setIssuer}.
@@ -162,8 +147,8 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     ///         Guarantees one-human-one-token per chain.
     mapping(uint256 nullifier => uint256 tokenId) public tokenOfNullifier;
 
-    /// @dev Per-token public attributes.
-    mapping(uint256 tokenId => Attributes) private _attributes;
+    /// @dev Per-token minimal state (nullifier + verified epoch).
+    mapping(uint256 tokenId => TokenData) private _tokens;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
@@ -172,9 +157,9 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     /// @notice Emitted when a brand-new humanity token is minted.
     event HumanityMinted(uint256 indexed tokenId, uint256 indexed nullifier, address indexed to);
 
-    /// @notice Emitted when an existing token is upgraded by a repeat proof for
-    ///         the same nullifier (new age bits OR-ed in, expiry refreshed, etc).
-    event HumanityUpgraded(uint256 indexed tokenId, uint256 indexed nullifier, uint8 ageFlags);
+    /// @notice Emitted when an existing token's validity epoch is refreshed by a
+    ///         newer proof for the same nullifier (monotonic; never downgrades).
+    event HumanityRefreshed(uint256 indexed tokenId, uint256 indexed nullifier, uint32 epoch);
 
     /// @notice Emitted when the authorized voucher issuer is set or rotated.
     event IssuerUpdated(address indexed previousIssuer, address indexed newIssuer);
@@ -192,11 +177,12 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     error InvalidSigner();
     /// @dev The voucher names the zero address as recipient.
     error InvalidRecipient();
-    /// @dev `voucher.expiry <= block.timestamp`; the voucher is expired.
-    error VoucherExpired();
     /// @dev A token already exists for this nullifier but is held by a different
     ///      address than `voucher.to` (attempted hijack of another human's token).
     error NullifierOwnerMismatch();
+    /// @dev A refresh voucher carries an older epoch than the one already stored
+    ///      (blocks downgrade / stale-epoch replay).
+    error EpochDowngrade();
     /// @dev The issuer may not be the zero address.
     error InvalidIssuer();
 
@@ -239,23 +225,22 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     }
 
     /*//////////////////////////////////////////////////////////////
-                              MINT / UPGRADE
+                              MINT / REFRESH
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Redeem a signed {HumanityVoucher} to mint (or upgrade) the caller's
+    /// @notice Redeem a signed {HumanityVoucher} to mint (or refresh) the caller's
     ///         Proof-of-Humanity token. `msg.sender` may be a relayer: the token
     ///         is always credited to `voucher.to`, and the issuer signature over
     ///         `to` is authoritative, so no `msg.sender` binding is needed.
-    /// @param voucher   The attributes + recipient + nullifier attested by the issuer.
+    /// @param voucher   The recipient + nullifier + verified epoch attested by the issuer.
     /// @param signature The issuer's EIP-712 signature over `voucher`.
-    /// @return tokenId  The minted or upgraded token id.
+    /// @return tokenId  The minted or refreshed token id.
     function mintWithVoucher(HumanityVoucher calldata voucher, bytes calldata signature)
         external
         returns (uint256 tokenId)
     {
         // --- Fail-closed validation ---
         if (voucher.to == address(0)) revert InvalidRecipient();
-        if (voucher.expiry <= block.timestamp) revert VoucherExpired();
 
         address signer = ECDSA.recover(_hashTypedDataV4(_structHash(voucher)), signature);
         if (signer != issuer) revert InvalidSigner();
@@ -266,40 +251,30 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
             // --- New human: mint a fresh soulbound token ---
             tokenId = nextId++;
             tokenOfNullifier[voucher.nullifier] = tokenId;
-            _attributes[tokenId] = Attributes({
-                ageFlags: voucher.ageFlags,
-                nationality: voucher.nationality,
-                gender: voucher.gender,
-                ofacClear: voucher.ofacClear,
-                expiry: voucher.expiry
-            });
+            _tokens[tokenId] = TokenData({nullifier: voucher.nullifier, epoch: voucher.epoch});
             // Non-safe mint: no ERC721Receiver callback (no reentrancy surface,
             // and soulbound credentials must reach contract wallets too).
             _mint(voucher.to, tokenId);
             emit Locked(tokenId); // ERC-5192
             emit HumanityMinted(tokenId, voucher.nullifier, voucher.to);
         } else {
-            // --- Repeat proof for the SAME nullifier: upgrade in place ---
+            // --- Repeat proof for the SAME nullifier: refresh the epoch in place ---
             // Anti-hijack: the voucher must name the current holder.
             if (ownerOf(existingId) != voucher.to) revert NullifierOwnerMismatch();
 
-            Attributes storage a = _attributes[existingId];
-            a.ageFlags |= voucher.ageFlags; // monotone: only add age thresholds
-            if (voucher.expiry > a.expiry) a.expiry = voucher.expiry; // refresh if newer
-            a.nationality = voucher.nationality;
-            a.gender = voucher.gender;
-            a.ofacClear = voucher.ofacClear;
+            TokenData storage t = _tokens[existingId];
+            // Monotonic: never downgrade the validity epoch (blocks stale-epoch replay).
+            if (voucher.epoch < t.epoch) revert EpochDowngrade();
+            t.epoch = voucher.epoch;
 
             tokenId = existingId;
-            emit HumanityUpgraded(existingId, voucher.nullifier, a.ageFlags);
+            emit HumanityRefreshed(existingId, voucher.nullifier, voucher.epoch);
         }
     }
 
     /// @dev EIP-712 struct hash of a voucher.
     function _structHash(HumanityVoucher calldata v) private pure returns (bytes32) {
-        return keccak256(
-            abi.encode(VOUCHER_TYPEHASH, v.to, v.nullifier, v.ageFlags, v.nationality, v.gender, v.ofacClear, v.expiry)
-        );
+        return keccak256(abi.encode(VOUCHER_TYPEHASH, v.to, v.nullifier, v.epoch));
     }
 
     /// @notice The EIP-712 digest a signer must sign for `voucher` (helper for
@@ -317,17 +292,29 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
                                 VIEWS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice The public attributes of `tokenId`. Reverts if it does not exist.
-    function attributesOf(uint256 tokenId) external view returns (Attributes memory) {
-        _requireOwned(tokenId);
-        return _attributes[tokenId];
+    /// @notice The current coarse validity epoch, `block.timestamp / EPOCH`.
+    function currentEpoch() public view returns (uint32) {
+        return uint32(block.timestamp / EPOCH);
     }
 
-    /// @notice Whether `tokenId`'s credential has passed its expiry. Reverts if
-    ///         the token does not exist.
-    function isExpired(uint256 tokenId) external view returns (bool) {
+    /// @notice The epoch `tokenId` was last (re)verified in. Reverts if it does
+    ///         not exist.
+    function epochOf(uint256 tokenId) external view returns (uint32) {
         _requireOwned(tokenId);
-        return _attributes[tokenId].expiry <= block.timestamp;
+        return _tokens[tokenId].epoch;
+    }
+
+    /// @notice Whether `tokenId`'s credential is still within its validity window
+    ///         (`currentEpoch() <= verifiedEpoch + VALIDITY_EPOCHS`). Reverts if
+    ///         the token does not exist.
+    function isValid(uint256 tokenId) external view returns (bool) {
+        _requireOwned(tokenId);
+        return _isValid(_tokens[tokenId].epoch);
+    }
+
+    /// @dev Pure validity check against the current epoch.
+    function _isValid(uint32 epoch) private view returns (bool) {
+        return uint256(currentEpoch()) <= uint256(epoch) + VALIDITY_EPOCHS;
     }
 
     /// @inheritdoc IERC5192
@@ -339,38 +326,18 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     }
 
     /// @notice Fully on-chain, base64-encoded JSON metadata. Reverts for a
-    ///         nonexistent token. Renders each public trait only when present.
+    ///         nonexistent token. Carries only the anonymous status + validity —
+    ///         never any personal attribute.
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         _requireOwned(tokenId);
-        Attributes memory a = _attributes[tokenId];
-
-        string[] memory parts = new string[](8);
-        uint256 n = 0;
-
-        if (a.nationality != bytes3(0)) {
-            parts[n++] = string.concat('{"trait_type":"Nationality","value":"', _natString(a.nationality), '"}');
-        }
-        if (a.gender != 0) {
-            parts[n++] = string.concat('{"trait_type":"Gender","value":"', _genderString(a.gender), '"}');
-        }
-        if ((a.ageFlags & AGE_13) != 0) parts[n++] = _ageObj("13+");
-        if ((a.ageFlags & AGE_18) != 0) parts[n++] = _ageObj("18+");
-        if ((a.ageFlags & AGE_21) != 0) parts[n++] = _ageObj("21+");
-        if ((a.ageFlags & AGE_65) != 0) parts[n++] = _ageObj("65+");
-        if (a.ofacClear) parts[n++] = '{"trait_type":"OFAC","value":"clear"}';
-        if (a.expiry != 0) {
-            parts[n++] =
-                string.concat('{"display_type":"date","trait_type":"Expiry","value":', Strings.toString(a.expiry), "}");
-        }
+        TokenData memory t = _tokens[tokenId];
 
         // Optional fully on-chain card art. Omitted (valid JSON) when no renderer
         // is configured. The renderer returns a self-contained data-URI whose only
         // characters are the data-URI prefix + base64, so it needs no JSON-escaping.
         string memory image = cardRenderer == address(0)
             ? ""
-            : string.concat(
-                ',"image":"', IPoHCardRenderer(cardRenderer).render(tokenId, a.ageFlags, a.nationality, a.gender), '"'
-            );
+            : string.concat(',"image":"', IPoHCardRenderer(cardRenderer).render(tokenId, t.nullifier), '"');
 
         string memory json = string.concat(
             '{"name":"Proof of Humanity #',
@@ -379,43 +346,12 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
             DESCRIPTION,
             '"',
             image,
-            ',"attributes":[',
-            _join(parts, n),
-            "]}"
+            ',"attributes":[{"trait_type":"Status","value":"Verified Human"},{"trait_type":"Valid","value":"',
+            _isValid(t.epoch) ? "true" : "false",
+            '"}]}'
         );
 
         return string.concat("data:application/json;base64,", Base64.encode(bytes(json)));
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                          METADATA HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    function _ageObj(string memory value) private pure returns (string memory) {
-        return string.concat('{"trait_type":"Age","value":"', value, '"}');
-    }
-
-    /// @dev Decode a packed ISO-3166 alpha-3 code back to its 3 ASCII characters.
-    function _natString(bytes3 nat) private pure returns (string memory) {
-        bytes memory b = new bytes(3);
-        b[0] = nat[0];
-        b[1] = nat[1];
-        b[2] = nat[2];
-        return string(b);
-    }
-
-    /// @dev Map the raw MRZ sex byte to a human-readable value.
-    function _genderString(uint8 g) private pure returns (string memory) {
-        if (g == 0x4D) return "male"; // 'M'
-        if (g == 0x46) return "female"; // 'F'
-        return "other"; // '<' (unspecified) or anything else
-    }
-
-    /// @dev Comma-join the first `count` entries of `parts`.
-    function _join(string[] memory parts, uint256 count) private pure returns (string memory out) {
-        for (uint256 i = 0; i < count; i++) {
-            out = i == 0 ? parts[i] : string.concat(out, ",", parts[i]);
-        }
     }
 
     /*//////////////////////////////////////////////////////////////
