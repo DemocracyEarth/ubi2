@@ -1,21 +1,22 @@
 /**
  * CROSS-STACK INTEGRATION TEST — proves the relay's EIP-712 voucher signing is accepted by the
- * REAL Phase C `ProofOfHumanity` contract, byte-for-byte.
+ * REAL `ProofOfHumanity` contract, byte-for-byte, for the MINIMAL voucher.
  *
  * What it does (no phone / no live Self proof required):
  *   1. `forge build` the contracts package and load ProofOfHumanity's bytecode+ABI;
  *   2. start a local `anvil`, deploy `ProofOfHumanity(owner, issuer)` with a KNOWN issuer key;
- *   3. using THIS app's `app/lib/voucher.ts`, map a CONSTRUCTED Self discloseOutput
- *      (nationality "ARG", gender "M", olderThan 18, ofac true) to a voucher and sign it;
+ *   3. using THIS app's `app/lib/voucher.ts`, build a MINIMAL voucher { to, nullifier, epoch } from
+ *      a nullifier + the contract's current epoch, and sign it;
  *   4. assert the locally-computed EIP-712 digest == the contract's on-chain `hashVoucher(...)`;
  *   5. `mintWithVoucher(voucher, sig)` from a RELAYER account → assert it SUCCEEDS, `balanceOf(to)==1`,
- *      and `attributesOf`/`tokenURI` carry ARG / male / 18+ / OFAC-clear;
- *   6. assert a voucher signed by the WRONG key reverts `InvalidSigner`.
+ *      the token `isValid`, and its `tokenURI` carries NO nationality / gender / age;
+ *   6. assert a voucher signed by the WRONG key reverts `InvalidSigner`;
+ *   7. assert a fresh voucher (same nullifier, newer epoch) REFRESHES the token monotonically.
  *
  * WHAT THIS TEST DOES vs DEFERS (honest scope):
  *   - TESTED for real: the EIP-712 domain/type/field encoding + issuer-signature recovery, i.e. the
- *     exact seam where the backend meets Phase C. The discloseOutput is CONSTRUCTED, not produced by
- *     a real Self proof, because a genuine proof needs a passport scan on a phone.
+ *     exact seam where the backend meets the contract, plus the epoch refresh path. The nullifier is
+ *     CONSTRUCTED, not produced by a real Self proof (a genuine proof needs a passport scan).
  *   - DEFERRED (needs a phone): `@selfxyz/core`'s `SelfBackendVerifier.verify(...)` (Groth16 +
  *     Self-registry membership). That path is wired in app/api/self-verify/route.ts but exercised
  *     only with a real passport.
@@ -36,12 +37,7 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import {
-  buildVoucherFromDisclose,
-  voucherDigest,
-  signVoucher,
-  type HumanityVoucher,
-} from "../app/lib/voucher";
+import { buildVoucher, voucherDigest, signVoucher, type HumanityVoucher } from "../app/lib/voucher";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTRACTS_DIR = path.resolve(__dirname, "../../../contracts");
@@ -98,10 +94,10 @@ async function waitForAnvil(timeoutMs = 15000) {
 }
 
 async function main() {
-  console.log("\n=== proofofhumanity cross-stack voucher test ===\n");
+  console.log("\n=== proofofhumanity cross-stack voucher test (minimal) ===\n");
 
-  // 1) Build + load the real Phase C artifact.
-  console.log("[1/6] forge build …");
+  // 1) Build + load the real contract artifact.
+  console.log("[1/7] forge build …");
   execSync("forge build", { cwd: CONTRACTS_DIR, stdio: "inherit" });
   const artifact = JSON.parse(readFileSync(ARTIFACT, "utf8")) as {
     abi: Abi;
@@ -112,7 +108,7 @@ async function main() {
   assert(bytecode.length > 2, "loaded ProofOfHumanity deploy bytecode");
 
   // 2) Start anvil + deploy ProofOfHumanity(owner, issuer).
-  console.log("[2/6] starting anvil + deploying ProofOfHumanity …");
+  console.log("[2/7] starting anvil + deploying ProofOfHumanity …");
   const owner = privateKeyToAccount(OWNER_KEY);
   const issuer = privateKeyToAccount(ISSUER_KEY);
   const relayer = privateKeyToAccount(RELAYER_KEY);
@@ -141,27 +137,21 @@ async function main() {
     const onChainIssuer = (await pub.readContract({ address: poh, abi, functionName: "issuer" })) as Address;
     assertEq(getAddress(onChainIssuer), getAddress(issuer.address), "on-chain issuer == our issuer key");
 
-    // 3) Build + sign a voucher from a CONSTRUCTED discloseOutput (real proof needs a phone).
-    console.log("[3/6] building + signing voucher from a constructed discloseOutput …");
-    const discloseOutput = {
-      nullifier: "12345678901234567890123456789012345678901234567890", // a BN254-ish field element
-      nationality: "ARG",
-      gender: "M",
-      minimumAge: "18",
-      ofac: [true, true, true] as boolean[],
-    };
-    const expiry = BigInt(Math.floor(Date.now() / 1000)) + 365n * 24n * 60n * 60n;
-    const voucher: HumanityVoucher = buildVoucherFromDisclose({ discloseOutput, to: TO_ADDRESS, expiry });
+    // 3) Build + sign a MINIMAL voucher from a constructed nullifier at the contract's current epoch.
+    console.log("[3/7] building + signing a minimal voucher …");
+    const nullifier = "12345678901234567890123456789012345678901234567890"; // a BN254-ish field element
+    const epoch = Number(await pub.readContract({ address: poh, abi, functionName: "currentEpoch" }));
+    assert(epoch > 0, `contract currentEpoch() == ${epoch}`);
+    const voucher: HumanityVoucher = buildVoucher({ discloseOutput: { nullifier }, to: TO_ADDRESS, epoch });
 
-    assertEq(voucher.nationality, "0x415247", "nationality 'ARG' → bytes3 0x415247");
-    assertEq(voucher.gender, 0x4d, "gender 'M' → uint8 0x4d");
-    assertEq(voucher.ageFlags, 0x03, "olderThan 18 → ageFlags 0x03 (13+ | 18+)");
-    assertEq(voucher.ofacClear, true, "ofac [true,true,true] → ofacClear true");
+    assertEq(voucher.to, TO_ADDRESS, "voucher.to == recipient");
+    assertEq(voucher.nullifier, BigInt(nullifier), "voucher.nullifier == constructed nullifier");
+    assertEq(voucher.epoch, epoch, "voucher.epoch == currentEpoch()");
 
     const signature = await signVoucher(ISSUER_KEY, voucher, CHAIN_ID, poh);
 
     // 4) Local EIP-712 digest MUST equal the contract's on-chain hashVoucher(...).
-    console.log("[4/6] cross-checking EIP-712 digest against on-chain hashVoucher …");
+    console.log("[4/7] cross-checking EIP-712 digest against on-chain hashVoucher …");
     const localDigest = voucherDigest(voucher, CHAIN_ID, poh);
     const onChainDigest = (await pub.readContract({
       address: poh,
@@ -171,8 +161,8 @@ async function main() {
     })) as Hex;
     assertEq(localDigest, onChainDigest, "lib/voucher digest == contract hashVoucher (domain+type+fields match)");
 
-    // 5) Mint from the relayer → success + read back traits.
-    console.log("[5/6] mintWithVoucher from relayer …");
+    // 5) Mint from the relayer → success + read back the minimal token.
+    console.log("[5/7] mintWithVoucher from relayer …");
     const { request } = await pub.simulateContract({
       account: relayer,
       address: poh,
@@ -195,28 +185,24 @@ async function main() {
     })) as bigint;
     assert(tokenId > 0n, `tokenOfNullifier(nullifier) == ${tokenId}`);
 
-    const attrs = (await pub.readContract({
-      address: poh,
-      abi,
-      functionName: "attributesOf",
-      args: [tokenId],
-    })) as { ageFlags: number; nationality: Hex; gender: number; ofacClear: boolean; expiry: bigint };
-    assertEq(attrs.nationality, "0x415247", "attributesOf.nationality == 0x415247 (ARG)");
-    assertEq(attrs.gender, 0x4d, "attributesOf.gender == 0x4d (male)");
-    assertEq(attrs.ageFlags, 0x03, "attributesOf.ageFlags == 0x03 (13+ | 18+)");
-    assertEq(attrs.ofacClear, true, "attributesOf.ofacClear == true");
+    const valid = (await pub.readContract({ address: poh, abi, functionName: "isValid", args: [tokenId] })) as boolean;
+    assertEq(valid, true, "isValid(tokenId) == true right after mint");
 
+    const locked = (await pub.readContract({ address: poh, abi, functionName: "locked", args: [tokenId] })) as boolean;
+    assertEq(locked, true, "locked(tokenId) == true (ERC-5192 soulbound)");
+
+    // tokenURI must carry NO personal data — the minimal credential.
     const tokenURI = (await pub.readContract({ address: poh, abi, functionName: "tokenURI", args: [tokenId] })) as string;
     const jsonStr = tokenURI.startsWith("data:application/json;base64,")
       ? Buffer.from(tokenURI.split(",")[1], "base64").toString("utf8")
       : tokenURI;
-    assert(jsonStr.includes('"value":"ARG"'), "tokenURI metadata contains Nationality ARG");
-    assert(jsonStr.includes('"value":"male"'), "tokenURI metadata contains Gender male");
-    assert(jsonStr.includes('"value":"18+"'), "tokenURI metadata contains Age 18+");
-    assert(jsonStr.includes('"value":"clear"'), "tokenURI metadata contains OFAC clear");
+    const lower = jsonStr.toLowerCase();
+    assert(!lower.includes("nationality"), "tokenURI has NO nationality field");
+    assert(!lower.includes("gender"), "tokenURI has NO gender field");
+    assert(!/\bage\b/.test(lower), "tokenURI has NO age field");
 
-    // 6) Wrong-key signature MUST revert InvalidSigner.
-    console.log("[6/6] wrong-key voucher must revert InvalidSigner …");
+    // 6) Wrong-key signature MUST revert InvalidSigner (use a different nullifier so it's a fresh mint).
+    console.log("[6/7] wrong-key voucher must revert InvalidSigner …");
     const voucher2: HumanityVoucher = { ...voucher, nullifier: voucher.nullifier + 1n };
     const badSig = await signVoucher(WRONG_KEY, voucher2, CHAIN_ID, poh);
     let reverted = false;
@@ -235,6 +221,28 @@ async function main() {
     }
     assert(reverted, "wrong-key mintWithVoucher reverts");
     assert(reason.includes("InvalidSigner"), `revert reason is InvalidSigner (got: ${reason.split("\n")[0]})`);
+
+    // 7) Re-verification refresh: same nullifier, a NEWER epoch, correctly signed → succeeds (monotonic).
+    console.log("[7/7] refresh with a newer epoch (same nullifier) …");
+    const refreshed: HumanityVoucher = { ...voucher, epoch: voucher.epoch + 1 };
+    const refreshSig = await signVoucher(ISSUER_KEY, refreshed, CHAIN_ID, poh);
+    const { request: refreshReq } = await pub.simulateContract({
+      account: relayer,
+      address: poh,
+      abi,
+      functionName: "mintWithVoucher",
+      args: [refreshed, refreshSig],
+    });
+    const refreshHash = await relayerWallet.writeContract(refreshReq);
+    const refreshRcpt = await pub.waitForTransactionReceipt({ hash: refreshHash });
+    assertEq(refreshRcpt.status, "success", "refresh (newer epoch) tx status == success");
+    const balAfter = (await pub.readContract({
+      address: poh,
+      abi,
+      functionName: "balanceOf",
+      args: [TO_ADDRESS],
+    })) as bigint;
+    assertEq(balAfter, 1n, "balanceOf(to) still == 1 after refresh (no second token)");
   } finally {
     anvil.kill("SIGKILL");
   }

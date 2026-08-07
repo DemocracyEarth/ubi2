@@ -8,9 +8,11 @@
  * `{ attestationId, proof, publicSignals, userContextData }` here. This handler:
  *
  *   1. runs `@selfxyz/core`'s `SelfBackendVerifier.verify(...)` — Groth16 pairing + Self identity
- *      registry membership (against the Celo hub) + scope/endpoint binding + OFAC config;
- *   2. on `isValidDetails.isValid`, maps `discloseOutput` → a `HumanityVoucher` bound to the
- *      proof's `userIdentifier` address (`lib/voucher.ts::buildVoucherFromDisclose`);
+ *      registry membership (against the Celo hub) + scope/endpoint binding + OFAC config. This is
+ *      what proves a UNIQUE HUMAN and yields the nullifier;
+ *   2. on `isValidDetails.isValid`, builds a MINIMAL `HumanityVoucher` = { to, nullifier, epoch }
+ *      bound to the proof's `userIdentifier` address (`lib/voucher.ts::buildVoucher`). NO attributes
+ *      (nationality / gender / age) are mapped in — the credential carries no personal data;
  *   3. signs ONE voucher per configured chain with the issuer key (each chain has its own EIP-712
  *      domain), and stores the set keyed by the lowercased recipient address for the client to poll.
  *
@@ -34,19 +36,13 @@ import {
 } from "@selfxyz/core";
 import type { Address } from "viem";
 import {
-  buildVoucherFromDisclose,
+  buildVoucher,
+  epochNow,
   serializeVoucher,
   signVoucher,
   type SerializedVoucher,
 } from "../../lib/voucher";
-import {
-  CHAINS,
-  SELF_SCOPE,
-  SELF_ENDPOINT,
-  SELF_MOCK_PASSPORT,
-  ISSUER_PRIVATE_KEY,
-  VOUCHER_TTL_SECONDS,
-} from "../../config";
+import { CHAINS, SELF_SCOPE, SELF_ENDPOINT, SELF_MOCK_PASSPORT, ISSUER_PRIVATE_KEY } from "../../config";
 
 // Node.js runtime: the module-level Map must persist across requests, and @selfxyz/core pulls in
 // Node-only crypto (snarkjs, node-forge) that the edge runtime cannot run.
@@ -63,13 +59,10 @@ interface SignedForChain {
 
 interface RelayRecord {
   status: "ready" | "error";
-  /** Human-readable disclosed traits, for the UI to preview before minting. */
-  attributes?: {
-    nationality: string;
-    gender: string;
-    olderThan: number;
-    ofacClear: boolean;
+  /** The proof's anonymous nullifier + validity epoch, for the UI to preview before minting. */
+  proof?: {
     nullifier: string;
+    epoch: number;
   };
   vouchers?: SignedForChain[];
   error?: string;
@@ -165,7 +158,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: record.error }, { status: 400 });
   }
 
-  // 2) Map the disclosed attributes to a voucher bound to the proof's own address.
+  // 2) Build a MINIMAL voucher bound to the proof's own address. Only the nullifier (unique human)
+  //    and the current validity epoch — no attributes are read out of the proof.
   const to = result.userData.userIdentifier as Address;
   if (!to || !/^0x[0-9a-fA-F]{40}$/.test(to)) {
     return NextResponse.json(
@@ -174,8 +168,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const expiry = BigInt(Math.floor(Date.now() / 1000)) + VOUCHER_TTL_SECONDS;
-  const voucher = buildVoucherFromDisclose({ discloseOutput: result.discloseOutput, to, expiry });
+  const epoch = epochNow();
+  const voucher = buildVoucher({ discloseOutput: { nullifier: result.discloseOutput.nullifier }, to, epoch });
 
   // 3) Sign one voucher per DEPLOYED chain (distinct EIP-712 domain per chain).
   const vouchers: SignedForChain[] = [];
@@ -193,12 +187,9 @@ export async function POST(req: NextRequest) {
 
   const record: RelayRecord = {
     status: "ready",
-    attributes: {
-      nationality: result.discloseOutput.nationality ?? "",
-      gender: result.discloseOutput.gender ?? "",
-      olderThan: result.discloseOutput.minimumAge ? Number.parseInt(result.discloseOutput.minimumAge, 10) || 0 : 0,
-      ofacClear: voucher.ofacClear,
+    proof: {
       nullifier: voucher.nullifier.toString(),
+      epoch: voucher.epoch,
     },
     vouchers,
     receivedAt: Date.now(),

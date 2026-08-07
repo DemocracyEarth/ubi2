@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ProofOfHumanity, HumanityVoucher} from "../src/ProofOfHumanity.sol";
 import {PoHCardRenderer} from "../src/PoHCardRenderer.sol";
 
-/// @notice Tests the fully on-chain PoH card renderer and its wiring into
+/// @notice Tests the fully on-chain MINIMAL PoH card renderer and its wiring into
 ///         {ProofOfHumanity.tokenURI} (the optional `"image"` field).
 contract PoHCardRendererTest is Test {
     ProofOfHumanity internal poh;
@@ -18,9 +18,6 @@ contract PoHCardRendererTest is Test {
     address internal relayer;
 
     uint256 internal constant NULL_A = uint256(keccak256("nullifier-a"));
-
-    uint8 internal constant AGE_18 = 0x02;
-    uint8 internal constant SEX_F = 0x46; // 'F'
 
     function setUp() public {
         issuer = vm.addr(ISSUER_PK);
@@ -38,15 +35,7 @@ contract PoHCardRendererTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function _voucher(address to, uint256 nullifier) internal view returns (HumanityVoucher memory) {
-        return HumanityVoucher({
-            to: to,
-            nullifier: nullifier,
-            ageFlags: AGE_18,
-            nationality: bytes3("ARG"),
-            gender: SEX_F,
-            ofacClear: true,
-            expiry: uint64(block.timestamp + 365 days)
-        });
+        return HumanityVoucher({to: to, nullifier: nullifier, epoch: poh.currentEpoch()});
     }
 
     function _mint(HumanityVoucher memory v) internal returns (uint256) {
@@ -88,7 +77,7 @@ contract PoHCardRendererTest is Test {
         assertTrue(_contains(json, '"attributes":['));
     }
 
-    function test_TokenURI_IncludesCardImageWhenRendererSet() public {
+    function test_TokenURI_IncludesMinimalCardWhenRendererSet() public {
         vm.prank(owner);
         poh.setCardRenderer(address(renderer));
 
@@ -101,43 +90,72 @@ contract PoHCardRendererTest is Test {
         string memory svg = _decodeImageSvg(json);
         assertTrue(_contains(svg, "<svg"), "not an svg");
         assertTrue(_contains(svg, "</svg>"), "svg not closed");
+        // Minimal-card chrome present.
         assertTrue(_contains(svg, "Proof of Humanity"), "missing title");
-        assertTrue(_contains(svg, "Argentina"), "missing nationality name");
-        assertTrue(_contains(svg, "Female"), "missing gender");
-        assertTrue(_contains(svg, "18 or older"), "missing legal age");
+        assertTrue(_contains(svg, "HUMAN ID"), "missing human id label");
+        assertTrue(_contains(svg, "ZERO-KNOWLEDGE HUMANITY"), "missing section header");
+        assertTrue(_contains(svg, "Unique human"), "missing unique-human row");
+        assertTrue(_contains(svg, "Personal data on-chain"), "missing on-chain row");
         assertTrue(_contains(svg, "#FF6B8A"), "missing brand gradient stop");
-        // Token id slot rendered as #<decimal>.
-        assertTrue(_contains(svg, "#1"), "missing token id");
+
+        // NO personal data anywhere on the minimal card.
+        _assertNoPersonalData(svg);
     }
 
     /*//////////////////////////////////////////////////////////////
                         RENDERER UNIT (pure)
     //////////////////////////////////////////////////////////////*/
 
-    function test_Render_NotDisclosedTraits() public view {
-        string memory uri = renderer.render(7, 0, bytes3(0), 0);
+    function test_Render_MinimalCardChrome() public view {
+        string memory uri = renderer.render(7, NULL_A);
         assertTrue(_startsWith(uri, "data:image/svg+xml;base64,"));
         string memory svg = string(_base64Decode(_afterPrefix(uri, "data:image/svg+xml;base64,")));
-        // Undisclosed nationality/age/gender all collapse to "Not disclosed".
-        assertTrue(_contains(svg, "Not disclosed"), "expected Not disclosed");
-        assertTrue(_contains(svg, "#7"), "missing token id");
-        // Static chrome present.
-        assertTrue(_contains(svg, "DISCLOSED ATTRIBUTES"));
+
+        // The full locked minimal card is present.
+        assertTrue(_contains(svg, "ZERO-KNOWLEDGE HUMANITY"));
+        assertTrue(_contains(svg, "PROVABLE ON DEMAND"));
+        assertTrue(_contains(svg, "Unique human"));
+        assertTrue(_contains(svg, "Personal data on-chain"));
+        assertTrue(_contains(svg, "None"));
+        assertTrue(_contains(svg, "Age 18+"));
+        assertTrue(_contains(svg, "Nationality"));
+        assertTrue(_contains(svg, "Sanctions"));
+        assertTrue(_contains(svg, unicode"ONE HUMAN · ONE CREDENTIAL · SOULBOUND"));
         assertTrue(_contains(svg, "#FFE24B"));
+        assertTrue(_contains(svg, "HUMAN ID"));
+
+        // NO personal-attribute values (the whole point of the pivot).
+        _assertNoPersonalData(svg);
     }
 
-    function test_Render_AgeUsesHighestBit() public view {
-        // 13+ and 18+ set -> highest disclosed threshold shown.
-        string memory svg = string(
-            _base64Decode(_afterPrefix(renderer.render(1, 0x03, bytes3("ARG"), SEX_F), "data:image/svg+xml;base64,"))
-        );
-        assertTrue(_contains(svg, "18 or older"));
-        assertFalse(_contains(svg, "13 or older"));
+    function test_Render_HumanIdShortHex() public view {
+        // nullifier with known top-16 (0x7A3F) and bottom-16 (0xC9E2) bits.
+        uint256 nullifier = (uint256(0x7A3F) << 240) | uint256(0xC9E2);
+        string memory svg =
+            string(_base64Decode(_afterPrefix(renderer.render(1, nullifier), "data:image/svg+xml;base64,")));
+        // HUMAN ID = 0x<top4>…<bottom4>, uppercase, matching the locked design.
+        assertTrue(_contains(svg, unicode"0x7A3F…C9E2"), "missing/incorrect HUMAN ID");
+    }
+
+    function test_Render_HumanIdZeroNullifier() public view {
+        string memory svg = string(_base64Decode(_afterPrefix(renderer.render(1, 0), "data:image/svg+xml;base64,")));
+        assertTrue(_contains(svg, unicode"0x0000…0000"), "zero nullifier id");
     }
 
     /*//////////////////////////////////////////////////////////////
                           STRING / BASE64 UTILS
     //////////////////////////////////////////////////////////////*/
+
+    /// @dev Assert none of the retired personal-attribute values leak into `svg`.
+    function _assertNoPersonalData(string memory svg) internal pure {
+        assertFalse(_contains(svg, "DISCLOSED ATTRIBUTES"), "stale attributes header");
+        assertFalse(_contains(svg, "Argentina"), "leaked nationality");
+        assertFalse(_contains(svg, "Female"), "leaked gender");
+        assertFalse(_contains(svg, "Male"), "leaked gender");
+        assertFalse(_contains(svg, "Gender"), "leaked gender label");
+        assertFalse(_contains(svg, "or older"), "leaked age");
+        assertFalse(_contains(svg, "Legal age"), "leaked age label");
+    }
 
     function _startsWith(string memory s, string memory prefix) internal pure returns (bool) {
         bytes memory bs = bytes(s);

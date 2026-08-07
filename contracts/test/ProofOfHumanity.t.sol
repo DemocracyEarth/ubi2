@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {ProofOfHumanity, HumanityVoucher, Attributes, IERC5192} from "../src/ProofOfHumanity.sol";
+import {ProofOfHumanity, HumanityVoucher, IERC5192} from "../src/ProofOfHumanity.sol";
 
 contract ProofOfHumanityTest is Test {
     ProofOfHumanity internal poh;
@@ -22,16 +22,8 @@ contract ProofOfHumanityTest is Test {
     uint256 internal constant NULL_A = uint256(keccak256("nullifier-a"));
     uint256 internal constant NULL_B = uint256(keccak256("nullifier-b"));
 
-    // Age-flag masks (mirror the contract's private constants).
-    uint8 internal constant AGE_13 = 0x01;
-    uint8 internal constant AGE_18 = 0x02;
-    uint8 internal constant AGE_21 = 0x04;
-    uint8 internal constant AGE_65 = 0x08;
-
-    // MRZ sex bytes.
-    uint8 internal constant SEX_M = 0x4D; // 'M'
-    uint8 internal constant SEX_F = 0x46; // 'F'
-    uint8 internal constant SEX_X = 0x3C; // '<'
+    // 90-day epoch mirrored from the contract.
+    uint256 internal constant EPOCH = 90 days;
 
     function setUp() public {
         issuer = vm.addr(ISSUER_PK);
@@ -41,7 +33,7 @@ contract ProofOfHumanityTest is Test {
         bob = makeAddr("bob");
         relayer = makeAddr("relayer");
 
-        vm.warp(1_700_000_000); // realistic block time so expiries are meaningful
+        vm.warp(1_700_000_000); // realistic block time so epochs are meaningful
         poh = new ProofOfHumanity(owner, issuer);
     }
 
@@ -50,15 +42,7 @@ contract ProofOfHumanityTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function _defaultVoucher(address to, uint256 nullifier) internal view returns (HumanityVoucher memory) {
-        return HumanityVoucher({
-            to: to,
-            nullifier: nullifier,
-            ageFlags: AGE_13 | AGE_18, // 0x03
-            nationality: bytes3("ARG"),
-            gender: SEX_M,
-            ofacClear: true,
-            expiry: uint64(block.timestamp + 365 days)
-        });
+        return HumanityVoucher({to: to, nullifier: nullifier, epoch: poh.currentEpoch()});
     }
 
     function _sign(uint256 pk, HumanityVoucher memory v) internal view returns (bytes memory) {
@@ -132,7 +116,7 @@ contract ProofOfHumanityTest is Test {
                             HAPPY PATH
     //////////////////////////////////////////////////////////////*/
 
-    function test_HappyPath_MintStoresAttributesAndLocks() public {
+    function test_HappyPath_MintStoresEpochAndLocks() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
 
         vm.expectEmit(true, true, true, true, address(poh));
@@ -146,14 +130,8 @@ contract ProofOfHumanityTest is Test {
         assertTrue(poh.locked(1));
         assertEq(poh.nextId(), 2);
         assertEq(poh.tokenOfNullifier(NULL_A), 1);
-        assertFalse(poh.isExpired(1));
-
-        Attributes memory a = poh.attributesOf(1);
-        assertEq(a.ageFlags, AGE_13 | AGE_18);
-        assertEq(a.nationality, bytes3("ARG"));
-        assertEq(a.gender, SEX_M);
-        assertTrue(a.ofacClear);
-        assertEq(a.expiry, v.expiry);
+        assertEq(poh.epochOf(1), poh.currentEpoch());
+        assertTrue(poh.isValid(1));
     }
 
     function test_LockedEventEmittedOnMint() public {
@@ -174,10 +152,37 @@ contract ProofOfHumanityTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        EPOCH / VALIDITY
+    //////////////////////////////////////////////////////////////*/
+
+    function test_CurrentEpoch_MatchesFormula() public view {
+        assertEq(poh.currentEpoch(), uint32(block.timestamp / EPOCH));
+    }
+
+    function test_Constants_EpochAndValidity() public view {
+        assertEq(poh.EPOCH(), 90 days);
+        assertEq(poh.VALIDITY_EPOCHS(), 4);
+    }
+
+    function test_IsValid_TrueWithinWindowFalseAfter() public {
+        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
+        _mint(ISSUER_PK, v);
+        assertTrue(poh.isValid(1));
+
+        // Still valid at exactly verifiedEpoch + VALIDITY_EPOCHS.
+        vm.warp(block.timestamp + 4 * EPOCH);
+        assertTrue(poh.isValid(1));
+
+        // One epoch past the window -> invalid.
+        vm.warp(block.timestamp + EPOCH);
+        assertFalse(poh.isValid(1));
+    }
+
+    /*//////////////////////////////////////////////////////////////
                             TOKEN URI
     //////////////////////////////////////////////////////////////*/
 
-    function test_TokenURI_ContainsPublicTraits() public {
+    function test_TokenURI_MinimalNoPersonalData() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
         _mint(ISSUER_PK, v);
 
@@ -186,62 +191,23 @@ contract ProofOfHumanityTest is Test {
 
         string memory json = _decodeDataUri(uri);
         assertTrue(_contains(json, "Proof of Humanity #1"));
-        assertTrue(_contains(json, '"trait_type":"Nationality","value":"ARG"'));
-        assertTrue(_contains(json, '"trait_type":"Gender","value":"male"'));
-        assertTrue(_contains(json, "13+"));
-        assertTrue(_contains(json, "18+"));
-        assertTrue(_contains(json, '"trait_type":"OFAC","value":"clear"'));
-        assertTrue(_contains(json, '"display_type":"date"'));
-        assertTrue(_contains(json, vm.toString(v.expiry)));
+        assertTrue(_contains(json, '"trait_type":"Status","value":"Verified Human"'));
+        assertTrue(_contains(json, '"trait_type":"Valid","value":"true"'));
 
-        // Absent traits must NOT render.
-        assertFalse(_contains(json, "21+"));
-        assertFalse(_contains(json, "65+"));
-    }
-
-    function test_TokenURI_RendersAllAgeFlagsAndFemale() public {
-        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        v.ageFlags = AGE_13 | AGE_18 | AGE_21 | AGE_65; // 0x0F
-        v.gender = SEX_F;
-        v.nationality = bytes3("USA");
-        _mint(ISSUER_PK, v);
-
-        string memory json = _decodeDataUri(poh.tokenURI(1));
-        assertTrue(_contains(json, "13+"));
-        assertTrue(_contains(json, "18+"));
-        assertTrue(_contains(json, "21+"));
-        assertTrue(_contains(json, "65+"));
-        assertTrue(_contains(json, '"value":"female"'));
-        assertTrue(_contains(json, '"value":"USA"'));
-    }
-
-    function test_TokenURI_OmitsUndisclosedTraits() public {
-        HumanityVoucher memory v = HumanityVoucher({
-            to: alice,
-            nullifier: NULL_A,
-            ageFlags: 0,
-            nationality: bytes3(0),
-            gender: 0,
-            ofacClear: false,
-            expiry: uint64(block.timestamp + 30 days)
-        });
-        _mint(ISSUER_PK, v);
-
-        string memory json = _decodeDataUri(poh.tokenURI(1));
+        // NO personal data anywhere.
         assertFalse(_contains(json, "Nationality"));
         assertFalse(_contains(json, "Gender"));
-        assertFalse(_contains(json, '"trait_type":"Age"'));
+        assertFalse(_contains(json, "Age"));
         assertFalse(_contains(json, "OFAC"));
-        // Expiry always renders.
-        assertTrue(_contains(json, '"display_type":"date"'));
+        assertFalse(_contains(json, "ARG"));
     }
 
-    function test_TokenURI_GenderOtherForUnspecified() public {
+    function test_TokenURI_ValidFalseAfterExpiry() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        v.gender = SEX_X; // '<'
         _mint(ISSUER_PK, v);
+        vm.warp(block.timestamp + 5 * EPOCH); // past the validity window
         string memory json = _decodeDataUri(poh.tokenURI(1));
-        assertTrue(_contains(json, '"value":"other"'));
+        assertTrue(_contains(json, '"trait_type":"Valid","value":"false"'));
     }
 
     function test_TokenURI_RevertsForNonexistent() public {
@@ -261,32 +227,23 @@ contract ProofOfHumanityTest is Test {
         poh.mintWithVoucher(v, sig);
     }
 
-    function test_Revert_TamperedVoucher() public {
+    function test_Revert_TamperedNullifier() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
         bytes memory sig = _sign(ISSUER_PK, v);
 
         // Tamper a field AFTER signing -> digest changes -> recovered != issuer.
-        v.nationality = bytes3("BRA");
+        v.nullifier = NULL_B;
         vm.prank(relayer);
         vm.expectRevert(ProofOfHumanity.InvalidSigner.selector);
         poh.mintWithVoucher(v, sig);
     }
 
-    function test_Revert_TamperedAgeFlags() public {
+    function test_Revert_TamperedEpoch() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
         bytes memory sig = _sign(ISSUER_PK, v);
-        v.ageFlags = AGE_65; // escalate age claim after signing
+        v.epoch = v.epoch + 100; // inflate validity after signing
         vm.prank(relayer);
         vm.expectRevert(ProofOfHumanity.InvalidSigner.selector);
-        poh.mintWithVoucher(v, sig);
-    }
-
-    function test_Revert_ExpiredVoucher() public {
-        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        v.expiry = uint64(block.timestamp); // expiry <= now
-        bytes memory sig = _sign(ISSUER_PK, v);
-        vm.prank(relayer);
-        vm.expectRevert(ProofOfHumanity.VoucherExpired.selector);
         poh.mintWithVoucher(v, sig);
     }
 
@@ -342,59 +299,49 @@ contract ProofOfHumanityTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                    NULLIFIER UNIQUENESS / ACCUMULATION
+                NULLIFIER UNIQUENESS / EPOCH REFRESH
     //////////////////////////////////////////////////////////////*/
 
-    function test_Accumulation_UpgradesSameTokenOrsAgeFlags() public {
+    function test_Refresh_SameTokenUpdatesEpochMonotonically() public {
         HumanityVoucher memory v1 = _defaultVoucher(alice, NULL_A);
-        v1.ageFlags = AGE_13;
+        uint32 e1 = v1.epoch;
         _mint(ISSUER_PK, v1);
 
+        // A newer epoch refreshes the token in place (no new id).
         HumanityVoucher memory v2 = _defaultVoucher(alice, NULL_A);
-        v2.ageFlags = AGE_18 | AGE_21;
+        v2.epoch = e1 + 2;
 
         vm.expectEmit(true, true, true, true, address(poh));
-        emit ProofOfHumanity.HumanityUpgraded(1, NULL_A, AGE_13 | AGE_18 | AGE_21);
+        emit ProofOfHumanity.HumanityRefreshed(1, NULL_A, e1 + 2);
         uint256 id = _mint(ISSUER_PK, v2);
 
         assertEq(id, 1); // same token
         assertEq(poh.nextId(), 2); // no new id consumed
         assertEq(poh.balanceOf(alice), 1); // still exactly one token
-        assertEq(poh.attributesOf(1).ageFlags, AGE_13 | AGE_18 | AGE_21);
+        assertEq(poh.epochOf(1), e1 + 2);
     }
 
-    function test_Upgrade_ExpiryRefreshesOnlyWhenNewer() public {
-        HumanityVoucher memory v1 = _defaultVoucher(alice, NULL_A);
-        v1.expiry = uint64(block.timestamp + 100 days);
-        _mint(ISSUER_PK, v1);
-
-        // Newer expiry -> refresh.
-        HumanityVoucher memory v2 = _defaultVoucher(alice, NULL_A);
-        v2.expiry = uint64(block.timestamp + 400 days);
-        _mint(ISSUER_PK, v2);
-        assertEq(poh.attributesOf(1).expiry, uint64(block.timestamp + 400 days));
-
-        // Older expiry -> must NOT downgrade.
-        HumanityVoucher memory v3 = _defaultVoucher(alice, NULL_A);
-        v3.expiry = uint64(block.timestamp + 200 days);
-        _mint(ISSUER_PK, v3);
-        assertEq(poh.attributesOf(1).expiry, uint64(block.timestamp + 400 days));
+    function test_Refresh_SameEpochAllowed() public {
+        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
+        _mint(ISSUER_PK, v);
+        // Re-submitting an equal epoch is allowed (>= stored) and is a no-op refresh.
+        uint256 id = _mint(ISSUER_PK, v);
+        assertEq(id, 1);
+        assertEq(poh.epochOf(1), v.epoch);
     }
 
-    function test_Upgrade_RefreshesNationalityGenderOfac() public {
+    function test_Revert_EpochDowngrade() public {
         HumanityVoucher memory v1 = _defaultVoucher(alice, NULL_A);
+        v1.epoch = v1.epoch + 5;
         _mint(ISSUER_PK, v1);
 
+        // Older epoch than stored -> must NOT downgrade.
         HumanityVoucher memory v2 = _defaultVoucher(alice, NULL_A);
-        v2.nationality = bytes3("BRA");
-        v2.gender = SEX_F;
-        v2.ofacClear = false;
-        _mint(ISSUER_PK, v2);
-
-        Attributes memory a = poh.attributesOf(1);
-        assertEq(a.nationality, bytes3("BRA"));
-        assertEq(a.gender, SEX_F);
-        assertFalse(a.ofacClear);
+        v2.epoch = v1.epoch - 1;
+        bytes memory sig = _sign(ISSUER_PK, v2);
+        vm.prank(relayer);
+        vm.expectRevert(ProofOfHumanity.EpochDowngrade.selector);
+        poh.mintWithVoucher(v2, sig);
     }
 
     function test_Revert_NullifierHijackByDifferentRecipient() public {
@@ -441,20 +388,11 @@ contract ProofOfHumanityTest is Test {
                             VIEWS
     //////////////////////////////////////////////////////////////*/
 
-    function test_IsExpired_TrueAfterExpiry() public {
-        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        v.expiry = uint64(block.timestamp + 10);
-        _mint(ISSUER_PK, v);
-        assertFalse(poh.isExpired(1));
-        vm.warp(block.timestamp + 11);
-        assertTrue(poh.isExpired(1));
-    }
-
     function test_Views_RevertForNonexistent() public {
         vm.expectRevert(abi.encodeWithSignature("ERC721NonexistentToken(uint256)", uint256(1)));
-        poh.attributesOf(1);
+        poh.epochOf(1);
         vm.expectRevert(abi.encodeWithSignature("ERC721NonexistentToken(uint256)", uint256(1)));
-        poh.isExpired(1);
+        poh.isValid(1);
         vm.expectRevert(abi.encodeWithSignature("ERC721NonexistentToken(uint256)", uint256(1)));
         poh.locked(1);
     }
@@ -464,9 +402,7 @@ contract ProofOfHumanityTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_EIP712_TypeHashMatchesSpec() public view {
-        bytes32 expected = keccak256(
-            "HumanityVoucher(address to,uint256 nullifier,uint8 ageFlags,bytes3 nationality,uint8 gender,bool ofacClear,uint64 expiry)"
-        );
+        bytes32 expected = keccak256("HumanityVoucher(address to,uint256 nullifier,uint32 epoch)");
         assertEq(poh.VOUCHER_TYPEHASH(), expected);
     }
 
@@ -482,11 +418,7 @@ contract ProofOfHumanityTest is Test {
         );
         assertEq(domainSep, poh.domainSeparator());
 
-        bytes32 structHash = keccak256(
-            abi.encode(
-                poh.VOUCHER_TYPEHASH(), v.to, v.nullifier, v.ageFlags, v.nationality, v.gender, v.ofacClear, v.expiry
-            )
-        );
+        bytes32 structHash = keccak256(abi.encode(poh.VOUCHER_TYPEHASH(), v.to, v.nullifier, v.epoch));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSep, structHash));
         assertEq(digest, poh.hashVoucher(v));
     }
