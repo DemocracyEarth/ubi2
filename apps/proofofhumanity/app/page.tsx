@@ -28,6 +28,14 @@ import {
 import { buildSelfApp, getUniversalLink, SelfQRcodeWrapper, type SelfApp } from "./self-client";
 import { CHAINS, SELF_ENDPOINT, type ChainConfig } from "./config";
 import { proofOfHumanityAbi } from "./abi/proofOfHumanity";
+import {
+  bytes3ToNationality,
+  deserializePredicateAttestation,
+  hashPredicateAttestation,
+  recoverPredicateSigner,
+  type SerializedHumanCredential,
+  type SerializedPredicateAttestation,
+} from "./lib/predicate";
 
 /*//////////////////////////////////////////////////////////////
                      BRAND ASSETS (from card-minimal-final.svg)
@@ -604,6 +612,189 @@ const GATE_CODE = `<span class="c">// One human, one vote — gate on the soulbo
 }`;
 
 /*//////////////////////////////////////////////////////////////
+                     PREDICATE DEMO — "Prove you're 18+"
+//////////////////////////////////////////////////////////////*/
+
+/**
+ * A self-contained, phone-free, chain-free demo of the PREDICATE LAYER (v1).
+ *
+ * It walks the whole thesis in the browser:
+ *   1. mint a PRIVATE demo HumanCredential (kept in localStorage — the raw age /
+ *      nationality live here, never leave the client store);
+ *   2. ask `/api/predicate` to attest "age>=18" for one consumer + context + subject;
+ *   3. verify, client-side, that the returned digest matches a locally-recomputed
+ *      `hashPredicateAttestation` and that the signature recovers to the issuer.
+ *
+ * The punchline the UI drives home: the credential (with the actual nationality /
+ * age facts) stays private; ONLY the boolean `result` crosses to the consumer,
+ * and the attestation is bound to THIS consumer, so it is unlinkable across consumers.
+ *
+ * Demo domain constants: these are deterministic first-deploy anvil addresses, used
+ * only so the EIP-712 domain (verifyingContract + chainId) is well-defined off-chain.
+ * With a local anvil + a deployed `SybilResistantVote`, the same attestation would
+ * cast a real gated vote (see `test/predicate.crossstack.ts`).
+ */
+const DEMO_CHAIN_ID = 31337;
+const DEMO_VERIFIER = "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address; // anvil deploy #0
+const DEMO_CONSUMER = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address; // anvil deploy #1
+const DEMO_SUBJECT = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC" as Address; // anvil acct #2 — "the human"
+// bytes32("proposal:demo") right-padded.
+const DEMO_CONTEXT = "0x70726f706f73616c3a64656d6f00000000000000000000000000000000000000" as Hex;
+const CREDENTIAL_STORE_KEY = "poh:humanCredential";
+
+interface DemoProof {
+  attestation: SerializedPredicateAttestation;
+  credential: SerializedHumanCredential;
+  parity: boolean;
+  issuerOk: boolean;
+  issuer: string;
+}
+
+function PredicateDemo() {
+  const [phase, setPhase] = useState<"idle" | "working" | "proven">("idle");
+  const [proof, setProof] = useState<DemoProof | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const prove = useCallback(async () => {
+    setPhase("working");
+    setErr(null);
+    setProof(null);
+    try {
+      // 1) Obtain a PRIVATE held credential (demo issuance) and store it locally.
+      const credRes = (await (
+        await fetch("/api/predicate/demo-credential", { method: "POST" })
+      ).json()) as { ok: boolean; credential?: SerializedHumanCredential; credentialSig?: Hex; error?: string };
+      if (!credRes.ok || !credRes.credential || !credRes.credentialSig) {
+        throw new Error(credRes.error ?? "Could not issue a demo credential.");
+      }
+      try {
+        localStorage.setItem(
+          CREDENTIAL_STORE_KEY,
+          JSON.stringify({ credential: credRes.credential, credentialSig: credRes.credentialSig }),
+        );
+      } catch {
+        /* storage may be unavailable — the demo still works from memory */
+      }
+
+      // 2) Request an "age>=18" attestation bound to one consumer + context + subject.
+      const nonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
+      const attRes = (await (
+        await fetch("/api/predicate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            credential: credRes.credential,
+            credentialSig: credRes.credentialSig,
+            predicate: "age>=18",
+            consumer: DEMO_CONSUMER,
+            context: DEMO_CONTEXT,
+            subject: DEMO_SUBJECT,
+            nonce: nonce.toString(),
+            verifier: DEMO_VERIFIER,
+            chainId: DEMO_CHAIN_ID,
+          }),
+        })
+      ).json()) as {
+        ok: boolean;
+        attestation?: SerializedPredicateAttestation;
+        signature?: Hex;
+        digest?: Hex;
+        issuer?: string;
+        error?: string;
+      };
+      if (!attRes.ok || !attRes.attestation || !attRes.signature || !attRes.digest || !attRes.issuer) {
+        throw new Error(attRes.error ?? "Attestation request failed.");
+      }
+
+      // 3) Client-side parity: recompute the digest + recover the signer.
+      const att = deserializePredicateAttestation(attRes.attestation);
+      const localDigest = hashPredicateAttestation(att, DEMO_CHAIN_ID, DEMO_VERIFIER);
+      const signer = await recoverPredicateSigner(att, attRes.signature, DEMO_CHAIN_ID, DEMO_VERIFIER);
+      setProof({
+        attestation: attRes.attestation,
+        credential: credRes.credential,
+        parity: localDigest.toLowerCase() === attRes.digest.toLowerCase(),
+        issuerOk: signer.toLowerCase() === attRes.issuer.toLowerCase(),
+        issuer: attRes.issuer,
+      });
+      setPhase("proven");
+    } catch (e) {
+      setErr(errMessage(e));
+      setPhase("idle");
+    }
+  }, []);
+
+  return (
+    <div className="predicate-demo">
+      <div className="pd-head">
+        <div>
+          <span className="eyebrow">Live demo · issuer-attested (v1)</span>
+          <h3>Prove you are 18+ — reveal only the answer.</h3>
+          <p className="muted small">
+            A private credential is issued and kept in your browser. The issuer attests one predicate to one consumer.
+            Only the boolean crosses the wire — no birthdate, no age, no nationality.
+          </p>
+        </div>
+        <button className="btn primary" onClick={prove} disabled={phase === "working"}>
+          {phase === "working" ? "Proving…" : proof ? "Prove again" : "Prove you're 18+"}
+        </button>
+      </div>
+
+      {err && <p className="pd-note err">{err}</p>}
+
+      {proof && (
+        <div className="pd-grid">
+          <div className="pd-col">
+            <div className="pd-verdict">
+              <span className="pd-badge">{proof.attestation.result ? "PROVEN ✓" : "NOT PROVEN"}</span>
+              <span>
+                <b>age ≥ 18</b> → <span className="mono">{String(proof.attestation.result)}</span>
+              </span>
+            </div>
+            <div className="kv">
+              <span className="k">Digest parity</span>
+              <span>{proof.parity ? "matches on-chain hash ✓" : "MISMATCH ✗"}</span>
+            </div>
+            <div className="kv">
+              <span className="k">Signed by</span>
+              <span>{proof.issuerOk ? `issuer ${short(proof.issuer)} ✓` : "unknown signer ✗"}</span>
+            </div>
+            <div className="kv">
+              <span className="k">Bound to</span>
+              <span className="mono">{short(proof.attestation.consumer)}</span>
+            </div>
+            <p className="muted small" style={{ marginTop: "0.5rem" }}>
+              Bound to one consumer — a different consumer gets a different, unlinkable attestation.
+            </p>
+          </div>
+
+          <div className="pd-col">
+            <div className="pd-panel">
+              <div className="pd-panel-title ok">What crossed the wire (public)</div>
+              <pre className="json">{JSON.stringify(proof.attestation, null, 2)}</pre>
+            </div>
+            <div className="pd-panel">
+              <div className="pd-panel-title priv">What stayed private (your browser)</div>
+              <pre className="json">
+                {JSON.stringify(
+                  {
+                    ageFlags: proof.credential.ageFlags,
+                    nationality: bytes3ToNationality(proof.credential.nationality) || "(undisclosed)",
+                    ofacClear: proof.credential.ofacClear,
+                  },
+                  null,
+                  2,
+                )}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/*//////////////////////////////////////////////////////////////
                               PAGE
 //////////////////////////////////////////////////////////////*/
 
@@ -874,6 +1065,7 @@ export default function Page() {
                 <pre dangerouslySetInnerHTML={{ __html: GATE_CODE }} />
               </div>
             </div>
+            <PredicateDemo />
           </div>
         </section>
 

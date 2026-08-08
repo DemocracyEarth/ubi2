@@ -42,6 +42,14 @@ import {
   signVoucher,
   type SerializedVoucher,
 } from "../../lib/voucher";
+import {
+  ageFlagsFromThresholds,
+  nationalityToBytes3,
+  serializeHumanCredential,
+  signHumanCredential,
+  type HumanCredential,
+  type SerializedHumanCredential,
+} from "../../lib/predicate";
 import { CHAINS, SELF_SCOPE, SELF_ENDPOINT, SELF_MOCK_PASSPORT, ISSUER_PRIVATE_KEY } from "../../config";
 
 // Node.js runtime: the module-level Map must persist across requests, and @selfxyz/core pulls in
@@ -65,6 +73,15 @@ interface RelayRecord {
     epoch: number;
   };
   vouchers?: SignedForChain[];
+  /**
+   * The PRIVATE, held HumanCredential the issuer additionally signs at verification.
+   * The holder stores this off-chain (localStorage in the demo) and later presents it
+   * to `/api/predicate` to prove a predicate. It carries the raw predicate inputs
+   * (age flags / nationality / OFAC-clear) the issuer read out of the Self disclosures;
+   * it is NEVER put on-chain. (With an OFAC-only disclosure, only `ofacClear` is set.)
+   */
+  credential?: SerializedHumanCredential;
+  credentialSig?: `0x${string}`;
   error?: string;
   receivedAt: number;
 }
@@ -185,6 +202,31 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // 4) Additionally issue the PRIVATE HumanCredential the holder keeps for predicate
+  //    proofs. Attributes are read out of the Self disclosures the human consented to:
+  //    with the base OFAC-only flow only `ofacClear` is populated; enabling age /
+  //    nationality disclosures on the SelfAppBuilder populates the rest. It is signed
+  //    with a PORTABLE domain (no chain), never stored on-chain.
+  const disclose = result.discloseOutput as {
+    nationality?: string;
+    minimumAge?: string;
+    ofac?: boolean[];
+  };
+  const minAge = disclose.minimumAge ? Number(disclose.minimumAge) : undefined;
+  const ofacClear = Array.isArray(disclose.ofac) && disclose.ofac.length > 0 ? disclose.ofac.every(Boolean) : true;
+  const nat =
+    disclose.nationality && /^[A-Za-z]{3}$/.test(disclose.nationality)
+      ? nationalityToBytes3(disclose.nationality)
+      : ("0x000000" as `0x${string}`);
+  const credential: HumanCredential = {
+    nullifier: voucher.nullifier,
+    ageFlags: ageFlagsFromThresholds({ over18: minAge !== undefined && minAge >= 18, over21: minAge !== undefined && minAge >= 21 }),
+    nationality: nat,
+    ofacClear,
+    epoch: voucher.epoch,
+  };
+  const credentialSig = await signHumanCredential(ISSUER_PRIVATE_KEY, credential);
+
   const record: RelayRecord = {
     status: "ready",
     proof: {
@@ -192,6 +234,8 @@ export async function POST(req: NextRequest) {
       epoch: voucher.epoch,
     },
     vouchers,
+    credential: serializeHumanCredential(credential),
+    credentialSig,
     receivedAt: Date.now(),
   };
   store.set(to.toLowerCase(), record);
