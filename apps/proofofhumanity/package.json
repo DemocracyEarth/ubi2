@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test:crossstack": "tsx test/voucher.crossstack.ts"
+    "test:crossstack": "tsx test/voucher.crossstack.ts",
+    "test:predicate": "tsx test/predicate.crossstack.ts"
   },
   "dependencies": {
     "@selfxyz/core": "1.0.8",
