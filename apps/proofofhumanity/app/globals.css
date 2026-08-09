@@ -21,6 +21,7 @@
   --gold: #c9a24e;
   --ok: #34d399;
   --ok-2: #6ee7b7;
+  --ubi: #86efac;
   --err: #ff6b6b;
   --warn: #fbbf5c;
 
@@ -535,9 +536,15 @@ section.band {
 
 .split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2rem;
-  align-items: center;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 2.2rem;
+  align-items: stretch;
+}
+
+.split > div:first-child {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 @media (max-width: 860px) {
@@ -548,10 +555,10 @@ section.band {
 
 .feat-list {
   list-style: none;
-  margin: 1.4rem 0 0;
+  margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.9rem;
+  gap: 1.05rem;
 }
 
 .feat-list li {
@@ -606,6 +613,37 @@ section.band {
   color: var(--muted-2);
 }
 
+.code-tabs {
+  display: flex;
+  gap: 0.3rem;
+  margin-left: 0.6rem;
+}
+
+.code-tabs button {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 0.24rem 0.6rem;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.code-tabs button:hover {
+  color: var(--ink-2);
+}
+
+.code-tabs button.on {
+  color: var(--ink);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
 .codeblock pre {
   margin: 0;
   padding: 1.1rem 1.2rem;
@@ -640,16 +678,38 @@ section.band {
   gap: 0.7rem;
 }
 
+.chips-hint {
+  margin: 0 0 1rem;
+}
+
 .tchip {
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: 999px;
   padding: 0.55rem 1rem;
   font-size: 0.85rem;
+  font-family: inherit;
   color: var(--ink-2);
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.12s ease;
+}
+
+.tchip:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.tchip.on {
+  border-color: transparent;
+  background: var(--grad-soft);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 154, 85, 0.4);
 }
 
 .tchip .d {
@@ -657,6 +717,53 @@ section.band {
   height: 6px;
   border-radius: 50%;
   background: var(--grad);
+  transition: transform 0.12s ease;
+}
+
+.tchip.on .d {
+  transform: scale(1.5);
+}
+
+.tech-detail {
+  margin-top: 1.1rem;
+  max-width: 62ch;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--g2);
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 1rem 1.2rem;
+  animation: techIn 0.22s ease;
+}
+
+@keyframes techIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tech-detail p {
+  margin: 0 0 0.7rem;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.tech-link {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--g2);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+.tech-link:hover {
+  border-bottom-color: var(--g2);
 }
 
 /*//////////////////////////////////////////////////////////////  MINT  */
@@ -1277,9 +1384,259 @@ body::after {
   background: #fcd34d;
 }
 .cdot.ubi {
-  background: linear-gradient(120deg, #ffe24b, #ff6b8a);
+  background: var(--ubi);
+  box-shadow: 0 0 9px rgba(134, 239, 172, 0.75);
+}
+.cdot.local {
+  background: #6b7280;
+}
+.chainbadge.ubi {
+  color: var(--ubi);
+  border-color: rgba(134, 239, 172, 0.42);
+  background: rgba(134, 239, 172, 0.08);
 }
 .band.app .panel {
   border-color: rgba(255, 154, 85, 0.32);
   box-shadow: 0 34px 100px -44px rgba(255, 122, 138, 0.6);
+}
+
+/* Chain picker inside the mint step */
+.mint-chains {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+}
+.chainpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  padding: 0.42rem 0.8rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.12s ease;
+}
+.chainpick:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.chainpick.sel {
+  border-color: transparent;
+  background: var(--grad-soft);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 154, 85, 0.45);
+}
+.chainpick:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/*//////////////////////////////////////////////////////////////  HOW-IT-WORKS FLOW  */
+.how-flow {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  height: auto;
+  margin: 2.6rem auto 0;
+}
+.how-flow-label {
+  fill: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.how-flow-badge {
+  fill: var(--ok);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* the rail */
+.hf-rail {
+  stroke: rgba(255, 255, 255, 0.09);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.hf-progress {
+  stroke: url(#howRail);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-dasharray: 570;
+  stroke-dashoffset: 570;
+  animation: hfProgress 4.6s linear infinite;
+}
+/* node ring + pulsing halo */
+.hf-ring {
+  fill: rgba(255, 255, 255, 0.02);
+  stroke: url(#howRail);
+  stroke-width: 1.6;
+  opacity: 0.85;
+}
+.hf-halo {
+  fill: none;
+  stroke: url(#howRail);
+  stroke-width: 2.4;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hfHalo 4.6s ease-out infinite;
+}
+/* the comet */
+.hf-comet {
+  animation: hfComet 4.6s linear infinite;
+}
+.hf-comet-glow {
+  fill: #ffcf7a;
+  opacity: 0.55;
+}
+.hf-comet-core {
+  fill: #fff2d8;
+}
+
+@keyframes hfProgress {
+  0% {
+    stroke-dashoffset: 570;
+  }
+  90% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes hfComet {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  5% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+    transform: translateX(570px);
+  }
+  100% {
+    transform: translateX(570px);
+    opacity: 0;
+  }
+}
+@keyframes hfHalo {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  8% {
+    opacity: 0.9;
+  }
+  34% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hf-progress {
+    animation: none;
+    stroke-dashoffset: 0;
+    opacity: 0.75;
+  }
+  .hf-comet,
+  .hf-halo {
+    animation: none;
+  }
+  .hf-comet {
+    opacity: 0;
+  }
+}
+@media (max-width: 560px) {
+  .how-flow {
+    margin-top: 2rem;
+  }
+  .how-flow-label {
+    font-size: 17px;
+  }
+  .how-flow-badge {
+    font-size: 16px;
+  }
+}
+
+/*//////////////////////////////////////////////////////////////  UBI SECTION  */
+.ubi-logo-img {
+  display: block;
+  width: 88px;
+  height: auto;
+  margin: 0 auto 1.5rem;
+  filter: drop-shadow(0 0 26px rgba(134, 239, 172, 0.3));
+}
+.ubi-ink {
+  color: var(--ubi);
+  font-weight: 600;
+}
+@media (max-width: 760px) {
+  .ubi-logo-img {
+    width: 72px;
+    margin-bottom: 1.2rem;
+  }
+}
+
+/*//////////////////////////////////////////////////////////////  LIVE DEMO polish  */
+.predicate-demo {
+  border-color: rgba(255, 154, 85, 0.24);
+  box-shadow: 0 24px 72px -46px rgba(255, 122, 138, 0.5);
+}
+.pd-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.7rem 0.9rem 0.85rem;
+  background: var(--bg-2);
+}
+.pd-panel:has(.pd-panel-title.ok) {
+  border-left: 2px solid var(--ok);
+}
+.pd-panel:has(.pd-panel-title.priv) {
+  border-left: 2px solid #ff9a55;
+}
+.pd-panel .pd-panel-title {
+  margin-bottom: 0.55rem;
+}
+.pd-verdict {
+  padding: 0.7rem 0.85rem;
+  background: rgba(52, 211, 153, 0.06);
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  border-radius: 10px;
+  margin-bottom: 0.9rem;
+}
+
+/*//////////////////////////////////////////////////////////////  MINT STEP chain menu  */
+.step-body .cs-label {
+  display: block;
+  margin: 0.2rem 0 0.15rem;
+}
+.chainpick.soon {
+  opacity: 0.5;
+}
+.soon-tag {
+  margin-left: 0.35rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.03rem 0.3rem;
 }

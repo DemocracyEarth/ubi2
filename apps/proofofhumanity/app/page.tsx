@@ -350,6 +350,19 @@ function MintFlow() {
     [ready, selectedChainId],
   );
 
+  // The chain menu shown inside step 3: every marketed chain, each paired with its
+  // deployed voucher if one exists, plus any deployed chain not in the marketed set.
+  const displayChains = useMemo(() => {
+    const marketed = MINT_CHAINS.map((c) => ({
+      ...c,
+      voucher: ready?.vouchers.find((v) => chainStyle(v.name).dot === c.id) ?? null,
+    }));
+    const extra = (ready?.vouchers ?? [])
+      .filter((v) => !MINT_CHAINS.some((c) => c.id === chainStyle(v.name).dot))
+      .map((v) => ({ id: `v${v.chainId}`, dot: chainStyle(v.name).dot, label: chainStyle(v.name).label, voucher: v }));
+    return [...marketed, ...extra];
+  }, [ready]);
+
   const ensureChain = useCallback(
     async (chain: Chain) => {
       if (!injected) return;
@@ -522,39 +535,55 @@ function MintFlow() {
           <div className="step-badge">{minted ? "✓" : "3"}</div>
           <div className="step-body">
             <h4>Mint your soulbound credential</h4>
-            {!ready && <p className="muted small">Complete the Self proof first.</p>}
 
             {ready && (
-              <>
-                <div className="row" style={{ marginBottom: "0.7rem" }}>
-                  <span className="pill">
-                    <b style={{ color: "var(--gold)" }}>HUMAN ID</b> {humanIdFromNullifier(BigInt(ready.proof.nullifier))}
-                  </span>
-                  <span className="pill">epoch {ready.proof.epoch}</span>
-                </div>
-
-                {ready.vouchers.length > 0 ? (
-                  <div className="row">
-                    <select
-                      value={selectedChainId ?? ""}
-                      onChange={(e) => setSelectedChainId(Number(e.target.value))}
-                      disabled={phase === "minting"}
-                    >
-                      {ready.vouchers.map((v) => (
-                        <option key={v.chainId} value={v.chainId}>
-                          {v.name} (chain {v.chainId})
-                        </option>
-                      ))}
-                    </select>
-                    <button className="btn primary sm" onClick={mint} disabled={phase === "minting" || !selected}>
-                      {phase === "minting" ? "Minting…" : "Mint credential"}
-                    </button>
-                  </div>
-                ) : (
-                  <p className="muted small">No deployed chain configured to mint on.</p>
-                )}
-              </>
+              <div className="row" style={{ marginBottom: "0.85rem" }}>
+                <span className="pill">
+                  <b style={{ color: "var(--gold)" }}>HUMAN ID</b> {humanIdFromNullifier(BigInt(ready.proof.nullifier))}
+                </span>
+                <span className="pill">epoch {ready.proof.epoch}</span>
+              </div>
             )}
+
+            <span className="cs-label">
+              {ready ? "Choose a chain to mint on" : "One credential — mint it on any of these"}
+            </span>
+            <div className="mint-chains" role="listbox" aria-label="Chain to mint on">
+              {displayChains.map((c) => {
+                const isSel = !!c.voucher && c.voucher.chainId === selectedChainId;
+                const mintable = !!c.voucher;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="option"
+                    aria-selected={isSel}
+                    className={`chainpick${isSel ? " sel" : ""}${ready && !mintable ? " soon" : ""}`}
+                    onClick={() => c.voucher && setSelectedChainId(c.voucher.chainId)}
+                    disabled={phase === "minting" || !mintable}
+                  >
+                    <span className={`cdot ${c.dot}`} />
+                    {c.label}
+                    {ready && !mintable && <span className="soon-tag">soon</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              className="btn primary sm"
+              onClick={mint}
+              disabled={!ready || phase === "minting" || !selected}
+              style={{ marginTop: "1rem" }}
+            >
+              {!ready
+                ? "Complete the Self proof first"
+                : phase === "minting"
+                  ? "Minting…"
+                  : selected
+                    ? `Mint on ${chainStyle(selected.name).label}`
+                    : "Select a deployed chain"}
+            </button>
           </div>
         </div>
 
@@ -610,6 +639,54 @@ const GATE_CODE = `<span class="c">// One human, one vote — gate on the soulbo
     <span class="k">require</span>(poh.isValid(tokenId), <span class="s">"credential expired"</span>);
     _castVote(id, msg.sender, yes);
 }`;
+
+const TS_GATE_CODE = `<span class="c">// Off-chain gate — a DAO's API asks for a predicate</span>
+<span class="c">// and learns only the boolean, nothing else.</span>
+<span class="k">import</span> { verifyPredicate } <span class="k">from</span> <span class="s">"@ubi2/poh"</span>;
+
+<span class="k">async function</span> canJoin(att, sig) {
+    <span class="k">const</span> ok = <span class="k">await</span> verifyPredicate(att, sig, {
+        predicate: <span class="s">"age>=18"</span>,   <span class="c">// fresh proof, per request</span>
+        consumer:  DAO_ADDRESS,  <span class="c">// bound to us → unlinkable</span>
+        issuer:    POH_ISSUER,
+    });
+    <span class="k">return</span> ok;  <span class="c">// true — and we learned nothing more</span>
+}`;
+
+/** The builders code panel: switch between the on-chain gate and the off-chain SDK gate. */
+function BuilderCode() {
+  const [tab, setTab] = useState<"sol" | "ts">("sol");
+  return (
+    <div className="codeblock">
+      <div className="bar">
+        <i />
+        <i />
+        <i />
+        <div className="code-tabs" role="tablist" aria-label="Gating examples">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "sol"}
+            className={tab === "sol" ? "on" : ""}
+            onClick={() => setTab("sol")}
+          >
+            SybilResistantVote.sol
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "ts"}
+            className={tab === "ts" ? "on" : ""}
+            onClick={() => setTab("ts")}
+          >
+            gate.ts
+          </button>
+        </div>
+      </div>
+      <pre dangerouslySetInnerHTML={{ __html: tab === "sol" ? GATE_CODE : TS_GATE_CODE }} />
+    </div>
+  );
+}
 
 /*//////////////////////////////////////////////////////////////
                      PREDICATE DEMO — "Prove you're 18+"
@@ -795,6 +872,186 @@ function PredicateDemo() {
 }
 
 /*//////////////////////////////////////////////////////////////
+                    UBI MARK · TECH · CHAINS · FLOW
+//////////////////////////////////////////////////////////////*/
+
+/** The primitives behind the credential — clickable, each with a plain-language note + a canonical link. */
+const TECH_FEATURES: { k: string; d: string; href: string }[] = [
+  {
+    k: "Self (self.xyz) ZK passport",
+    d: "Self turns your passport's NFC chip into a zero-knowledge proof built on your phone. The passport data never leaves the device — only the proof travels.",
+    href: "https://docs.self.xyz/",
+  },
+  {
+    k: "Groth16 proofs",
+    d: "A zk-SNARK proving system with tiny, constant-size proofs that verify in milliseconds. It lets a contract check the passport proof without ever seeing your data.",
+    href: "https://www.rareskills.io/post/groth16",
+  },
+  {
+    k: "ERC-721",
+    d: "Ethereum's non-fungible token standard. Your Proof-of-Humanity credential is one ERC-721 token — exactly one per human.",
+    href: "https://eips.ethereum.org/EIPS/eip-721",
+  },
+  {
+    k: "ERC-5192 soulbound",
+    d: "A minimal standard that marks a token permanently non-transferable. The credential stays bound to the human who earned it — it can't be sold or moved.",
+    href: "https://eips.ethereum.org/EIPS/eip-5192",
+  },
+  {
+    k: "EIP-712 vouchers",
+    d: "Typed, human-readable signed data. The issuer signs a slim voucher the contract verifies before minting — with a distinct domain per chain, so a voucher can't be replayed elsewhere.",
+    href: "https://eips.ethereum.org/EIPS/eip-712",
+  },
+  {
+    k: "Nullifier uniqueness",
+    d: "A deterministic pseudonym derived from your passport: the same human always yields the same nullifier, so nobody can mint twice — while revealing nothing about who they are.",
+    href: "https://docs.semaphore.pse.dev/glossary",
+  },
+  {
+    k: "Coarse validity epoch",
+    d: "The token stores only a ~90-day epoch instead of any passport date — enough to prove the credential is fresh, never enough to fingerprint or age you.",
+    href: "https://eips.ethereum.org/EIPS/eip-5192",
+  },
+  {
+    k: "Multi-chain EVM + UBI Chain",
+    d: "The same credential mints on any EVM chain and on UBI Chain (ubi2 native), each with its own EIP-712 domain — one human, one credential, everywhere.",
+    href: "https://ethereum.org/en/developers/docs/evm/",
+  },
+];
+
+function TechChips() {
+  const [open, setOpen] = useState<number | null>(null);
+  const active = open === null ? null : TECH_FEATURES[open];
+  let host = "";
+  if (active) {
+    try {
+      host = new URL(active.href).hostname.replace(/^www\./, "");
+    } catch {
+      host = "reference";
+    }
+  }
+  return (
+    <>
+      <div className="chips">
+        {TECH_FEATURES.map((f, i) => (
+          <button
+            key={f.k}
+            type="button"
+            className={`tchip${open === i ? " on" : ""}`}
+            onClick={() => setOpen(open === i ? null : i)}
+            aria-expanded={open === i}
+          >
+            <span className="d" /> {f.k}
+          </button>
+        ))}
+      </div>
+      {active && (
+        <div className="tech-detail" role="region" aria-live="polite">
+          <p>{active.d}</p>
+          <a className="tech-link" href={active.href} target="_blank" rel="noreferrer">
+            Learn more · {host} ↗
+          </a>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Map a configured chain name to its brand dot + display label (ubi2 → the light-green "UBI Chain"). */
+function chainStyle(name: string): { dot: string; label: string } {
+  const n = name.toLowerCase();
+  if (n.includes("ubi")) return { dot: "ubi", label: "UBI Chain" };
+  if (n.includes("base")) return { dot: "base", label: name };
+  if (n.includes("celo")) return { dot: "celo", label: name };
+  if (n.includes("optim") || n === "op") return { dot: "op", label: name };
+  if (n.includes("eth") || n.includes("main")) return { dot: "eth", label: name };
+  return { dot: "local", label: name };
+}
+
+/** The chains the app markets minting on — shown as the picker inside the mint step. */
+const MINT_CHAINS: { id: string; dot: string; label: string }[] = [
+  { id: "eth", dot: "eth", label: "Ethereum" },
+  { id: "base", dot: "base", label: "Base" },
+  { id: "op", dot: "op", label: "Optimism" },
+  { id: "celo", dot: "celo", label: "Celo" },
+  { id: "ubi", dot: "ubi", label: "UBI Chain" },
+];
+
+/** The four-step journey as a living rail: a comet runs the line, lighting each node in turn. */
+function HowFlow() {
+  const labels = ["Scan", "Verify", "Mint", "Prove"];
+  const xs = [95, 285, 475, 665];
+  return (
+    <svg className="how-flow" viewBox="0 0 760 150" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="howRail" x1="0" y1="0" x2="760" y2="0" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#ffe24b" />
+          <stop offset="0.52" stopColor="#ff9a55" />
+          <stop offset="1" stopColor="#ff6b8a" />
+        </linearGradient>
+        <filter id="howGlow" x="-70%" y="-70%" width="240%" height="240%">
+          <feGaussianBlur stdDeviation="3.4" />
+        </filter>
+      </defs>
+
+      {/* the rail: faint base + a gradient that draws itself left→right */}
+      <line className="hf-rail" x1="95" y1="58" x2="665" y2="58" />
+      <line className="hf-progress" x1="95" y1="58" x2="665" y2="58" />
+
+      {/* nodes: a ring + a halo that pulses as the comet arrives */}
+      {xs.map((x, i) => (
+        <g key={i}>
+          <circle
+            className="hf-halo"
+            cx={x}
+            cy="58"
+            r="33"
+            style={{ animationDelay: `${(i * 1.15).toFixed(2)}s` }}
+          />
+          <circle className="hf-ring" cx={x} cy="58" r="33" />
+          <text x={x} y="134" textAnchor="middle" className="how-flow-label">
+            {`0${i + 1} · ${labels[i]}`}
+          </text>
+        </g>
+      ))}
+
+      {/* the comet: a glowing core running the rail */}
+      <g className="hf-comet">
+        <circle className="hf-comet-glow" cx="95" cy="58" r="8" filter="url(#howGlow)" />
+        <circle className="hf-comet-core" cx="95" cy="58" r="3.6" />
+      </g>
+
+      {/* 01 · Scan — passport */}
+      <g stroke="#e8e8ec" strokeWidth="1.7" strokeLinecap="round" opacity="0.9">
+        <rect x="82" y="43" width="26" height="30" rx="3.5" fill="none" />
+        <circle cx="92" cy="54" r="3.4" fill="none" />
+        <line x1="99" y1="52" x2="103" y2="52" />
+        <line x1="99" y1="57" x2="103" y2="57" />
+        <line x1="87" y1="65" x2="103" y2="65" />
+      </g>
+      {/* 02 · Verify — shield + check */}
+      <g stroke="#e8e8ec" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.9">
+        <path d="M285 42 L301 48 V60 C301 69 285 75 285 75 C285 75 269 69 269 60 V48 Z" />
+        <path d="M278 58 l5 5 l9 -11" stroke="var(--ok)" strokeWidth="2.1" />
+      </g>
+      {/* 03 · Mint — soulbound token card */}
+      <g stroke="#e8e8ec" strokeWidth="1.7" strokeLinecap="round" fill="none" opacity="0.9">
+        <rect x="459" y="45" width="32" height="26" rx="4" />
+        <circle cx="469" cy="55" r="4" />
+        <line x1="478" y1="53" x2="486" y2="53" />
+        <line x1="478" y1="58" x2="484" y2="58" />
+        <line x1="464" y1="65" x2="486" y2="65" />
+      </g>
+      {/* 04 · Prove — predicate badge */}
+      <g opacity="0.95">
+        <circle cx="665" cy="58" r="16" fill="none" stroke="var(--ok)" strokeWidth="1.7" />
+        <text x="665" y="62" textAnchor="middle" className="how-flow-badge">18+</text>
+      </g>
+    </svg>
+  );
+}
+
+/*//////////////////////////////////////////////////////////////
                               PAGE
 //////////////////////////////////////////////////////////////*/
 
@@ -839,6 +1096,7 @@ export default function Page() {
           </a>
           <nav className="nav-links">
             <a href="#how">How it works</a>
+            <a href="#mint">App</a>
             <a href="#privacy">Privacy</a>
             <a href="#builders">Builders</a>
             <a href="#ubi">UBI</a>
@@ -990,6 +1248,23 @@ export default function Page() {
                 </p>
               </div>
             </div>
+            <HowFlow />
+          </div>
+        </section>
+
+        {/* THE APP — mint (placed 3rd, right after How it works) */}
+        <section className="band app" id="mint">
+          <div className="container">
+            <div className="section-head center">
+              <span className="eyebrow grad-text">◆ The app · live</span>
+              <h2>Get your credential.</h2>
+              <p>
+                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token — on any
+                EVM chain or on <span className="ubi-ink">UBI Chain</span>. One human, one credential; nothing
+                personal on-chain. Pick where to mint in step&nbsp;3.
+              </p>
+            </div>
+            <MintFlow />
           </div>
         </section>
 
@@ -1110,15 +1385,7 @@ export default function Page() {
                   </li>
                 </ul>
               </div>
-              <div className="codeblock">
-                <div className="bar">
-                  <i />
-                  <i />
-                  <i />
-                  <span className="fn">SybilResistantVote.sol</span>
-                </div>
-                <pre dangerouslySetInnerHTML={{ __html: GATE_CODE }} />
-              </div>
+              <BuilderCode />
             </div>
             <PredicateDemo />
           </div>
@@ -1132,46 +1399,25 @@ export default function Page() {
               <h2>Open standards, all the way down.</h2>
               <p>No custom trust assumptions — audited primitives composed into a minimal credential.</p>
             </div>
-            <div className="chips">
-              <span className="tchip">
-                <span className="d" /> Self (self.xyz) ZK passport
-              </span>
-              <span className="tchip">
-                <span className="d" /> Groth16 proofs
-              </span>
-              <span className="tchip">
-                <span className="d" /> ERC-721
-              </span>
-              <span className="tchip">
-                <span className="d" /> ERC-5192 soulbound
-              </span>
-              <span className="tchip">
-                <span className="d" /> EIP-712 vouchers
-              </span>
-              <span className="tchip">
-                <span className="d" /> Nullifier uniqueness
-              </span>
-              <span className="tchip">
-                <span className="d" /> Coarse validity epoch
-              </span>
-              <span className="tchip">
-                <span className="d" /> Multi-chain EVM + ubi2 native
-              </span>
-            </div>
+            <p className="chips-hint muted small">Tap any primitive to see what it does and where to read more.</p>
+            <TechChips />
           </div>
         </section>
 
         {/* UBI */}
         <section className="band ubi" id="ubi">
           <div className="container">
-            <div className="section-head">
+            <div className="section-head center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className="ubi-logo-img" src="/ubi-logo.png" alt="UBI" width={96} height={96} />
               <span className="eyebrow">Universal Basic Income</span>
               <h2>One human, one income.</h2>
               <p>
-                Proof of Humanity is the Sybil-resistance layer behind <b>UBI</b> — a universal basic income streamed
-                to every verified human. Because one passport yields exactly one credential, a basic income can pay a
-                single stream per person: no bots, no duplicate claims, no whales draining the pool. Your soulbound
-                token is minted under the <span className="mono">ubi.eth</span> domain and unlocks the stream.
+                Proof of Humanity is the Sybil-resistance layer behind <b>UBI</b> — a universal basic income
+                streamed to every verified human. Because one passport yields exactly one credential, a basic
+                income can pay a single stream per person: no bots, no duplicate claims, no whales draining the
+                pool. Your soulbound token is minted under the <span className="mono">ubi.eth</span> domain and
+                unlocks the stream.
               </p>
               <div className="hero-cta">
                 <a className="btn primary" href="https://ubi.eth.limo/" target="_blank" rel="noreferrer">
@@ -1185,38 +1431,6 @@ export default function Page() {
           </div>
         </section>
 
-        {/* MINT — the app */}
-        <section className="band app" id="mint">
-          <div className="container">
-            <div className="section-head center">
-              <span className="eyebrow grad-text">◆ The app · live</span>
-              <h2>Get your credential.</h2>
-              <p>
-                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token — on any
-                EVM chain or ubi2 native. One human, one credential; nothing personal on-chain.
-              </p>
-              <div className="chain-strip">
-                <span className="cs-label">Mint on</span>
-                <span className="chainbadge">
-                  <span className="cdot eth" />Ethereum
-                </span>
-                <span className="chainbadge">
-                  <span className="cdot base" />Base
-                </span>
-                <span className="chainbadge">
-                  <span className="cdot op" />Optimism
-                </span>
-                <span className="chainbadge">
-                  <span className="cdot celo" />Celo
-                </span>
-                <span className="chainbadge">
-                  <span className="cdot ubi" />ubi2 native
-                </span>
-              </div>
-            </div>
-            <MintFlow />
-          </div>
-        </section>
       </main>
 
       {/* FOOTER */}
