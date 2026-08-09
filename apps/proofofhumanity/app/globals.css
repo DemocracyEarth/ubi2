@@ -1136,3 +1136,150 @@ body::after {
   color: var(--muted-2);
   font-size: 0.86rem;
 }
+
+/*//////////////////////////////////////////////////////////////  WHY (2-col lead)  */
+.why-lead {
+  display: grid;
+  grid-template-columns: 1.08fr 0.92fr;
+  gap: clamp(1.5rem, 4vw, 3.4rem);
+  align-items: center;
+  margin-bottom: clamp(2rem, 5vw, 3.2rem);
+}
+.section-head.bare {
+  margin-bottom: 0;
+  max-width: none;
+}
+.why-art {
+  margin: 0;
+}
+.why-art img {
+  width: 100%;
+  height: auto;
+  display: block;
+  mix-blend-mode: screen;
+}
+@media (max-width: 860px) {
+  .why-lead {
+    grid-template-columns: 1fr;
+  }
+  .why-art {
+    max-width: 440px;
+    margin: 0.4rem auto 0;
+  }
+}
+
+/*//////////////////////////////////////////////////////////////  PRIVACY panels  */
+.ptag {
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.62rem;
+  border-radius: 999px;
+  margin-bottom: 0.85rem;
+}
+.ptag.ok {
+  color: var(--ok-2);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.32);
+}
+.ptag.no {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.24);
+}
+.pcard h3 {
+  font-size: 1.22rem;
+}
+.pcard-sub {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0.35rem 0 1.1rem;
+}
+
+/*//////////////////////////////////////////////////////////////  UBI  */
+.band.ubi {
+  background: radial-gradient(760px 340px at 84% 16%, rgba(255, 226, 75, 0.06), transparent 62%);
+}
+
+/*//////////////////////////////////////////////////////////////  MINT — the app  */
+.band.app {
+  position: relative;
+  background:
+    radial-gradient(980px 440px at 50% 0%, rgba(255, 154, 85, 0.11), transparent 60%),
+    linear-gradient(180deg, rgba(255, 226, 75, 0.03), transparent 26%);
+}
+.band.app::before {
+  content: "";
+  position: absolute;
+  inset: -1px 0 auto 0;
+  height: 2px;
+  background: var(--grad);
+  opacity: 0.75;
+}
+.section-head.center {
+  max-width: 62ch;
+  margin: 0 auto 2.4rem;
+  text-align: center;
+}
+.eyebrow.grad-text {
+  color: transparent;
+}
+.chain-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 1.7rem;
+}
+.cs-label {
+  color: var(--muted-2);
+  font-size: 0.8rem;
+  margin-right: 0.15rem;
+}
+.chainbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  transition:
+    border-color 0.15s ease,
+    transform 0.12s ease;
+}
+.chainbadge:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.cdot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.cdot.eth {
+  background: #8a92b2;
+}
+.cdot.base {
+  background: #2f6bff;
+}
+.cdot.op {
+  background: #ff0420;
+}
+.cdot.celo {
+  background: #fcd34d;
+}
+.cdot.ubi {
+  background: linear-gradient(120deg, #ffe24b, #ff6b8a);
+}
+.band.app .panel {
+  border-color: rgba(255, 154, 85, 0.32);
+  box-shadow: 0 34px 100px -44px rgba(255, 122, 138, 0.6);
+}

@@ -841,6 +841,7 @@ export default function Page() {
             <a href="#how">How it works</a>
             <a href="#privacy">Privacy</a>
             <a href="#builders">Builders</a>
+            <a href="#ubi">UBI</a>
             <a href="#tech">Tech</a>
           </nav>
           <a className="btn primary sm nav-cta" href="#mint">
@@ -894,22 +895,24 @@ export default function Page() {
         {/* WHY */}
         <section className="band" id="why">
           <div className="container">
-            <div className="section-head">
-              <span className="eyebrow">Why it matters</span>
-              <h2>The internet needs a way to tell humans apart from bots — without a database of faces.</h2>
-              <p>
-                Every open network — a DAO vote, an airdrop, a social feed, a UBI — breaks the moment one person can
-                be ten thousand. The usual fix is KYC: hand your identity to a company and trust it. Proof of Humanity
-                takes the opposite path. You prove you are a unique human, and reveal nothing else.
-              </p>
+            <div className="why-lead">
+              <div className="section-head bare">
+                <span className="eyebrow">Why it matters</span>
+                <h2>The internet needs a way to tell humans apart from bots — without a database of faces.</h2>
+                <p>
+                  Every open network — a DAO vote, an airdrop, a social feed, a UBI — breaks the moment one person
+                  can be ten thousand. The usual fix is KYC: hand your identity to a company and trust it. Proof of
+                  Humanity takes the opposite path. You prove you are a unique human, and reveal nothing else.
+                </p>
+              </div>
+              <figure className="why-art">
+                <img
+                  src="/illustrations/verified-human.webp"
+                  alt="A single verified human, uniquely counted, orbited by proof checkmarks"
+                  loading="lazy"
+                />
+              </figure>
             </div>
-            <figure className="section-art">
-              <img
-                src="/illustrations/verified-human.webp"
-                alt="A single verified human, uniquely counted, orbited by proof checkmarks"
-                loading="lazy"
-              />
-            </figure>
             <div className="grid cols-3">
               <div className="tile">
                 <div className="ico">
@@ -1011,23 +1014,25 @@ export default function Page() {
                     loading="lazy"
                   />
                 </div>
-                <h3>
-                  <Icon name="check" /> On the Proof-of-Humanity token
-                </h3>
-                <ul className="plist">
-                  <li>
-                    <span className="mk y">✓</span> A nullifier — proves one unique human, reveals nothing about them
-                  </li>
-                  <li>
-                    <span className="mk y">✓</span> A coarse ~90-day validity epoch — never a passport date
-                  </li>
-                  <li>
-                    <span className="mk y">✓</span> Soulbound: bound to you, non-transferable, one per human
-                  </li>
-                  <li>
-                    <span className="mk y">✓</span> Attributes proven on demand, unlinkable per context
-                  </li>
-                </ul>
+                <div className="pcard-body">
+                  <span className="ptag ok">Private by default</span>
+                  <h3>On the Proof-of-Humanity token</h3>
+                  <p className="pcard-sub">The minimum that makes you countable — and nothing else.</p>
+                  <ul className="plist">
+                    <li>
+                      <span className="mk y">✓</span> A nullifier — proves one unique human, reveals nothing about them
+                    </li>
+                    <li>
+                      <span className="mk y">✓</span> A coarse ~90-day validity epoch — never a passport date
+                    </li>
+                    <li>
+                      <span className="mk y">✓</span> Soulbound: bound to you, non-transferable, one per human
+                    </li>
+                    <li>
+                      <span className="mk y">✓</span> Attributes proven on demand, unlinkable per context
+                    </li>
+                  </ul>
+                </div>
               </div>
               <div className="pcard bad">
                 <div className="pcard-art">
@@ -1037,8 +1042,11 @@ export default function Page() {
                     loading="lazy"
                   />
                 </div>
-                <h3>The KYC anti-pattern</h3>
-                <ul className="plist muted">
+                <div className="pcard-body">
+                  <span className="ptag no">The old way</span>
+                  <h3>The KYC anti-pattern</h3>
+                  <p className="pcard-sub">Hand your identity to a company and hope it never leaks.</p>
+                  <ul className="plist muted">
                   <li>
                     <span className="mk n">✕</span> Name, document number and photo stored in a database
                   </li>
@@ -1051,7 +1059,8 @@ export default function Page() {
                   <li>
                     <span className="mk n">✕</span> Every use is linkable back to a single real identity
                   </li>
-                </ul>
+                  </ul>
+                </div>
               </div>
             </div>
           </div>
@@ -1068,14 +1077,6 @@ export default function Page() {
                 a predicate to form an age- or jurisdiction-gated sub-group — all without ever handling personal data.
               </p>
             </div>
-            <figure className="section-art wide">
-              <img
-                src="/illustrations/predicates-travel.webp"
-                alt="One credential fans out to a ballot box, a storefront and an app — each an unlinkable yes/no proof"
-                loading="lazy"
-              />
-              <figcaption>One credential, many predicates — each proof unlinkable from the next.</figcaption>
-            </figure>
             <div className="split">
               <div>
                 <ul className="feat-list">
@@ -1160,16 +1161,58 @@ export default function Page() {
           </div>
         </section>
 
-        {/* MINT */}
-        <section className="band" id="mint">
+        {/* UBI */}
+        <section className="band ubi" id="ubi">
           <div className="container">
             <div className="section-head">
-              <span className="eyebrow">Get your credential</span>
-              <h2>Verify with Self &amp; mint.</h2>
+              <span className="eyebrow">Universal Basic Income</span>
+              <h2>One human, one income.</h2>
               <p>
-                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token. One human,
-                one credential — nothing personal on-chain.
+                Proof of Humanity is the Sybil-resistance layer behind <b>UBI</b> — a universal basic income streamed
+                to every verified human. Because one passport yields exactly one credential, a basic income can pay a
+                single stream per person: no bots, no duplicate claims, no whales draining the pool. Your soulbound
+                token is minted under the <span className="mono">ubi.eth</span> domain and unlocks the stream.
               </p>
+              <div className="hero-cta">
+                <a className="btn primary" href="https://ubi.eth.limo/" target="_blank" rel="noreferrer">
+                  How UBI works →
+                </a>
+                <a className="btn ghost" href="#mint">
+                  Get your credential
+                </a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* MINT — the app */}
+        <section className="band app" id="mint">
+          <div className="container">
+            <div className="section-head center">
+              <span className="eyebrow grad-text">◆ The app · live</span>
+              <h2>Get your credential.</h2>
+              <p>
+                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token — on any
+                EVM chain or ubi2 native. One human, one credential; nothing personal on-chain.
+              </p>
+              <div className="chain-strip">
+                <span className="cs-label">Mint on</span>
+                <span className="chainbadge">
+                  <span className="cdot eth" />Ethereum
+                </span>
+                <span className="chainbadge">
+                  <span className="cdot base" />Base
+                </span>
+                <span className="chainbadge">
+                  <span className="cdot op" />Optimism
+                </span>
+                <span className="chainbadge">
+                  <span className="cdot celo" />Celo
+                </span>
+                <span className="chainbadge">
+                  <span className="cdot ubi" />ubi2 native
+                </span>
+              </div>
             </div>
             <MintFlow />
           </div>
@@ -1189,6 +1232,9 @@ export default function Page() {
             <p className="fine">One human. One credential. Soulbound. Prove you are human without revealing who you are.</p>
           </div>
           <div className="links">
+            <a href="https://ubi.eth.limo/" target="_blank" rel="noreferrer">
+              UBI
+            </a>
             <a href="https://github.com/DemocracyEarth" target="_blank" rel="noreferrer">
               GitHub
             </a>
