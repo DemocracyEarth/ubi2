@@ -799,6 +799,31 @@ function PredicateDemo() {
 //////////////////////////////////////////////////////////////*/
 
 export default function Page() {
+  // Reveal sections as they scroll into view. Guarded by html.js-reveal so
+  // content is never hidden without JS (and honours prefers-reduced-motion via CSS).
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("js-reveal");
+    const els = Array.from(document.querySelectorAll<HTMLElement>("main section.band, footer"));
+    els.forEach((el) => el.classList.add("reveal"));
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+          }
+        }
+      },
+      { threshold: 0.06, rootMargin: "0px 0px -6% 0px" },
+    );
+    els.forEach((el) => io.observe(el));
+    return () => {
+      io.disconnect();
+      root.classList.remove("js-reveal");
+    };
+  }, []);
+
   return (
     <>
       <GradDefs />
@@ -833,7 +858,7 @@ export default function Page() {
               <h1>
                 One human.
                 <br />
-                <span className="grad-text">One credential.</span>
+                <span className="grad-text grad-anim">One credential.</span>
               </h1>
               <p className="sub">
                 Prove you are a unique, real person with a Self zero-knowledge passport proof — then carry a
@@ -861,7 +886,7 @@ export default function Page() {
               </div>
             </div>
             <div className="hero-card">
-              <MinimalCard className="card-frame" humanId="0x7A3F…C9E2" />
+              <MinimalCard className="card-frame float" humanId="0x7A3F…C9E2" />
             </div>
           </div>
         </section>

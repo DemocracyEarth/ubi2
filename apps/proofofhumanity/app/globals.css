@@ -188,6 +188,7 @@ h3 {
 .btn:hover:not(:disabled) {
   background: var(--panel-3);
   border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
 .btn:active:not(:disabled) {
@@ -201,18 +202,40 @@ h3 {
 
 .btn.primary {
   background: var(--grad);
+  background-size: 170% 170%;
+  background-position: 0% 50%;
   color: #17110a;
   border: none;
   font-weight: 700;
   box-shadow: 0 10px 30px -12px rgba(255, 154, 85, 0.6);
+  transition:
+    transform 0.12s ease,
+    background-position 0.5s ease,
+    box-shadow 0.2s ease,
+    filter 0.15s ease;
 }
 
+/* Keep the gradient (and the dark, readable text) on hover — the generic
+   .btn:hover was overriding the background to a dark panel, leaving dark text
+   on a dark button. Shift the gradient + lift + intensify the glow instead. */
 .btn.primary:hover:not(:disabled) {
-  filter: brightness(1.05);
+  background: var(--grad);
+  background-size: 170% 170%;
+  background-position: 100% 50%;
+  color: #17110a;
+  filter: brightness(1.05) saturate(1.05);
+  box-shadow: 0 16px 46px -12px rgba(255, 122, 138, 0.72);
+  transform: translateY(-1px);
 }
 
 .btn.ghost {
   background: transparent;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--grad-soft);
+  border-color: rgba(255, 154, 85, 0.45);
+  color: var(--ink);
 }
 
 .btn.sm {
@@ -983,4 +1006,91 @@ footer.site {
 
 .pd-panel .json {
   max-height: 200px;
+}
+
+/*//////////////////////////////////////////////////////////////  EYE CANDY  */
+
+/* Slow-drifting aurora behind everything. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25vmax;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(36vmax 28vmax at 18% 10%, rgba(255, 226, 75, 0.10), transparent 60%),
+    radial-gradient(42vmax 34vmax at 84% 6%, rgba(255, 107, 138, 0.13), transparent 62%),
+    radial-gradient(40vmax 32vmax at 64% 88%, rgba(255, 154, 85, 0.09), transparent 64%);
+  animation: aurora 28s ease-in-out infinite alternate;
+}
+@keyframes aurora {
+  0%   { transform: translate3d(-2%, -1%, 0) scale(1); }
+  50%  { transform: translate3d(2%, 1.6%, 0) scale(1.06); }
+  100% { transform: translate3d(-1%, 2%, 0) scale(1.02); }
+}
+
+/* Fine film grain — premium, less-flat surface. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Gentle float for the hero card. */
+.float { animation: float 7s ease-in-out infinite; }
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-10px); }
+}
+
+/* Animated gradient for the headline (opt-in via .grad-anim). */
+.grad-text.grad-anim {
+  background-size: 220% 220%;
+  animation: gradmove 9s ease infinite;
+}
+@keyframes gradmove {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* Warmer card hover — brand-tinted border + soft glow lift. */
+.tile:hover,
+.step:hover,
+.pcard:hover {
+  border-color: rgba(255, 154, 85, 0.42);
+  box-shadow: 0 24px 64px -34px rgba(255, 122, 138, 0.55);
+}
+.step,
+.pcard {
+  transition:
+    border-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.step:hover,
+.pcard:hover { transform: translateY(-2px); }
+
+/* Scroll reveal — guarded by html.js-reveal so no-JS never hides content. */
+.js-reveal .reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 0.7s ease,
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.js-reveal .reveal.in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+  .float { animation: none; }
+  .grad-text.grad-anim { animation: none; }
+  .js-reveal .reveal { opacity: 1; transform: none; transition: none; }
 }
