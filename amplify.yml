@@ -1,0 +1,23 @@
+# AWS Amplify Hosting build spec — proofofhumanity.org (Next.js SSR, monorepo).
+# In the Amplify console set the app root to apps/proofofhumanity; Amplify detects Next SSR.
+version: 1
+applications:
+  - appRoot: apps/proofofhumanity
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 20 && nvm use 20
+            - corepack enable
+            - pnpm install --frozen-lockfile
+        build:
+          commands:
+            - pnpm --filter @ubi2/proofofhumanity build
+      artifacts:
+        baseDirectory: .next
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+          - .next/cache/**/*
