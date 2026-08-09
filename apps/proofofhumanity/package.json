@@ -1,6 +1,6 @@
 {
   "name": "@ubi2/proofofhumanity",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "proofofhumanity.org — Self (self.xyz) ZK passport proof → EIP-712 humanity voucher → soulbound Proof-of-Humanity NFT mint on any EVM chain.",
   "scripts": {
