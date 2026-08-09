@@ -16,8 +16,10 @@ applications:
       phases:
         preBuild:
           commands:
+            # pnpm is not in Amplify's build image — install the version pinned in
+            # package.json ("packageManager": "pnpm@10.2.1") so it matches the lockfile.
             - nvm install 20 && nvm use 20
-            - corepack enable
+            - npm install -g pnpm@10.2.1
             - pnpm install --frozen-lockfile
         build:
           commands:
