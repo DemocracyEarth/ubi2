@@ -1094,3 +1094,45 @@ body::after {
   .grad-text.grad-anim { animation: none; }
   .js-reveal .reveal { opacity: 1; transform: none; transition: none; }
 }
+
+/*//////////////////////////////////////////////////////////////  ILLUSTRATIONS  */
+
+/* Generated glow art on near-black backgrounds. `screen` drops the black so the
+   art blends seamlessly onto the page — no rectangle edges. */
+.pcard {
+  overflow: hidden;
+}
+.pcard-art {
+  margin: -1.6rem -1.6rem 1.3rem;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: #000;
+}
+.pcard-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  mix-blend-mode: screen;
+}
+
+.section-art {
+  margin: 0 auto 2.6rem;
+  max-width: 560px;
+  text-align: center;
+}
+.section-art.wide {
+  max-width: 880px;
+}
+.section-art img {
+  width: 100%;
+  height: auto;
+  display: block;
+  mix-blend-mode: screen;
+}
+.section-art figcaption {
+  margin-top: 0.6rem;
+  color: var(--muted-2);
+  font-size: 0.86rem;
+}

@@ -903,6 +903,13 @@ export default function Page() {
                 takes the opposite path. You prove you are a unique human, and reveal nothing else.
               </p>
             </div>
+            <figure className="section-art">
+              <img
+                src="/illustrations/verified-human.webp"
+                alt="A single verified human, uniquely counted, orbited by proof checkmarks"
+                loading="lazy"
+              />
+            </figure>
             <div className="grid cols-3">
               <div className="tile">
                 <div className="ico">
@@ -997,6 +1004,13 @@ export default function Page() {
             </div>
             <div className="privacy-grid">
               <div className="pcard good">
+                <div className="pcard-art">
+                  <img
+                    src="/illustrations/privacy-vault.webp"
+                    alt="Your personal data stays sealed in the credential; only a single yes/no answer leaves"
+                    loading="lazy"
+                  />
+                </div>
                 <h3>
                   <Icon name="check" /> On the Proof-of-Humanity token
                 </h3>
@@ -1016,6 +1030,13 @@ export default function Page() {
                 </ul>
               </div>
               <div className="pcard bad">
+                <div className="pcard-art">
+                  <img
+                    src="/illustrations/privacy-kyc.webp"
+                    alt="A KYC database cracks open and spills your passport, ID, birth date and photo"
+                    loading="lazy"
+                  />
+                </div>
                 <h3>The KYC anti-pattern</h3>
                 <ul className="plist muted">
                   <li>
@@ -1047,6 +1068,14 @@ export default function Page() {
                 a predicate to form an age- or jurisdiction-gated sub-group — all without ever handling personal data.
               </p>
             </div>
+            <figure className="section-art wide">
+              <img
+                src="/illustrations/predicates-travel.webp"
+                alt="One credential fans out to a ballot box, a storefront and an app — each an unlinkable yes/no proof"
+                loading="lazy"
+              />
+              <figcaption>One credential, many predicates — each proof unlinkable from the next.</figcaption>
+            </figure>
             <div className="split">
               <div>
                 <ul className="feat-list">
