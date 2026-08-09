@@ -1,9 +1,18 @@
-# AWS Amplify Hosting build spec — proofofhumanity.org (Next.js SSR, monorepo).
-# In the Amplify console set the app root to apps/proofofhumanity; Amplify detects Next SSR.
+# AWS Amplify Hosting build spec — proofofhumanity.org (Next.js SSR, pnpm monorepo).
+#
+# In the Amplify console: connect the repo, set the monorepo app root to
+# apps/proofofhumanity (this sets AMPLIFY_MONOREPO_APP_ROOT=apps/proofofhumanity).
+#
+# Why buildPath '/' + root .npmrc (node-linker=hoisted): pnpm's default isolated
+# linker symlinks deps into .pnpm, and under a workspace the hoisted `next` lands in
+# the WORKSPACE-ROOT node_modules (a real folder), not the app's. Building from the
+# root lets Amplify's SSR compute bundler find that real `next` at runtime — fixing
+# "The 'node_modules' folder is missing the 'next' dependency."
 version: 1
 applications:
   - appRoot: apps/proofofhumanity
     frontend:
+      buildPath: '/'
       phases:
         preBuild:
           commands:
@@ -14,10 +23,10 @@ applications:
           commands:
             - pnpm --filter @ubi2/proofofhumanity build
       artifacts:
-        baseDirectory: .next
+        baseDirectory: apps/proofofhumanity/.next
         files:
           - '**/*'
       cache:
         paths:
           - node_modules/**/*
-          - .next/cache/**/*
+          - apps/proofofhumanity/.next/cache/**/*
