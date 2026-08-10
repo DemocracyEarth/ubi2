@@ -6,11 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a deterministic contract CI gate covering formatting, optimized bytecode size, the complete
+  Forge suite, target-contract line/branch coverage, gas regression, Solidity/TypeScript EIP-712
+  parity, and an encrypted-keystore deployment rehearsal on Anvil.
+- Add a testnet-only Phase 2 deployment wrapper for Base Sepolia, Ethereum Sepolia, Celo Sepolia,
+  and Robinhood Chain Testnet, including chain/signer checks, explicit broadcast confirmation,
+  manifest validation, source verification, and a post-deploy mint/replay/soulbound e2e check.
+
 ### Changed
 
 - Reject exact same-epoch humanity voucher replays while preserving strictly newer in-place refreshes.
 - Run predicate cross-stack parity against the production `PredicateVerifier` and
   `SybilResistantVote` artifacts instead of mirrored fixture implementations.
+- Make `Deploy.s.sol` derive ownership from Foundry's active broadcast caller so named encrypted
+  keystores wire the deployed stack to the actual deployer.
 
 ## [0.1.0] — 2026-08-09
 

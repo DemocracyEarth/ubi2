@@ -79,15 +79,49 @@ jobs:
   contracts:
     name: contracts (solidity — forge fmt + test)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: contracts
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
-      # lib/ is not vendored (see contracts/README.md) — restore the pinned deps.
+        with:
+          # Phase 1 QA and the committed gas baseline were produced with this release.
+          version: v1.5.1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # lib/ is not vendored. Pin immutable commits, not moving branches/tags.
       - name: Restore pinned dependencies
-        run: forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 foundry-rs/forge-std --no-git
-      - run: forge fmt --check
-      - run: forge test -vv
+        working-directory: contracts
+        run: >-
+          forge install
+          OpenZeppelin/openzeppelin-contracts@cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+          foundry-rs/forge-std@bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
+          --no-git
+      - name: Toolchain identity
+        working-directory: contracts
+        run: forge --version && node --version && pnpm --version
+      - name: Format
+        working-directory: contracts
+        run: forge fmt --check
+      - name: Optimized build and EIP-170 sizes
+        working-directory: contracts
+        run: forge build --sizes
+      - name: Unit, fuzz, invariant, privacy, and integration tests
+        working-directory: contracts
+        run: forge test -vv
+      - name: ProofOfHumanity and PredicateVerifier coverage gate
+        working-directory: contracts
+        run: |
+          forge coverage --report lcov --report-file lcov.info
+          node scripts/check-coverage.mjs lcov.info 95
+      - name: Deterministic target-call gas regression
+        working-directory: contracts
+        run: forge snapshot --check --match-contract GasBenchmarksTest
+      - name: Solidity and TypeScript EIP-712 cross-stack parity
+        run: pnpm --filter @ubi2/proofofhumanity test:contracts
+      - name: Phase 2 tooling rehearsal on Anvil
+        working-directory: contracts
+        run: ./scripts/test-phase2-local.sh
