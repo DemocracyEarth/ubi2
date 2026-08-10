@@ -11,4 +11,9 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
 
+[invariant]
+runs = 64
+depth = 64
+fail_on_revert = true
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

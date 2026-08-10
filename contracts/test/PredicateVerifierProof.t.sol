@@ -74,7 +74,7 @@ contract PredicateVerifierProofTest is Test {
 
     function test_SetProver_OnlyOwner() public {
         vm.prank(human);
-        vm.expectRevert(); // Ownable: not owner
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", human));
         pv.setPredicateProver(mock);
     }
 
@@ -191,6 +191,7 @@ contract PredicateVerifierProofTest is Test {
 
         bool r = pv.checkProof(proof, signals, ctx, AGE18, human);
         assertTrue(r);
+        assertTrue(pv.checkProof(proof, signals, ctx, AGE18, human));
 
         // it did NOT spend — a subsequent consume for the same key still succeeds
         vm.prank(consumerA);
@@ -208,5 +209,14 @@ contract PredicateVerifierProofTest is Test {
         pv.checkProof(proof, signals, ctx, AGE21, human);
         vm.expectRevert(PredicateVerifier.SubjectMismatch.selector);
         pv.checkProof(proof, signals, ctx, AGE18, makeAddr("notHuman"));
+
+        mock.set(human, AGE18, true, pv.currentEpoch() - 5);
+        vm.expectRevert(PredicateVerifier.StaleEpoch.selector);
+        pv.checkProof(proof, signals, ctx, AGE18, human);
+
+        mock.set(human, AGE18, true, pv.currentEpoch());
+        mock.setRevert(true);
+        vm.expectRevert(bytes("bad proof"));
+        pv.checkProof(proof, signals, ctx, AGE18, human);
     }
 }
