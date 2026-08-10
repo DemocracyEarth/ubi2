@@ -150,6 +150,14 @@ contract PredicateVerifier is Ownable, EIP712 {
     ///         `(subject, consumer, context, nonce)` tuple has been consumed.
     mapping(bytes32 replayKey => bool spent) public consumed;
 
+    /// @notice The active holder-side ZK predicate prover (ADR-0009 seam). When set,
+    ///         {consumeWithProof} accepts a proof INSTEAD of an issuer signature — the
+    ///         trust root for that path moves from {issuer} to the prover's verifier.
+    ///         Unset (`address(0)`) disables the proof path (issuer path only). This is
+    ///         what keeps THIS deployed verifier final: upgrading v1 → v1.5 → v2 is a
+    ///         {setPredicateProver} swap, never a redeploy or a consumer migration.
+    IPredicateProver public prover;
+
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -162,6 +170,16 @@ contract PredicateVerifier is Ownable, EIP712 {
 
     /// @notice Emitted when the authorized attestation issuer is set or rotated.
     event IssuerUpdated(address indexed previousIssuer, address indexed newIssuer);
+
+    /// @notice Emitted when the ZK predicate prover is set, swapped, or unset.
+    event PredicateProverUpdated(address indexed previousProver, address indexed newProver);
+
+    /// @notice Emitted when a predicate is proven via {consumeWithProof}. Carries only
+    ///         the binding fields + boolean — never any attribute. `contextHash` is
+    ///         `keccak256(context)` (the presentation context is opaque to this contract).
+    event PredicateProven(
+        address indexed consumer, address indexed subject, bytes32 indexed predicate, bytes32 contextHash, bool result
+    );
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -180,6 +198,12 @@ contract PredicateVerifier is Ownable, EIP712 {
     error StaleEpoch();
     /// @dev This `(subject, consumer, context, nonce)` tuple was already consumed.
     error AttestationReplayed();
+    /// @dev {consumeWithProof}/{checkProof} called while no {prover} is set.
+    error PredicateProverUnset();
+    /// @dev The proven predicate does not match the `requiredPredicate` the consumer asked for.
+    error WrongPredicate();
+    /// @dev This `(subject, consumer, context)` proof was already consumed.
+    error ProofReplayed();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -207,6 +231,18 @@ contract PredicateVerifier is Ownable, EIP712 {
         address previous = issuer;
         issuer = newIssuer;
         emit IssuerUpdated(previous, newIssuer);
+    }
+
+    /// @notice Set, swap, or unset the holder-side ZK predicate prover (ADR-0009 seam).
+    /// @dev Only the owner (the same multisig that rotates the issuer). Pass
+    ///      `address(0)` to disable the proof path. A prover only affects consumers that
+    ///      opt into {consumeWithProof}; it can NEVER touch the base SBT, the nullifier
+    ///      set, or UBI eligibility. Swapping the prover is how the trust model upgrades
+    ///      (v1 issuer → v1.5 Self-ZK → v2 anonymous credential) with no redeploy.
+    function setPredicateProver(IPredicateProver newProver) external onlyOwner {
+        address previous = address(prover);
+        prover = newProver;
+        emit PredicateProverUpdated(previous, address(newProver));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -262,6 +298,83 @@ contract PredicateVerifier is Ownable, EIP712 {
     {
         _validate(att, signature, consumer, presenter);
         return att.result;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    CONSUME / CHECK — proof path (ADR-0009)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Verify and SPEND a holder-side ZK predicate proof — the trustless twin
+    ///         of {consume}. Instead of an issuer signature, the active {prover}
+    ///         cryptographically attests `(subject, predicate, result, epoch)` from a
+    ///         proof the human generated on their own device. Reverts fail-closed on any
+    ///         predicate / binding / freshness / replay violation.
+    /// @dev The presentation `context` (opaque to this contract) MUST encode this
+    ///      consumer and be unique per presentation; the prover binds the proof to it,
+    ///      which is what gives per-consumer unlinkability. Anti-replay is single-use per
+    ///      `(subject, msg.sender, keccak256(context))`. Reveals ONLY the boolean.
+    /// @param proof             Opaque proof bytes (e.g. a Groth16 proof).
+    /// @param publicSignals     The proof's public inputs.
+    /// @param context           Consumer-scoped presentation context.
+    /// @param requiredPredicate The predicate the consumer requires (`keccak256(descriptor)`).
+    /// @param presenter         The presenting human (the consumer passes its `msg.sender`).
+    /// @return result           The proven boolean — the ONLY identity-derived bit revealed.
+    function consumeWithProof(
+        bytes calldata proof,
+        uint256[] calldata publicSignals,
+        bytes calldata context,
+        bytes32 requiredPredicate,
+        address presenter
+    ) external returns (bool result) {
+        address subject;
+        (subject, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter);
+
+        bytes32 key = _proofReplayKey(subject, msg.sender, context);
+        if (consumed[key]) revert ProofReplayed();
+        consumed[key] = true;
+
+        emit PredicateProven(msg.sender, subject, requiredPredicate, keccak256(context), result);
+        return result;
+    }
+
+    /// @notice Stateless view twin of {consumeWithProof}: same prover + predicate +
+    ///         binding + freshness checks, NO replay-state write. For read-only /
+    ///         off-chain gates that don't need single-use semantics.
+    function checkProof(
+        bytes calldata proof,
+        uint256[] calldata publicSignals,
+        bytes calldata context,
+        bytes32 requiredPredicate,
+        address presenter
+    ) external view returns (bool result) {
+        (, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter);
+    }
+
+    /// @dev Shared proof-path verification: run the {prover}, then enforce the SAME
+    ///      predicate-match / subject-binding / freshness invariants the issuer path
+    ///      uses. Pure w.r.t. replay state. Reverts if no prover is set.
+    function _validateProof(
+        bytes calldata proof,
+        uint256[] calldata publicSignals,
+        bytes calldata context,
+        bytes32 requiredPredicate,
+        address presenter
+    ) private view returns (address subject, bool result) {
+        IPredicateProver p = prover;
+        if (address(p) == address(0)) revert PredicateProverUnset();
+
+        bytes32 predicate;
+        uint32 epoch;
+        (subject, predicate, result, epoch) = p.verifyPredicate(proof, publicSignals, context);
+
+        if (predicate != requiredPredicate) revert WrongPredicate();
+        if (subject != presenter) revert SubjectMismatch();
+        if (!_isFresh(epoch)) revert StaleEpoch();
+    }
+
+    /// @dev Anti-replay key for the proof path: single-use per (subject, consumer, context).
+    function _proofReplayKey(address subject, address consumer, bytes calldata context) private pure returns (bytes32) {
+        return keccak256(abi.encode(subject, consumer, keccak256(context)));
     }
 
     /// @dev Shared verification: recover the issuer over the EIP-712 digest and
