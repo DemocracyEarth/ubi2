@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {PredicateVerifier, PredicateAttestation, IPredicateProver} from "../src/PredicateVerifier.sol";
+import {PredicateVerifier, PredicateAttestation} from "../src/PredicateVerifier.sol";
 
 contract PredicateVerifierTest is Test {
     PredicateVerifier internal pv;
@@ -188,6 +188,43 @@ contract PredicateVerifierTest is Test {
         pv.consume(att, sig, alice);
     }
 
+    function test_Consume_Revert_TamperedPredicate() public {
+        PredicateAttestation memory att = _att(true);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        att.predicate = PRED_AGE21;
+        vm.prank(consumer);
+        vm.expectRevert(PredicateVerifier.InvalidSigner.selector);
+        pv.consume(att, sig, alice);
+    }
+
+    function test_Consume_Revert_TamperedContext() public {
+        PredicateAttestation memory att = _att(true);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        att.context = keccak256("proposal-99");
+        vm.prank(consumer);
+        vm.expectRevert(PredicateVerifier.InvalidSigner.selector);
+        pv.consume(att, sig, alice);
+    }
+
+    function test_Consume_Revert_TamperedEpoch() public {
+        PredicateAttestation memory att = _att(true);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        att.epoch++;
+        vm.prank(consumer);
+        vm.expectRevert(PredicateVerifier.InvalidSigner.selector);
+        pv.consume(att, sig, alice);
+    }
+
+    function test_Consume_Revert_AttestationSignedForAnotherChain() public {
+        PredicateAttestation memory att = _att(true);
+        bytes memory chainASignature = _sign(ISSUER_PK, att);
+
+        vm.chainId(block.chainid + 1);
+        vm.prank(consumer);
+        vm.expectRevert(PredicateVerifier.InvalidSigner.selector);
+        pv.consume(att, chainASignature, alice);
+    }
+
     function test_Consume_Revert_StaleEpoch() public {
         PredicateAttestation memory att = _att(true);
         bytes memory sig = _sign(ISSUER_PK, att);
@@ -245,6 +282,11 @@ contract PredicateVerifierTest is Test {
         // No replay-state write: calling twice is fine and nothing is marked spent.
         assertTrue(pv.check(att, sig, alice, consumer));
         assertFalse(pv.consumed(key));
+
+        vm.prank(consumer);
+        pv.consume(att, sig, alice);
+        // check() deliberately ignores replay state even after consume().
+        assertTrue(pv.check(att, sig, alice, consumer));
     }
 
     function test_Check_Revert_WrongConsumerArg() public {

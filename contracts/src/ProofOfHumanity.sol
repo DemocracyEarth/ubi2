@@ -183,6 +183,9 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
     /// @dev A refresh voucher carries an older epoch than the one already stored
     ///      (blocks downgrade / stale-epoch replay).
     error EpochDowngrade();
+    /// @dev A voucher for the currently stored epoch was already redeemed. Only
+    ///      a strictly newer verification epoch may refresh an existing token.
+    error VoucherReplayed();
     /// @dev The issuer may not be the zero address.
     error InvalidIssuer();
 
@@ -263,8 +266,9 @@ contract ProofOfHumanity is ERC721, Ownable, EIP712, IERC5192 {
             if (ownerOf(existingId) != voucher.to) revert NullifierOwnerMismatch();
 
             TokenData storage t = _tokens[existingId];
-            // Monotonic: never downgrade the validity epoch (blocks stale-epoch replay).
+            // Strictly monotonic: reject identical replays and stale downgrades.
             if (voucher.epoch < t.epoch) revert EpochDowngrade();
+            if (voucher.epoch == t.epoch) revert VoucherReplayed();
             t.epoch = voucher.epoch;
 
             tokenId = existingId;

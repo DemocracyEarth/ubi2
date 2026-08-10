@@ -6,7 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- Reject exact same-epoch humanity voucher replays while preserving strictly newer in-place refreshes.
+- Run predicate cross-stack parity against the production `PredicateVerifier` and
+  `SybilResistantVote` artifacts instead of mirrored fixture implementations.
 
 ## [0.1.0] — 2026-08-09
 

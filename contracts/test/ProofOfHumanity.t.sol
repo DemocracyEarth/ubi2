@@ -321,12 +321,20 @@ contract ProofOfHumanityTest is Test {
         assertEq(poh.epochOf(1), e1 + 2);
     }
 
-    function test_Refresh_SameEpochAllowed() public {
+    function test_Revert_ReplayedVoucher() public {
         HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        _mint(ISSUER_PK, v);
-        // Re-submitting an equal epoch is allowed (>= stored) and is a no-op refresh.
-        uint256 id = _mint(ISSUER_PK, v);
+        bytes memory sig = _sign(ISSUER_PK, v);
+
+        vm.prank(relayer);
+        uint256 id = poh.mintWithVoucher(v, sig);
+
+        vm.prank(relayer);
+        vm.expectRevert(ProofOfHumanity.VoucherReplayed.selector);
+        poh.mintWithVoucher(v, sig);
+
         assertEq(id, 1);
+        assertEq(poh.balanceOf(alice), 1);
+        assertEq(poh.nextId(), 2);
         assertEq(poh.epochOf(1), v.epoch);
     }
 
@@ -344,7 +352,7 @@ contract ProofOfHumanityTest is Test {
         poh.mintWithVoucher(v2, sig);
     }
 
-    function test_Revert_NullifierHijackByDifferentRecipient() public {
+    function test_Revert_NullifierReuseAcrossWalletsKeepsOriginalToken() public {
         _mint(ISSUER_PK, _defaultVoucher(alice, NULL_A));
 
         // Same nullifier, different `to` -> anti-hijack revert.
@@ -353,25 +361,13 @@ contract ProofOfHumanityTest is Test {
         vm.prank(relayer);
         vm.expectRevert(ProofOfHumanity.NullifierOwnerMismatch.selector);
         poh.mintWithVoucher(vBob, sig);
-    }
 
-    function test_Idempotent_ReplaySameVoucherDoesNotMintTwice() public {
-        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
-        bytes memory sig = _sign(ISSUER_PK, v);
-
-        vm.prank(relayer);
-        uint256 id1 = poh.mintWithVoucher(v, sig);
-
-        // Re-submit the identical voucher + signature.
-        vm.prank(relayer);
-        uint256 id2 = poh.mintWithVoucher(v, sig);
-
-        assertEq(id1, 1);
-        assertEq(id2, 1);
+        // The failed wallet-rebinding attempt cannot allocate or remap a token.
+        assertEq(poh.tokenOfNullifier(NULL_A), 1);
         assertEq(poh.balanceOf(alice), 1);
+        assertEq(poh.balanceOf(bob), 0);
         assertEq(poh.nextId(), 2);
         assertEq(poh.ownerOf(1), alice);
-        assertEq(poh.tokenOfNullifier(NULL_A), 1);
     }
 
     function test_DistinctNullifiersMintDistinctTokens() public {
@@ -421,6 +417,52 @@ contract ProofOfHumanityTest is Test {
         bytes32 structHash = keccak256(abi.encode(poh.VOUCHER_TYPEHASH(), v.to, v.nullifier, v.epoch));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSep, structHash));
         assertEq(digest, poh.hashVoucher(v));
+    }
+
+    function test_EIP712_VoucherSignedForAnotherChainReverts() public {
+        HumanityVoucher memory v = _defaultVoucher(alice, NULL_A);
+        bytes memory chainASignature = _sign(ISSUER_PK, v);
+
+        vm.chainId(block.chainid + 1);
+        vm.prank(relayer);
+        vm.expectRevert(ProofOfHumanity.InvalidSigner.selector);
+        poh.mintWithVoucher(v, chainASignature);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                FUZZ
+    //////////////////////////////////////////////////////////////*/
+
+    function testFuzz_NullifierNeverAllocatesASecondToken(
+        uint256 nullifier,
+        address firstWallet,
+        address secondWallet,
+        uint16 epochStep
+    ) public {
+        vm.assume(firstWallet != address(0));
+        vm.assume(secondWallet != address(0));
+        vm.assume(secondWallet != firstWallet);
+
+        HumanityVoucher memory initial = _defaultVoucher(firstWallet, nullifier);
+        uint256 tokenId = _mint(ISSUER_PK, initial);
+
+        HumanityVoucher memory refresh = initial;
+        refresh.epoch = initial.epoch + uint32(bound(epochStep, 1, 1_000));
+        assertEq(_mint(ISSUER_PK, refresh), tokenId);
+
+        HumanityVoucher memory rebound = refresh;
+        rebound.to = secondWallet;
+        rebound.epoch++;
+        bytes memory reboundSig = _sign(ISSUER_PK, rebound);
+        vm.prank(relayer);
+        vm.expectRevert(ProofOfHumanity.NullifierOwnerMismatch.selector);
+        poh.mintWithVoucher(rebound, reboundSig);
+
+        assertEq(poh.tokenOfNullifier(nullifier), tokenId);
+        assertEq(poh.ownerOf(tokenId), firstWallet);
+        assertEq(poh.balanceOf(firstWallet), 1);
+        assertEq(poh.balanceOf(secondWallet), 0);
+        assertEq(poh.nextId(), 2);
     }
 
     /*//////////////////////////////////////////////////////////////

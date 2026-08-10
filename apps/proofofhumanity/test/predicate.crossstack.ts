@@ -6,9 +6,9 @@
  * predicate-gated action reveals ONLY a boolean.
  *
  * What it does (no phone / no live Self proof required):
- *   1. `forge build` the REAL `ProofOfHumanity` from the contracts package, and
- *      compile the App/SDK-lane fixtures (`PredicateVerifier` + `SybilResistantVote`
- *      + `ConsumerProbe`) in a throwaway forge project remapped to the real OZ lib;
+ *   1. `forge build` the REAL `ProofOfHumanity`, `PredicateVerifier`, and
+ *      `SybilResistantVote` from the contracts package, then compile only a tiny
+ *      `ConsumerProbe` fixture used to exercise verifier replay directly;
  *   2. start anvil; deploy ProofOfHumanity(owner, issuer),
  *      PredicateVerifier(owner, issuer) and SybilResistantVote(poh, pv, age>=18, ctx);
  *   3. mint a soulbound PoH SBT for a holder (reusing `app/lib/voucher.ts`);
@@ -22,9 +22,8 @@
  *      wrong predicate, wrong context, wrong consumer, wrong subject, stale epoch,
  *      bad issuer signature, and a non-human all REVERT.
  *
- * The `PredicateAttestation` typehash + the `EIP712("ProofOfHumanityPredicate","1")`
- * domain in the fixture come from the SAME pinned spec string as the SDK, so this
- * parity holds for whichever lane compiled the verifier.
+ * The contract artifacts are loaded from the production Foundry package. There is
+ * no mirrored verifier implementation that could drift while preserving a green test.
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
@@ -64,7 +63,8 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTRACTS_DIR = path.resolve(__dirname, "../../../contracts");
 const POH_ARTIFACT = path.join(CONTRACTS_DIR, "out/ProofOfHumanity.sol/ProofOfHumanity.json");
-const OZ_REMAP = path.join(CONTRACTS_DIR, "lib/openzeppelin-contracts/contracts") + "/";
+const PV_ARTIFACT = path.join(CONTRACTS_DIR, "out/PredicateVerifier.sol/PredicateVerifier.json");
+const VOTE_ARTIFACT = path.join(CONTRACTS_DIR, "out/SybilResistantVote.sol/SybilResistantVote.json");
 const FIXTURE_SRC = path.join(__dirname, "fixtures/PredicateFixtures.sol");
 
 const RPC = "http://127.0.0.1:8545";
@@ -118,9 +118,18 @@ async function waitForAnvil(timeoutMs = 15000) {
   throw new Error("anvil did not become ready in time");
 }
 
-/** Compile the App/SDK-lane fixtures in a throwaway forge project remapped to the
- *  real OpenZeppelin lib, so the test does not depend on the contracts lane. */
-function buildFixtures(): { pv: { abi: Abi; bytecode: Hex }; vote: { abi: Abi; bytecode: Hex }; probe: { abi: Abi; bytecode: Hex } } {
+type ContractArtifact = { abi: Abi; bytecode: Hex };
+
+function loadArtifact(artifactPath: string): ContractArtifact {
+  const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+    abi: Abi;
+    bytecode: { object: Hex };
+  };
+  return { abi: artifact.abi, bytecode: artifact.bytecode.object };
+}
+
+/** Compile only the minimal consumer probe in a throwaway Foundry project. */
+function buildConsumerProbe(): ContractArtifact {
   const root = mkdtempSync(path.join(tmpdir(), "poh-predicate-fixtures-"));
   mkdirSync(path.join(root, "src"), { recursive: true });
   copyFileSync(FIXTURE_SRC, path.join(root, "src/PredicateFixtures.sol"));
@@ -135,19 +144,11 @@ function buildFixtures(): { pv: { abi: Abi; bytecode: Hex }; vote: { abi: Abi; b
       "optimizer = true",
       "optimizer_runs = 200",
       'evm_version = "cancun"',
-      `remappings = ["@openzeppelin/contracts/=${OZ_REMAP}"]`,
       "",
     ].join("\n"),
   );
   execSync("forge build", { cwd: root, stdio: "inherit" });
-  const load = (name: string) => {
-    const j = JSON.parse(readFileSync(path.join(root, `out/PredicateFixtures.sol/${name}.json`), "utf8")) as {
-      abi: Abi;
-      bytecode: { object: Hex };
-    };
-    return { abi: j.abi, bytecode: j.bytecode.object };
-  };
-  return { pv: load("PredicateVerifier"), vote: load("SybilResistantVote"), probe: load("ConsumerProbe") };
+  return loadArtifact(path.join(root, "out/PredicateFixtures.sol/ConsumerProbe.json"));
 }
 
 /** Capture the revert-reason string from a simulate call (empty string == no revert). */
@@ -163,15 +164,22 @@ async function revertReason(fn: () => Promise<unknown>): Promise<string> {
 async function main() {
   console.log("\n=== proofofhumanity cross-stack PREDICATE test (v1 issuer-attested) ===\n");
 
-  // 1) Build the real PoH + compile the fixtures.
-  console.log("[1/8] forge build ProofOfHumanity + fixtures …");
+  // 1) Build and load the production contracts; compile the consumer probe.
+  console.log("[1/8] forge build production contracts + consumer probe …");
   execSync("forge build", { cwd: CONTRACTS_DIR, stdio: "inherit" });
-  const pohArtifact = JSON.parse(readFileSync(POH_ARTIFACT, "utf8")) as { abi: Abi; bytecode: { object: Hex } };
+  const pohArtifact = loadArtifact(POH_ARTIFACT);
   const pohAbi = pohArtifact.abi;
-  const pohBytecode = pohArtifact.bytecode.object;
-  assert(pohBytecode.length > 2, "loaded ProofOfHumanity deploy bytecode");
-  const fx = buildFixtures();
-  assert(fx.pv.bytecode.length > 2 && fx.vote.bytecode.length > 2, "compiled PredicateVerifier + SybilResistantVote");
+  const pohBytecode = pohArtifact.bytecode;
+  const fx = {
+    pv: loadArtifact(PV_ARTIFACT),
+    vote: loadArtifact(VOTE_ARTIFACT),
+    probe: buildConsumerProbe(),
+  };
+  assert(pohBytecode.length > 2, "loaded production ProofOfHumanity deploy bytecode");
+  assert(
+    fx.pv.bytecode.length > 2 && fx.vote.bytecode.length > 2,
+    "loaded production PredicateVerifier + SybilResistantVote bytecode",
+  );
 
   // The consumer contracts revert with custom errors DECLARED on PredicateVerifier
   // (thrown inside `pv.consume`). Fold the verifier's error fragments into the
@@ -315,7 +323,7 @@ async function main() {
     const { request: probeReq } = await pub.simulateContract({ account: owner, address: probe, abi: probeAbi, functionName: "probe", args: [attProbe, sigProbe, holderA.address] });
     await pub.waitForTransactionReceipt({ hash: await ownerWallet.writeContract(probeReq) });
     r = await revertReason(() => pub.simulateContract({ account: owner, address: probe, abi: probeAbi, functionName: "probe", args: [attProbe, sigProbe, holderA.address] }));
-    assert(r.includes("ReplayedNonce"), `verifier replays revert ReplayedNonce (${r.split("\n")[0]})`);
+    assert(r.includes("AttestationReplayed"), `verifier replays revert AttestationReplayed (${r.split("\n")[0]})`);
 
     // Remaining negatives use holder B (never successfully votes, so voted[B] stays false).
     const baseB = { context: CONTEXT, predicate: REQUIRED, result: true, subject: getAddress(holderB.address), epoch } as const;
@@ -336,13 +344,13 @@ async function main() {
     const attWrongConsumer: PredicateAttestation = { ...baseB, consumer: getAddress(probe), nonce: 12n };
     const sigWrongConsumer = await signPredicateAttestation(ISSUER_KEY, attWrongConsumer, CHAIN_ID, pv);
     r = await revertReason(() => pub.simulateContract({ account: holderB, address: vote, abi: voteAbi, functionName: "vote", args: [tokenB, true, attWrongConsumer, sigWrongConsumer] }));
-    assert(r.includes("WrongConsumer"), `wrong-consumer reverts WrongConsumer (${r.split("\n")[0]})`);
+    assert(r.includes("ConsumerMismatch"), `wrong-consumer reverts ConsumerMismatch (${r.split("\n")[0]})`);
 
     // 7f) Wrong subject: attestation names holder A but holder B presents it.
     const attWrongSubject: PredicateAttestation = { ...baseB, consumer: getAddress(vote), subject: getAddress(holderA.address), nonce: 13n };
     const sigWrongSubject = await signPredicateAttestation(ISSUER_KEY, attWrongSubject, CHAIN_ID, pv);
     r = await revertReason(() => pub.simulateContract({ account: holderB, address: vote, abi: voteAbi, functionName: "vote", args: [tokenB, true, attWrongSubject, sigWrongSubject] }));
-    assert(r.includes("WrongSubject"), `wrong-subject reverts WrongSubject (${r.split("\n")[0]})`);
+    assert(r.includes("SubjectMismatch"), `wrong-subject reverts SubjectMismatch (${r.split("\n")[0]})`);
 
     // 7g) Stale epoch (older than VALIDITY_EPOCHS).
     const attStale: PredicateAttestation = { ...baseB, consumer: getAddress(vote), epoch: Math.max(0, epoch - 5), nonce: 14n };
@@ -359,7 +367,7 @@ async function main() {
     // 7i) Non-human: an outsider with no SBT cannot vote (using holder B's token id).
     const goodSigB = await signPredicateAttestation(ISSUER_KEY, attGoodB, CHAIN_ID, pv);
     r = await revertReason(() => pub.simulateContract({ account: outsider, address: vote, abi: voteAbi, functionName: "vote", args: [tokenB, true, attGoodB, goodSigB] }));
-    assert(r.length > 0 && (r.includes("NotHuman") || r.includes("revert")), `non-human cannot vote (reverts: ${r.split("\n")[0]})`);
+    assert(r.length > 0 && (r.includes("NotTokenHolder") || r.includes("revert")), `non-human cannot vote (reverts: ${r.split("\n")[0]})`);
     // silence unused-wallet lint (wallets are the signing identities used via simulate+write)
     void holderBWallet;
     void outsiderWallet;

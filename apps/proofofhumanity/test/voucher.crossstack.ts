@@ -10,8 +10,9 @@
  *   4. assert the locally-computed EIP-712 digest == the contract's on-chain `hashVoucher(...)`;
  *   5. `mintWithVoucher(voucher, sig)` from a RELAYER account → assert it SUCCEEDS, `balanceOf(to)==1`,
  *      the token `isValid`, and its `tokenURI` carries NO nationality / gender / age;
- *   6. assert a voucher signed by the WRONG key reverts `InvalidSigner`;
- *   7. assert a fresh voucher (same nullifier, newer epoch) REFRESHES the token monotonically.
+ *   6. assert an identical voucher replay reverts `VoucherReplayed`;
+ *   7. assert a voucher signed by the WRONG key or for the WRONG chain reverts `InvalidSigner`;
+ *   8. assert a fresh voucher (same nullifier, newer epoch) REFRESHES the token monotonically.
  *
  * WHAT THIS TEST DOES vs DEFERS (honest scope):
  *   - TESTED for real: the EIP-712 domain/type/field encoding + issuer-signature recovery, i.e. the
@@ -97,7 +98,7 @@ async function main() {
   console.log("\n=== proofofhumanity cross-stack voucher test (minimal) ===\n");
 
   // 1) Build + load the real contract artifact.
-  console.log("[1/7] forge build …");
+  console.log("[1/8] forge build …");
   execSync("forge build", { cwd: CONTRACTS_DIR, stdio: "inherit" });
   const artifact = JSON.parse(readFileSync(ARTIFACT, "utf8")) as {
     abi: Abi;
@@ -108,7 +109,7 @@ async function main() {
   assert(bytecode.length > 2, "loaded ProofOfHumanity deploy bytecode");
 
   // 2) Start anvil + deploy ProofOfHumanity(owner, issuer).
-  console.log("[2/7] starting anvil + deploying ProofOfHumanity …");
+  console.log("[2/8] starting anvil + deploying ProofOfHumanity …");
   const owner = privateKeyToAccount(OWNER_KEY);
   const issuer = privateKeyToAccount(ISSUER_KEY);
   const relayer = privateKeyToAccount(RELAYER_KEY);
@@ -138,7 +139,7 @@ async function main() {
     assertEq(getAddress(onChainIssuer), getAddress(issuer.address), "on-chain issuer == our issuer key");
 
     // 3) Build + sign a MINIMAL voucher from a constructed nullifier at the contract's current epoch.
-    console.log("[3/7] building + signing a minimal voucher …");
+    console.log("[3/8] building + signing a minimal voucher …");
     const nullifier = "12345678901234567890123456789012345678901234567890"; // a BN254-ish field element
     const epoch = Number(await pub.readContract({ address: poh, abi, functionName: "currentEpoch" }));
     assert(epoch > 0, `contract currentEpoch() == ${epoch}`);
@@ -151,7 +152,7 @@ async function main() {
     const signature = await signVoucher(ISSUER_KEY, voucher, CHAIN_ID, poh);
 
     // 4) Local EIP-712 digest MUST equal the contract's on-chain hashVoucher(...).
-    console.log("[4/7] cross-checking EIP-712 digest against on-chain hashVoucher …");
+    console.log("[4/8] cross-checking EIP-712 digest against on-chain hashVoucher …");
     const localDigest = voucherDigest(voucher, CHAIN_ID, poh);
     const onChainDigest = (await pub.readContract({
       address: poh,
@@ -162,7 +163,7 @@ async function main() {
     assertEq(localDigest, onChainDigest, "lib/voucher digest == contract hashVoucher (domain+type+fields match)");
 
     // 5) Mint from the relayer → success + read back the minimal token.
-    console.log("[5/7] mintWithVoucher from relayer …");
+    console.log("[5/8] mintWithVoucher from relayer …");
     const { request } = await pub.simulateContract({
       account: relayer,
       address: poh,
@@ -201,12 +202,28 @@ async function main() {
     assert(!lower.includes("gender"), "tokenURI has NO gender field");
     assert(!/\bage\b/.test(lower), "tokenURI has NO age field");
 
-    // 6) Wrong-key signature MUST revert InvalidSigner (use a different nullifier so it's a fresh mint).
-    console.log("[6/7] wrong-key voucher must revert InvalidSigner …");
+    // 6) The exact voucher is single-use; only a strictly newer epoch may refresh.
+    console.log("[6/8] identical voucher replay must revert VoucherReplayed …");
+    let reason = "";
+    try {
+      await pub.simulateContract({
+        account: relayer,
+        address: poh,
+        abi,
+        functionName: "mintWithVoucher",
+        args: [voucher, signature],
+      });
+    } catch (e) {
+      reason = e instanceof Error ? e.message : String(e);
+    }
+    assert(reason.includes("VoucherReplayed"), `identical replay reverts VoucherReplayed (got: ${reason.split("\n")[0]})`);
+
+    // 7) Wrong-key and wrong-chain signatures MUST revert InvalidSigner.
+    console.log("[7/8] wrong-key / wrong-chain vouchers must revert InvalidSigner …");
     const voucher2: HumanityVoucher = { ...voucher, nullifier: voucher.nullifier + 1n };
     const badSig = await signVoucher(WRONG_KEY, voucher2, CHAIN_ID, poh);
     let reverted = false;
-    let reason = "";
+    reason = "";
     try {
       await pub.simulateContract({
         account: relayer,
@@ -222,8 +239,23 @@ async function main() {
     assert(reverted, "wrong-key mintWithVoucher reverts");
     assert(reason.includes("InvalidSigner"), `revert reason is InvalidSigner (got: ${reason.split("\n")[0]})`);
 
-    // 7) Re-verification refresh: same nullifier, a NEWER epoch, correctly signed → succeeds (monotonic).
-    console.log("[7/7] refresh with a newer epoch (same nullifier) …");
+    const wrongChainSig = await signVoucher(ISSUER_KEY, voucher2, CHAIN_ID + 1, poh);
+    reason = "";
+    try {
+      await pub.simulateContract({
+        account: relayer,
+        address: poh,
+        abi,
+        functionName: "mintWithVoucher",
+        args: [voucher2, wrongChainSig],
+      });
+    } catch (e) {
+      reason = e instanceof Error ? e.message : String(e);
+    }
+    assert(reason.includes("InvalidSigner"), `wrong-chain voucher reverts InvalidSigner (got: ${reason.split("\n")[0]})`);
+
+    // 8) Re-verification refresh: same nullifier, a NEWER epoch, correctly signed → succeeds (monotonic).
+    console.log("[8/8] refresh with a newer epoch (same nullifier) …");
     const refreshed: HumanityVoucher = { ...voucher, epoch: voucher.epoch + 1 };
     const refreshSig = await signVoucher(ISSUER_KEY, refreshed, CHAIN_ID, poh);
     const { request: refreshReq } = await pub.simulateContract({
