@@ -95,6 +95,7 @@ contract PoHCardRendererTest is Test {
         assertTrue(_contains(svg, "HUMAN ID"), "missing human id label");
         assertTrue(_contains(svg, "ZERO-KNOWLEDGE"), "missing section header");
         assertTrue(_contains(svg, "Unique human"), "missing unique-human row");
+        assertTrue(_contains(svg, "Valid passport"), "missing valid-passport row");
         assertTrue(_contains(svg, "Personal data on-chain"), "missing on-chain row");
         assertTrue(_contains(svg, "#FF6B8A"), "missing brand gradient stop");
 
