@@ -6,6 +6,11 @@ CONTRACTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 task_tmp="$(mktemp -d)"
 anvil_pid=""
 
+if ! git check-ignore -q broadcast/Deploy.s.sol/84532/dry-run/run-latest.json; then
+  echo "ERROR: Foundry dry-run broadcast artifacts are not git-ignored" >&2
+  exit 1
+fi
+
 cleanup() {
   if [[ -n "$anvil_pid" ]]; then
     kill "$anvil_pid" >/dev/null 2>&1 || true
