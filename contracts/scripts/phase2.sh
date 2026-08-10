@@ -19,6 +19,7 @@ Networks:
   ethereum-sepolia   chain 11155111
   celo-sepolia       chain 11142220 (replaces end-of-life Alfajores)
   robinhood-testnet  chain 46630
+  worldchain-sepolia chain 4801
   local              chain 31337; deterministic tooling rehearsal only
 
 The script accepts encrypted Foundry keystores only. It rejects raw private-key environment
@@ -36,6 +37,16 @@ require_command() {
 require_env() {
   local name="$1"
   [[ -n "${!name:-}" ]] || die "$name is required"
+}
+
+require_private_file() {
+  local file="$1" label="$2" mode
+  [[ -f "$file" ]] || die "$label does not exist"
+  mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)"
+  case "$mode" in
+    400 | 600) ;;
+    *) die "$label must be owner-readable only (mode 0400 or 0600); got $mode" ;;
+  esac
 }
 
 normalise_address() {
@@ -97,6 +108,11 @@ case "$network" in
     verifier=blockscout
     verifier_url=https://explorer.testnet.chain.robinhood.com/api/
     ;;
+  worldchain-sepolia)
+    chain_id=4801
+    rpc_env=WORLDCHAIN_TESTNET_RPC_URL
+    verifier=etherscan
+    ;;
   local)
     chain_id=31337
     rpc_env=LOCAL_RPC_URL
@@ -133,10 +149,15 @@ if [[ -n "${ISSUER_KEYSTORE:-}" ]]; then
 else
   issuer_wallet_args+=(--account "$ISSUER_ACCOUNT")
 fi
-if [[ -n "${WALLET_PASSWORD_FILE:-}" ]]; then
-  [[ -f "$WALLET_PASSWORD_FILE" ]] || die "WALLET_PASSWORD_FILE does not exist"
-  deployer_wallet_args+=(--password-file "$WALLET_PASSWORD_FILE")
-  issuer_wallet_args+=(--password-file "$WALLET_PASSWORD_FILE")
+deployer_password_file="${DEPLOYER_PASSWORD_FILE:-${WALLET_PASSWORD_FILE:-}}"
+issuer_password_file="${ISSUER_PASSWORD_FILE:-${WALLET_PASSWORD_FILE:-}}"
+if [[ -n "$deployer_password_file" ]]; then
+  require_private_file "$deployer_password_file" "deployer password file"
+  deployer_wallet_args+=(--password-file "$deployer_password_file")
+fi
+if [[ -n "$issuer_password_file" ]]; then
+  require_private_file "$issuer_password_file" "issuer password file"
+  issuer_wallet_args+=(--password-file "$issuer_password_file")
 fi
 
 actual_chain_id="$(cast chain-id --rpc-url "$rpc_url")"

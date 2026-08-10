@@ -50,10 +50,19 @@ export POH_OWNER="$deployer_address"
 export DEPLOY_PREDICATE=true
 export DEPLOYER_KEYSTORE="$deployer_keystore"
 export ISSUER_KEYSTORE="$issuer_keystore"
-export WALLET_PASSWORD_FILE="$password_file"
+export DEPLOYER_PASSWORD_FILE="$password_file"
+export ISSUER_PASSWORD_FILE="$password_file"
 export FOUNDRY_BROADCAST="$task_tmp/broadcast"
 export FOUNDRY_CACHE_PATH="$task_tmp/cache"
 
+insecure_password_file="$task_tmp/insecure-password"
+printf '%s\n' 'phase2-ci-only' >"$insecure_password_file"
+chmod 0644 "$insecure_password_file"
+if DEPLOYER_PASSWORD_FILE="$insecure_password_file" \
+  "$SCRIPT_DIR/phase2.sh" preflight local >/dev/null 2>&1; then
+  echo "ERROR: Phase 2 wrapper accepted a group/world-readable password file" >&2
+  exit 1
+fi
 if PRIVATE_KEY=raw-key-must-be-rejected \
   "$SCRIPT_DIR/phase2.sh" preflight local >/dev/null 2>&1; then
   echo "ERROR: Phase 2 wrapper accepted a raw private-key environment variable" >&2
@@ -61,6 +70,10 @@ if PRIVATE_KEY=raw-key-must-be-rejected \
 fi
 if "$SCRIPT_DIR/phase2.sh" preflight ethereum-mainnet >/dev/null 2>&1; then
   echo "ERROR: Phase 2 wrapper accepted a mainnet target" >&2
+  exit 1
+fi
+if "$SCRIPT_DIR/phase2.sh" preflight worldchain-mainnet >/dev/null 2>&1; then
+  echo "ERROR: Phase 2 wrapper accepted World Chain mainnet" >&2
   exit 1
 fi
 if "$SCRIPT_DIR/phase2.sh" deploy local >/dev/null 2>&1; then

@@ -73,8 +73,8 @@ chain IDs, validates the RPC chain ID and signer/issuer wiring, defaults to simu
 exact network-specific confirmation before testnet broadcast.
 
 The current testnet matrix is Base Sepolia (`84532`), Ethereum Sepolia (`11155111`), Celo Sepolia
-(`11142220`), and Robinhood Chain Testnet (`46630`). Celo Alfajores (`44787`) reached end-of-life on
-2025-09-30 and must not be used for a new dry-run.
+(`11142220`), Robinhood Chain Testnet (`46630`), and World Chain Sepolia (`4801`). Celo Alfajores
+(`44787`) reached end-of-life on 2025-09-30 and must not be used for a new dry-run.
 
 ### Recommended: add chain configs to `contracts/foundry.toml`
 
