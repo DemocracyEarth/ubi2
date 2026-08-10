@@ -22,12 +22,18 @@ Repo: `/Users/santisiri/AI/ubi2/contracts` (Foundry, solc 0.8.28). Deploy order 
 |---|----------|-------------|---------|-----------|
 | 1 | `PoHCardRenderer` | `()` — no args | Stateless on-chain SVG card for `tokenURI`. `Countries` is an inlined internal library — **no library linking needed**. | Recommended |
 | 2 | `ProofOfHumanity` | `(address owner, address issuer)` | The ERC-721 + ERC-5192 soulbound credential. `mintWithVoucher` accepts an EIP-712 voucher signed by `issuer`. `owner` can `setIssuer` / `setCardRenderer`. | **Yes** |
-| 3 | `PredicateVerifier` | `(address owner, address issuer)` | Predicate layer v1 (issuer-attested `age>=18` etc.). | Only if using predicate gating |
+| 3 | `PredicateVerifier` | `(address owner, address issuer)` | Predicate layer. Ships the v1 issuer path **and** the ADR-0009 prover seam (`consumeWithProof`/`setPredicateProver`), so this deployment is **final** — v1.5/v2 activate by config, not redeploy. | Only if using predicate gating |
 | 4 | `SybilResistantVote` | `(poh, pv, requiredPredicate, context)` | Demo consumer only — **do not deploy to production**. | No |
 
 The script `contracts/script/Deploy.s.sol` (`Deploy`) does 1→3: deploys the renderer, deploys
 `ProofOfHumanity` (owned by the deployer so it can wire the renderer, then hands ownership to
 `POH_OWNER`), and optionally `PredicateVerifier`.
+
+> **This deployment is final (ADR-0009).** `PredicateVerifier` deploys with its `prover` **unset**,
+> so the v1 issuer path is active immediately. When the trustless prover ships (v1.5 Self-ZK, then
+> v2 anonymous credential), the owner calls `setPredicateProver(<prover>)` on the **same** deployed
+> address — no redeploy, no consumer migration, no `ProofOfHumanity` change. Deploying now does not
+> lock you into v1.
 
 ---
 
