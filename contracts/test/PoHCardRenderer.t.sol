@@ -93,7 +93,7 @@ contract PoHCardRendererTest is Test {
         // Minimal-card chrome present.
         assertTrue(_contains(svg, "Proof of Humanity"), "missing title");
         assertTrue(_contains(svg, "HUMAN ID"), "missing human id label");
-        assertTrue(_contains(svg, "ZERO-KNOWLEDGE HUMANITY"), "missing section header");
+        assertTrue(_contains(svg, "ZERO-KNOWLEDGE"), "missing section header");
         assertTrue(_contains(svg, "Unique human"), "missing unique-human row");
         assertTrue(_contains(svg, "Personal data on-chain"), "missing on-chain row");
         assertTrue(_contains(svg, "#FF6B8A"), "missing brand gradient stop");
@@ -112,7 +112,7 @@ contract PoHCardRendererTest is Test {
         string memory svg = string(_base64Decode(_afterPrefix(uri, "data:image/svg+xml;base64,")));
 
         // The full locked minimal card is present.
-        assertTrue(_contains(svg, "ZERO-KNOWLEDGE HUMANITY"));
+        assertTrue(_contains(svg, "ZERO-KNOWLEDGE"));
         assertTrue(_contains(svg, "PROVABLE ON DEMAND"));
         assertTrue(_contains(svg, "Unique human"));
         assertTrue(_contains(svg, "Personal data on-chain"));
