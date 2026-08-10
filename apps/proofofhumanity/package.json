@@ -9,7 +9,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test:crossstack": "tsx test/voucher.crossstack.ts",
-    "test:predicate": "tsx test/predicate.crossstack.ts"
+    "test:predicate": "tsx test/predicate.crossstack.ts",
+    "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate"
   },
   "dependencies": {
     "@selfxyz/core": "1.0.8",

@@ -28,7 +28,10 @@ contract Deploy is Script {
         require(issuer != address(0), "POH_ISSUER unset");
 
         vm.startBroadcast();
-        address deployer = msg.sender;
+        // `msg.sender` here is the Foundry script runner, not necessarily the
+        // keystore selected by `--account`. Read the active broadcast caller so
+        // constructor ownership and the subsequent wiring tx use the same EOA.
+        (, address deployer,) = vm.readCallers();
         address finalOwner = vm.envOr("POH_OWNER", deployer);
         bool withPredicate = vm.envOr("DEPLOY_PREDICATE", false);
 

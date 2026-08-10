@@ -42,9 +42,13 @@ The script `contracts/script/Deploy.s.sol` (`Deploy`) does 1→3: deploys the re
 1. **Foundry** installed (`forge --version`). Restore pinned deps (lib/ is git-ignored):
    ```bash
    cd contracts
-   forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 foundry-rs/forge-std --no-git
+   forge install \
+     OpenZeppelin/openzeppelin-contracts@cab19933c33c2ad1d4c7a84864a3601dddfd16f3 \
+     foundry-rs/forge-std@bf647bd6046f2f7da30d0c2bf435e5c76a780c1b \
+     --no-git
    forge build && forge test   # must be green before any deploy
    ```
+   These immutable commits correspond to OpenZeppelin `v5.7.0` and forge-std `v1.16.2`.
 2. **A deployer account with gas funds** on each target chain. Store it as an ENCRYPTED
    keystore — never a plaintext private key on disk or in a command:
    ```bash
@@ -60,6 +64,17 @@ The script `contracts/script/Deploy.s.sol` (`Deploy`) does 1→3: deploys the re
 4. **The owner** — ideally a multisig (Safe). Set `POH_OWNER` to it; it can later rotate the
    issuer via `setIssuer`. Defaults to the deployer if unset.
 5. **Block-explorer API keys** for source verification (Basescan / Etherscan / Celoscan).
+
+## Mandatory Phase 2 testnet gate
+
+Before any mainnet work, follow [`contracts/PHASE2.md`](../../../contracts/PHASE2.md) and use
+`contracts/scripts/phase2.sh`. The wrapper accepts encrypted Foundry keystores only, refuses mainnet
+chain IDs, validates the RPC chain ID and signer/issuer wiring, defaults to simulation, and requires an
+exact network-specific confirmation before testnet broadcast.
+
+The current testnet matrix is Base Sepolia (`84532`), Ethereum Sepolia (`11155111`), Celo Sepolia
+(`11142220`), and Robinhood Chain Testnet (`46630`). Celo Alfajores (`44787`) reached end-of-life on
+2025-09-30 and must not be used for a new dry-run.
 
 ### Recommended: add chain configs to `contracts/foundry.toml`
 

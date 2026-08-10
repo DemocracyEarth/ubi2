@@ -7,6 +7,11 @@ Node/serverless host (AWS Amplify SSR, Vercel, a container, or `next start`). A 
 host (S3/CloudFront-only, IPFS/Pinata) can **not** serve the issuer — that only becomes an
 option after the trustless v2 (holder-side ZK) removes the server signer.
 
+Contract deployment is a separate release step. Complete the testnet-only
+[`contracts/PHASE2.md`](../../contracts/PHASE2.md) gate before configuring any deployed addresses
+here. Its deployer uses encrypted Foundry keystores; do not reuse the app's raw server-side issuer
+secret for contract deployment.
+
 ## Pre-deploy checklist — v0.1.0 (verified 2026-08-09)
 
 - [x] `pnpm --filter @ubi2/proofofhumanity build` — production build passes (9 routes; the 3

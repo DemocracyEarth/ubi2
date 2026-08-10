@@ -1,0 +1,114 @@
+# Proof of Humanity Phase 2 — testnet dry-run
+
+Phase 2 deploys the production contract stack to supported **testnets only**, verifies the source, and
+runs one encrypted-keystore-signed mint on each deployment. Nothing in these helpers accepts a mainnet
+chain ID or a raw private-key environment variable.
+
+## Supported networks
+
+| Name | Chain ID | Gas | RPC variable | Explorer |
+| --- | ---: | --- | --- | --- |
+| Base Sepolia | 84532 | test ETH | `BASE_SEPOLIA_RPC_URL` | `https://sepolia-explorer.base.org` |
+| Ethereum Sepolia | 11155111 | test ETH | `ETHEREUM_SEPOLIA_RPC_URL` | `https://sepolia.etherscan.io` |
+| Celo Sepolia | 11142220 | test CELO | `CELO_SEPOLIA_RPC_URL` | `https://celo-sepolia.blockscout.com` |
+| Robinhood Chain Testnet | 46630 | test ETH | `ROBINHOOD_TESTNET_RPC_URL` | `https://explorer.testnet.chain.robinhood.com` |
+
+The original release brief named Celo Alfajores (`44787`). Alfajores reached end-of-life on
+2025-09-30 and was replaced by Celo Sepolia, so the wrapper intentionally refuses Alfajores. The
+network values above come from the current [Celo](https://docs.celo.org/build-on-celo/network-overview)
+and [Robinhood Chain](https://docs.robinhood.com/chain/connecting/) documentation.
+
+## 1. Create or import disposable encrypted keystores
+
+Run these commands yourself. Never paste a private key into chat or put one in an env file.
+
+```shell
+cast wallet import poh-testnet-deployer --interactive
+cast wallet import poh-testnet-issuer --interactive
+```
+
+Use separate deployer and issuer accounts. Fund only the deployer with faucet tokens on each testnet.
+The issuer signs the e2e voucher but needs no gas.
+
+Record only the public addresses:
+
+```shell
+cast wallet address --account poh-testnet-deployer
+cast wallet address --account poh-testnet-issuer
+```
+
+## 2. Configure addresses, RPCs, and verification
+
+```shell
+cp phase2.env.example .env.phase2
+```
+
+Fill `.env.phase2` locally. `POH_ISSUER` must equal the address of `poh-testnet-issuer`. `POH_OWNER`
+may be the testnet deployer for the dry-run; production requires the intended multisig. RPC URLs and
+explorer API keys are service credentials, so keep them out of logs and commits.
+
+Load the file without printing it:
+
+```shell
+set -a
+source .env.phase2
+set +a
+```
+
+## 3. Preflight and simulate
+
+Run both commands for each supported network:
+
+```shell
+./scripts/phase2.sh preflight base-sepolia
+./scripts/phase2.sh simulate base-sepolia
+```
+
+Preflight verifies the exact RPC chain ID, nonzero owner/issuer addresses, issuer-keystore match,
+deployer balance, predicate enablement, and a clean git worktree. Simulation runs `Deploy.s.sol`
+without `--broadcast` or `--verify`.
+
+## 4. Broadcast and verify after reviewing the simulation
+
+Broadcast requires a second, network-specific confirmation. This is intentionally verbose so a stale
+shell variable cannot authorize another chain.
+
+```shell
+export PHASE2_BROADCAST_CONFIRM=base-sepolia:84532
+./scripts/phase2.sh deploy base-sepolia
+unset PHASE2_BROADCAST_CONFIRM
+```
+
+The script deploys only `PoHCardRenderer`, `ProofOfHumanity`, and `PredicateVerifier`, uses `--slow`,
+submits source verification, and validates Foundry's broadcast manifest. A manifest containing the
+demo-only `SybilResistantVote` is rejected.
+
+## 5. Run the on-chain e2e mint
+
+```shell
+./scripts/phase2.sh e2e base-sepolia
+```
+
+The e2e command reads the deployed addresses from Foundry's broadcast manifest and then:
+
+- verifies `ProofOfHumanity` owner, issuer, renderer, and deployed bytecode;
+- verifies `PredicateVerifier` owner/issuer and that `prover()` is zero;
+- obtains the chain-specific voucher digest from `hashVoucher`;
+- signs that digest through `cast wallet sign --account poh-testnet-issuer`;
+- mints through the deployer, then asserts ownership, `isValid`, and `locked`;
+- asserts voucher replay and ERC-721 transfer both revert.
+
+It prints only public addresses, transaction hashes, and assertion results.
+
+Repeat preflight → simulate → explicit deploy → e2e for:
+
+```text
+base-sepolia
+ethereum-sepolia
+celo-sepolia
+robinhood-testnet
+```
+
+After each chain, confirm all three contracts show verified source in the explorer and record contract
+addresses plus deployment/mint transaction hashes in the release deployment table. Do not proceed to
+any mainnet until all four transcripts are green and the human separately approves that mainnet chain.
