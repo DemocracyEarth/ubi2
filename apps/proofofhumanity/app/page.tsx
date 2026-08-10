@@ -104,11 +104,14 @@ function minimalCardSvg(humanId: string): string {
 <text x="500" y="782" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" letter-spacing="3.5" fill="#C9A24E">PROVABLE ON DEMAND · NEVER STORED</text>
 <g font-family="Helvetica,Arial,sans-serif" font-size="16" font-weight="500">
 <rect x="60" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<text x="200" y="831" text-anchor="middle" fill="#EDEDF1">Age 18+</text>
+<g stroke="url(#g)" stroke-width="1.5" fill="none" stroke-linecap="round"><rect x="81" y="826" width="14" height="6" rx="1.5"/><line x1="88" y1="826" x2="88" y2="821"/></g><circle cx="88" cy="818.5" r="1.5" fill="url(#g)"/>
+<text x="110" y="831" fill="#EDEDF1">Age 18+</text>
 <rect x="360" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<text x="500" y="831" text-anchor="middle" fill="#EDEDF1">Nationality</text>
+<g stroke="url(#g)" fill="none"><circle cx="388" cy="825" r="8" stroke-width="1.5"/><line x1="380" y1="825" x2="396" y2="825" stroke-width="1.3"/><path d="M388 817 C383 820 383 830 388 833" stroke-width="1.3"/><path d="M388 817 C393 820 393 830 388 833" stroke-width="1.3"/></g>
+<text x="410" y="831" fill="#EDEDF1">Nationality</text>
 <rect x="660" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<text x="800" y="831" text-anchor="middle" fill="#EDEDF1">Sanctions</text>
+<g fill="none" stroke="url(#g)" stroke-linecap="round" stroke-linejoin="round"><path d="M688 817 l7 3 v5 c0 4 -3 6.3 -7 7.6 c-4 -1.3 -7 -3.6 -7 -7.6 v-5 z" stroke-width="1.5"/><path d="M685 825 l2.2 2.2 l4 -4.4" stroke-width="1.6"/></g>
+<text x="710" y="831" fill="#EDEDF1">Sanctions</text>
 </g>
 
 <path d="M244 903 l7 6 l-7 5 z" fill="url(#g)"/><path d="M244 903 l-7 6 l7 5 z" fill="url(#g)" opacity="0.55"/>
