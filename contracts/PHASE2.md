@@ -12,11 +12,13 @@ chain ID or a raw private-key environment variable.
 | Ethereum Sepolia | 11155111 | test ETH | `ETHEREUM_SEPOLIA_RPC_URL` | `https://sepolia.etherscan.io` |
 | Celo Sepolia | 11142220 | test CELO | `CELO_SEPOLIA_RPC_URL` | `https://celo-sepolia.blockscout.com` |
 | Robinhood Chain Testnet | 46630 | test ETH | `ROBINHOOD_TESTNET_RPC_URL` | `https://explorer.testnet.chain.robinhood.com` |
+| World Chain Sepolia | 4801 | test ETH | `WORLDCHAIN_TESTNET_RPC_URL` | `https://sepolia.worldscan.org` |
 
 The original release brief named Celo Alfajores (`44787`). Alfajores reached end-of-life on
 2025-09-30 and was replaced by Celo Sepolia, so the wrapper intentionally refuses Alfajores. The
-network values above come from the current [Celo](https://docs.celo.org/build-on-celo/network-overview)
-and [Robinhood Chain](https://docs.robinhood.com/chain/connecting/) documentation.
+network values above come from the current [Celo](https://docs.celo.org/build-on-celo/network-overview),
+[Robinhood Chain](https://docs.robinhood.com/chain/connecting/), and
+[World Chain](https://docs.world.org/world-chain/quick-start/info) documentation.
 
 ## 1. Create or import disposable encrypted keystores
 
@@ -46,6 +48,12 @@ cp phase2.env.example .env.phase2
 Fill `.env.phase2` locally. `POH_ISSUER` must equal the address of `poh-testnet-issuer`. `POH_OWNER`
 may be the testnet deployer for the dry-run; production requires the intended multisig. RPC URLs and
 explorer API keys are service credentials, so keep them out of logs and commits.
+
+For non-interactive release automation, set `DEPLOYER_PASSWORD_FILE` and `ISSUER_PASSWORD_FILE` to
+separate mode-`0600` files outside the repository. Put only the file paths in `.env.phase2`; never put
+the passwords themselves there. If both keystores intentionally use one password,
+`WALLET_PASSWORD_FILE` remains available as a common fallback. The wrapper refuses password files
+whose permissions are broader than `0400` or `0600`.
 
 Load the file without printing it:
 
@@ -107,8 +115,9 @@ base-sepolia
 ethereum-sepolia
 celo-sepolia
 robinhood-testnet
+worldchain-sepolia
 ```
 
 After each chain, confirm all three contracts show verified source in the explorer and record contract
 addresses plus deployment/mint transaction hashes in the release deployment table. Do not proceed to
-any mainnet until all four transcripts are green and the human separately approves that mainnet chain.
+any mainnet until all five transcripts are green and the human separately approves that mainnet chain.

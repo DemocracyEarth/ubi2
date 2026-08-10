@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Forge suite, target-contract line/branch coverage, gas regression, Solidity/TypeScript EIP-712
   parity, and an encrypted-keystore deployment rehearsal on Anvil.
 - Add a testnet-only Phase 2 deployment wrapper for Base Sepolia, Ethereum Sepolia, Celo Sepolia,
-  and Robinhood Chain Testnet, including chain/signer checks, explicit broadcast confirmation,
-  manifest validation, source verification, and a post-deploy mint/replay/soulbound e2e check.
+  Robinhood Chain Testnet, and World Chain Sepolia, including chain/signer checks, explicit broadcast
+  confirmation, manifest validation, source verification, and a post-deploy mint/replay/soulbound
+  e2e check.
 
 ### Changed
 
