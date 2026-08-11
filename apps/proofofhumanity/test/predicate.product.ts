@@ -46,9 +46,11 @@ assert.equal(predicateDescriptorHash("age>=18"), "0xe3e8342a70f40c3ef2dacba55a24
 
 const ethereumSepolia = CHAINS.find((chain) => chain.chainId === 11155111);
 const baseSepolia = CHAINS.find((chain) => chain.chainId === 84532);
+const robinhoodTestnet = CHAINS.find((chain) => chain.chainId === 46630);
 const ethereumMainnet = CHAINS.find((chain) => chain.chainId === 1);
 assert.ok(ethereumSepolia && isPredicateDeployed(ethereumSepolia));
 assert.ok(baseSepolia && isPredicateDeployed(baseSepolia));
+assert.ok(robinhoodTestnet && isPredicateDeployed(robinhoodTestnet));
 assert.ok(ethereumMainnet && !isPredicateDeployed(ethereumMainnet));
 
 console.log("predicate product: disclosure profiles + canonical evaluation + deployment registry PASS");

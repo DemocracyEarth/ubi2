@@ -18,10 +18,10 @@ Contract deployment is a separate release step. Complete the testnet-only
 here. Its deployer uses encrypted Foundry keystores; do not reuse the app's raw server-side issuer
 secret for contract deployment.
 
-The app ships the verified Base Sepolia and Ethereum Sepolia contract pairs as public defaults.
-They can be overridden with `NEXT_PUBLIC_*` variables, but the server still fails closed unless its
-issuer signer matches both live `issuer()` getters. Celo Sepolia, World Chain Sepolia, Robinhood
-Chain Testnet, and every mainnet remain zero-addressed and visibly unavailable. See the public
+The app ships the verified Base Sepolia, Ethereum Sepolia, and Robinhood Chain Testnet contract
+pairs as public defaults. They can be overridden with `NEXT_PUBLIC_*` variables, but the server still
+fails closed unless its issuer signer matches both live `issuer()` getters. Celo Sepolia, World Chain
+Sepolia, and every mainnet remain zero-addressed and visibly unavailable. See the public
 [`contracts/DEPLOYMENTS.md`](../../contracts/DEPLOYMENTS.md) registry for addresses and transactions.
 
 ## Pre-deploy checklist — first mainnet release
