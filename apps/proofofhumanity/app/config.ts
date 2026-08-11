@@ -4,16 +4,14 @@
  * Two audiences share this file:
  *   - the CLIENT (page.tsx, self-client.ts) reads `CHAINS`, `SELF_SCOPE`, `SELF_ENDPOINT`,
  *     `SELF_ENDPOINT_TYPE` — all safe to ship to the browser (`NEXT_PUBLIC_*` or constants);
- *   - the SERVER (api/self-verify/route.ts) additionally reads `ISSUER_PRIVATE_KEY` and
- *     `SELF_MOCK_PASSPORT`. `ISSUER_PRIVATE_KEY` has NO `NEXT_PUBLIC_` prefix, so Next.js strips
- *     it from the client bundle — it never reaches the browser.
+ *   - the SERVER additionally reads `SELF_MOCK_PASSPORT`. Signing keys live in
+ *     `server-config.ts`, guarded by `server-only`, and can never enter a client bundle.
  *
- * The issuer key is the one whose address the deployed `ProofOfHumanity.issuer` must equal.
- * In dev it defaults to the well-known Anvil account #1 key (NOT a secret) so the app runs with
- * zero setup against a locally-deployed contract; set `ISSUER_PRIVATE_KEY` in production.
+ * The issuer address on every deployed ProofOfHumanity and PredicateVerifier must match the
+ * server-side signer. The API checks that binding against the target chain before attesting.
  */
 
-import type { Address, Hex } from "viem";
+import type { Address } from "viem";
 
 export interface ChainConfig {
   chainId: number;
@@ -21,6 +19,8 @@ export interface ChainConfig {
   rpcUrl: string;
   /** The ProofOfHumanity deployment on this chain. */
   pohAddress: Address;
+  /** The PredicateVerifier deployment on this chain. */
+  predicateAddress: Address;
   /** Optional block-explorer base for "view token" links. */
   explorer?: string;
 }
@@ -39,12 +39,75 @@ export const CHAINS: ChainConfig[] = [
     name: process.env.NEXT_PUBLIC_LOCAL_CHAIN_NAME ?? "Anvil (local)",
     rpcUrl: process.env.NEXT_PUBLIC_LOCAL_RPC_URL ?? "http://127.0.0.1:8545",
     pohAddress: (process.env.NEXT_PUBLIC_LOCAL_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_LOCAL_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+  },
+  {
+    chainId: 11155111,
+    name: "Ethereum Sepolia",
+    rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
+    pohAddress: (process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://sepolia.etherscan.io",
+  },
+  {
+    chainId: 84532,
+    name: "Base Sepolia",
+    rpcUrl: process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org",
+    pohAddress: (process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_BASE_SEPOLIA_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://sepolia.basescan.org",
+  },
+  {
+    chainId: 11142220,
+    name: "Celo Sepolia",
+    rpcUrl: process.env.NEXT_PUBLIC_CELO_SEPOLIA_RPC_URL ?? "https://forno.celo-sepolia.celo-testnet.org",
+    pohAddress: (process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_CELO_SEPOLIA_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://celo-sepolia.blockscout.com",
+  },
+  {
+    chainId: 4801,
+    name: "World Chain Sepolia",
+    rpcUrl: process.env.NEXT_PUBLIC_WORLD_SEPOLIA_RPC_URL ?? "https://worldchain-sepolia.g.alchemy.com/public",
+    pohAddress: (process.env.NEXT_PUBLIC_WORLD_SEPOLIA_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_WORLD_SEPOLIA_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://sepolia.worldscan.org",
+  },
+  {
+    chainId: 46630,
+    name: "Robinhood Chain Testnet",
+    rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_RPC_URL ?? "https://rpc.testnet.chain.robinhood.com",
+    pohAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://explorer.testnet.chain.robinhood.com",
+  },
+  {
+    chainId: 1,
+    name: "Ethereum",
+    rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com",
+    pohAddress: (process.env.NEXT_PUBLIC_ETHEREUM_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_ETHEREUM_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://etherscan.io",
   },
   {
     chainId: 8453,
     name: "Base",
     rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
     pohAddress: (process.env.NEXT_PUBLIC_BASE_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_BASE_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
     explorer: "https://basescan.org",
   },
   {
@@ -52,6 +115,8 @@ export const CHAINS: ChainConfig[] = [
     name: "Celo",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_RPC_URL ?? "https://forno.celo.org",
     pohAddress: (process.env.NEXT_PUBLIC_CELO_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_CELO_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
     explorer: "https://celoscan.io",
   },
   {
@@ -59,13 +124,39 @@ export const CHAINS: ChainConfig[] = [
     name: "Optimism",
     rpcUrl: process.env.NEXT_PUBLIC_OP_RPC_URL ?? "https://mainnet.optimism.io",
     pohAddress: (process.env.NEXT_PUBLIC_OP_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_OP_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
     explorer: "https://optimistic.etherscan.io",
+  },
+  {
+    chainId: 480,
+    name: "World Chain",
+    rpcUrl: process.env.NEXT_PUBLIC_WORLD_RPC_URL ?? "https://worldchain-mainnet.g.alchemy.com/public",
+    pohAddress: (process.env.NEXT_PUBLIC_WORLD_POH ?? "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_WORLD_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://worldscan.org",
+  },
+  {
+    chainId: 4663,
+    name: "Robinhood Chain",
+    rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com",
+    pohAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_POH ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    predicateAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_PREDICATE ??
+      "0x0000000000000000000000000000000000000000") as Address,
+    explorer: "https://robinhoodchain.blockscout.com",
   },
 ];
 
 /** A chain is mintable only once its ProofOfHumanity address is set (non-zero). */
 export function isDeployed(chain: ChainConfig): boolean {
   return /^0x0{40}$/i.test(chain.pohAddress) === false;
+}
+
+/** A predicate target is usable only when both halves of the trust binding are deployed. */
+export function isPredicateDeployed(chain: ChainConfig): boolean {
+  return isDeployed(chain) && /^0x0{40}$/i.test(chain.predicateAddress) === false;
 }
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -100,15 +191,3 @@ export const SELF_ENDPOINT_TYPE: "staging_https" | "https" = SELF_ENV === "produ
 
 /** Backend: `mockPassport` for `SelfBackendVerifier` — true in staging, false in production. */
 export const SELF_MOCK_PASSPORT = SELF_ENV !== "production";
-
-/*//////////////////////////////////////////////////////////////
-                       ISSUER (server-only)
-//////////////////////////////////////////////////////////////*/
-
-/**
- * The voucher-signing key. Its address MUST equal `ProofOfHumanity.issuer` on every chain the UI
- * offers. Defaults to Anvil account #1's well-known key (NOT a secret) for local dev; set the env
- * var in production. Read only in server code (no NEXT_PUBLIC_ prefix → stripped from the client).
- */
-export const ISSUER_PRIVATE_KEY = (process.env.ISSUER_PRIVATE_KEY ??
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d") as Hex;

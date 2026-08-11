@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx src/passport.test.ts"
+    "test": "tsx src/passport.test.ts && tsx src/predicate.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22",

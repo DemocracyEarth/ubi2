@@ -31,7 +31,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAddress, isAddress, isHex, type Address, type Hex } from "viem";
+import { createPublicClient, getAddress, http, isAddress, isHex, type Address, type Hex } from "viem";
 import {
   deserializeHumanCredential,
   descriptorHash,
@@ -44,8 +44,12 @@ import {
   type PredicateAttestation,
   type SerializedHumanCredential,
 } from "../../lib/predicate";
-import { ISSUER_PRIVATE_KEY } from "../../config";
+import { CHAINS, isPredicateDeployed } from "../../config";
+import { getIssuerPrivateKey } from "../../server-config";
 import { privateKeyToAccount } from "viem/accounts";
+import { proofOfHumanityAbi } from "../../abi/proofOfHumanity";
+import { predicateVerifierAbi } from "../../abi/predicateVerifier";
+import { rateLimit } from "../../lib/server/verification-store";
 
 // Node.js runtime: signing uses the server-only issuer key + Node crypto.
 export const runtime = "nodejs";
@@ -95,6 +99,10 @@ function isBody(b: unknown): b is PredicateRequestBody {
 }
 
 export async function POST(req: NextRequest) {
+  const contentLength = Number(req.headers.get("content-length") ?? 0);
+  if (contentLength > 32_768) {
+    return NextResponse.json({ ok: false, error: "Predicate request is too large." }, { status: 413 });
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -112,6 +120,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const source = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "predicate-client";
+  const sourceLimit = rateLimit("predicate-ip", source, 120, 60);
+  if (!sourceLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: "Too many predicate requests." },
+      { status: 429, headers: { "retry-after": String(sourceLimit.retryAfter) } },
+    );
+  }
+
   // Structural validation of the addresses / hex.
   if (!isAddress(body.consumer) || !isAddress(body.subject) || !isAddress(body.verifier)) {
     return NextResponse.json({ ok: false, error: "consumer / subject / verifier must be addresses." }, { status: 400 });
@@ -122,9 +139,55 @@ export async function POST(req: NextRequest) {
   if (!isHex(body.credentialSig)) {
     return NextResponse.json({ ok: false, error: "credentialSig must be hex." }, { status: 400 });
   }
+  if (!Number.isSafeInteger(body.chainId) || body.chainId <= 0) {
+    return NextResponse.json({ ok: false, error: "chainId must be a positive safe integer." }, { status: 400 });
+  }
+  if (
+    !/^(0|[1-9][0-9]*)$/.test(body.credential.nullifier) ||
+    BigInt(body.credential.nullifier) >= 1n << 256n ||
+    !Number.isInteger(body.credential.ageFlags) ||
+    body.credential.ageFlags < 0 ||
+    body.credential.ageFlags > 255 ||
+    !/^0x[0-9a-fA-F]{6}$/.test(body.credential.nationality) ||
+    !Number.isInteger(body.credential.epoch) ||
+    body.credential.epoch < 0 ||
+    body.credential.epoch > 0xffffffff ||
+    body.predicate.length > 64
+  ) {
+    return NextResponse.json({ ok: false, error: "Credential or predicate fields are out of range." }, { status: 400 });
+  }
+  let nonce: bigint;
+  try {
+    nonce = BigInt(body.nonce);
+  } catch {
+    return NextResponse.json({ ok: false, error: "nonce must be a uint256 decimal string." }, { status: 400 });
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(body.nonce) || nonce >= 1n << 256n) {
+    return NextResponse.json({ ok: false, error: "nonce must be a uint256 decimal string." }, { status: 400 });
+  }
 
-  const issuer = privateKeyToAccount(ISSUER_PRIVATE_KEY).address as Address;
+  const subjectLimit = rateLimit("predicate-subject", body.subject, 20, 60);
+  if (!subjectLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: "Too many predicate requests for this subject." },
+      { status: 429, headers: { "retry-after": String(subjectLimit.retryAfter) } },
+    );
+  }
+
   const credential = deserializeHumanCredential(body.credential);
+
+  // The caller cannot choose an arbitrary EIP-712 domain. It must name the configured verifier
+  // paired with the configured ProofOfHumanity deployment for this chain.
+  const chain = CHAINS.find((candidate) => candidate.chainId === body.chainId);
+  if (!chain || !isPredicateDeployed(chain) || getAddress(chain.predicateAddress) !== getAddress(body.verifier)) {
+    return NextResponse.json(
+      { ok: false, error: "chainId/verifier is not a configured Proof-of-Humanity predicate deployment." },
+      { status: 400 },
+    );
+  }
+
+  const issuerPrivateKey = getIssuerPrivateKey();
+  const issuer = privateKeyToAccount(issuerPrivateKey).address as Address;
 
   // 1) The credential must be one THIS issuer signed.
   let credentialOk = false;
@@ -149,6 +212,44 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Credential epoch is in the future." }, { status: 400 });
   }
 
+  // Bind the private credential's nullifier to the presenting address through the live SBT and
+  // prove both contracts trust this exact server issuer before creating a public attestation.
+  try {
+    const client = createPublicClient({ transport: http(chain.rpcUrl) });
+    const tokenId = await client.readContract({
+      address: chain.pohAddress,
+      abi: proofOfHumanityAbi,
+      functionName: "tokenOfNullifier",
+      args: [credential.nullifier],
+    });
+    if (tokenId === 0n) {
+      return NextResponse.json({ ok: false, error: "No Proof-of-Humanity token exists for this credential." }, { status: 403 });
+    }
+    const [owner, valid, pohIssuer, predicateIssuer] = await Promise.all([
+      client.readContract({ address: chain.pohAddress, abi: proofOfHumanityAbi, functionName: "ownerOf", args: [tokenId] }),
+      client.readContract({ address: chain.pohAddress, abi: proofOfHumanityAbi, functionName: "isValid", args: [tokenId] }),
+      client.readContract({ address: chain.pohAddress, abi: proofOfHumanityAbi, functionName: "issuer" }),
+      client.readContract({ address: chain.predicateAddress, abi: predicateVerifierAbi, functionName: "issuer" }),
+    ]);
+    if (getAddress(owner) !== getAddress(body.subject)) {
+      return NextResponse.json({ ok: false, error: "subject does not own the credential's soulbound token." }, { status: 403 });
+    }
+    if (!valid) {
+      return NextResponse.json({ ok: false, error: "The Proof-of-Humanity token is not currently valid." }, { status: 403 });
+    }
+    if (getAddress(pohIssuer) !== issuer || getAddress(predicateIssuer) !== issuer) {
+      return NextResponse.json(
+        { ok: false, error: "Configured contracts do not trust this API issuer." },
+        { status: 503 },
+      );
+    }
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: `Could not verify the on-chain credential binding: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 503 },
+    );
+  }
+
   // 2) Compute the boolean from the credential attributes (raw values never leave here).
   let result: boolean;
   let predicateHash: Hex;
@@ -167,13 +268,6 @@ export async function POST(req: NextRequest) {
   }
 
   // 3) Bind + sign the attestation for exactly this consumer / context / subject.
-  let nonce: bigint;
-  try {
-    nonce = BigInt(body.nonce);
-  } catch {
-    return NextResponse.json({ ok: false, error: "nonce must be a uint256 decimal string." }, { status: 400 });
-  }
-
   const att: PredicateAttestation = {
     consumer: getAddress(body.consumer),
     context: body.context,
@@ -185,7 +279,7 @@ export async function POST(req: NextRequest) {
   };
 
   const verifier = getAddress(body.verifier);
-  const signature = await signPredicateAttestation(ISSUER_PRIVATE_KEY, att, body.chainId, verifier);
+  const signature = await signPredicateAttestation(issuerPrivateKey, att, body.chainId, verifier);
   const digest = hashPredicateAttestation(att, body.chainId, verifier);
 
   return NextResponse.json({

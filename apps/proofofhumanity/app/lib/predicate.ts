@@ -9,7 +9,7 @@
  * Two credentials live here — PIN the on-chain one exactly:
  *
  *   1. HumanCredential — TS-ONLY. The issuer signs it at Self verification; the
- *      holder keeps it PRIVATELY off-chain (localStorage in the demo). It carries
+ *      holder keeps it PRIVATELY off-chain (sessionStorage in the product). It carries
  *      the raw predicate INPUTS (age flags, nationality, OFAC-clear) the issuer
  *      re-reads when asked to attest a predicate. It never touches Solidity, so
  *      its EIP-712 domain is PORTABLE — `{ name, version }` only (no chainId /
@@ -411,7 +411,7 @@ export function evalPredicate(descriptor: string, attrs: PredicateAttrs): boolea
   if (d === "age>=18") return (attrs.ageFlags & AGE_FLAG_18) !== 0;
   if (d === "age>=21") return (attrs.ageFlags & AGE_FLAG_21) !== 0;
   if (d === "sanctions-clear") return attrs.ofacClear === true;
-  const m = /^nationality=([A-Za-z]{3})$/.exec(d);
+  const m = /^nationality=([A-Z]{3})$/.exec(d);
   if (m) return attrs.nationality.toLowerCase() === nationalityToBytes3(m[1]).toLowerCase();
   throw new Error(`Unknown predicate descriptor: ${JSON.stringify(descriptor)}`);
 }

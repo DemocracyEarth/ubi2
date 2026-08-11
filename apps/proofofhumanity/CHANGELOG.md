@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Robinhood Chain Testnet, and World Chain Sepolia, including chain/signer checks, explicit broadcast
   confirmation, manifest validation, source verification, and a post-deploy mint/replay/soulbound
   e2e check.
+- Add the production-shaped predicate center for age 18+, age 21+, ISO alpha-3 nationality, and
+  sanctions-clear attestations, with optional disclosure selection during the Self flow.
+- Add `/verify` and `/developers`, a public `@ubi2/sdk` predicate API, canonical descriptor vectors,
+  Solidity/TypeScript integration examples, and `PREDICATES.md`.
+- Add Ethereum, Base, Celo, Optimism, World Chain, and Robinhood Chain mainnet configuration pairs,
+  plus all five Phase 2 testnets. Predicate issuance stays disabled until both deployment addresses exist.
 
 ### Changed
 
@@ -23,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SybilResistantVote` artifacts instead of mirrored fixture implementations.
 - Make `Deploy.s.sol` derive ownership from Foundry's active broadcast caller so named encrypted
   keystores wire the deployed stack to the actual deployer.
+- Bind predicate issuance to a configured chain/verifier pair and verify the subject's live SBT
+  ownership plus both on-chain issuer addresses before signing.
+- Require successful OFAC and requested minimum-age checks from Self, keep optional private claims
+  in session storage, fail closed on a missing production issuer key, and add bounded rate limits.
+- Replace the fabricated age-only demo and inaccurate trustless-ZK copy with the real issuer-attested
+  v1 flow and an explicit unshipped holder-ZK status.
 
 ## [0.1.0] — 2026-08-09
 
@@ -42,7 +54,7 @@ First public release — a deployable, end-to-end proof-of-humanity credential.
 - **Multi-chain mint**: the same credential mints on any EVM chain and on **UBI Chain**
   (ubi2 native) — Ethereum, Base, Optimism, Celo wired in the UI.
 - **Predicate layer v1** (issuer-attested): prove a yes/no fact (`age>=18`, nationality,
-  sanctions-clear) revealing only the boolean, unlinkable per consumer. `PredicateVerifier`
+  sanctions-clear) revealing only the boolean, bound to one consumer and context. `PredicateVerifier`
   + `SybilResistantVote` demo consumer; `IPredicateProver` seam reserved for the trustless
   v2 (holder-side ZK proof).
 
@@ -51,7 +63,7 @@ First public release — a deployable, end-to-end proof-of-humanity credential.
 - Multi-chain mint flow: connect wallet → prove humanity with Self → pick a chain in step 3
   → mint. On-chain SVG credential card preview.
 - In-browser **live predicate demo** ("prove you're 18+") — private credential kept in the
-  browser, only the boolean crosses the wire, with client-side digest/signature parity checks.
+  browser, only the boolean reaches the consumer, with client-side digest/signature parity checks.
 - Landing sections: hero, why it matters, **how it works** (animated four-step flow rail),
   **the app** (mint), privacy model, for builders & DAOs (tabbed Solidity + TypeScript
   gating examples), under-the-hood (clickable primitives with canonical links), and
@@ -71,7 +83,8 @@ First public release — a deployable, end-to-end proof-of-humanity credential.
 
 - This build is **SSR** (not a static export): the issuer API routes
   (`/api/self-verify`, `/api/predicate`) hold `ISSUER_PRIVATE_KEY` server-side and must run
-  on a Node/serverless host. See `DEPLOY.md`.
+  on a Node host. The first release uses a bounded process-local callback handoff and therefore
+  requires one sticky replica; see `DEPLOY.md`.
 - Predicate proofs are **v1 (issuer-attested)**; the trustless holder-side ZK path (v2) is a
   documented follow-on (`IPredicateProver`).
 

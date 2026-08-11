@@ -10,8 +10,8 @@
  * The credential is MINIMAL: a Self zero-knowledge passport proof establishes a unique human and
  * yields a nullifier; the relay signs a slim { to, nullifier, epoch } voucher; the holder mints a
  * soulbound ERC-721 that stores only that nullifier + a coarse 90-day validity epoch. No
- * nationality / gender / age is ever disclosed to the chain — those stay zero-knowledge predicates,
- * provable on demand.
+ * nationality / gender / age is ever disclosed to the chain. In v1, optional age/nationality facts
+ * live in a private browser-held credential and the issuer signs consumer-bound Boolean results.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,14 +28,10 @@ import {
 import { buildSelfApp, getUniversalLink, SelfQRcodeWrapper, type SelfApp } from "./self-client";
 import { CHAINS, SELF_ENDPOINT, type ChainConfig } from "./config";
 import { proofOfHumanityAbi } from "./abi/proofOfHumanity";
-import {
-  bytes3ToNationality,
-  deserializePredicateAttestation,
-  hashPredicateAttestation,
-  recoverPredicateSigner,
-  type SerializedHumanCredential,
-  type SerializedPredicateAttestation,
-} from "./lib/predicate";
+import type { SerializedHumanCredential } from "./lib/predicate";
+import type { AgeThreshold, DisclosureProfile } from "./lib/disclosure-profile";
+import { saveHeldCredential } from "./lib/held-credential";
+import { PredicateCenter } from "./predicates/predicate-center";
 
 /*//////////////////////////////////////////////////////////////
                      BRAND ASSETS (from card-minimal-final.svg)
@@ -216,6 +212,9 @@ interface RelayReady {
   status: "ready";
   proof: { nullifier: string; epoch: number };
   vouchers: SignedForChain[];
+  credential?: SerializedHumanCredential;
+  credentialSig?: Hex;
+  issuer?: Address;
 }
 
 type Phase = "connect" | "scan" | "waiting" | "ready" | "minting" | "minted";
@@ -249,6 +248,11 @@ function humanIdFromNullifier(n: bigint): string {
   return `0x${hex.slice(0, 4)}…${hex.slice(-4)}`;
 }
 
+function newVerificationSession(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function viemChain(c: ChainConfig): Chain {
   return defineChain({
     id: c.chainId,
@@ -273,24 +277,32 @@ function MintFlow() {
   const [selectedChainId, setSelectedChainId] = useState<number | null>(null);
   const [note, setNote] = useState<{ kind: "ok" | "err" | "warn"; text: string } | null>(null);
   const [minted, setMinted] = useState<Minted | null>(null);
+  const [verificationSession, setVerificationSession] = useState<string | null>(null);
+  const [ageThreshold, setAgeThreshold] = useState<AgeThreshold>(null);
+  const [includeNationality, setIncludeNationality] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const disclosureProfile = useMemo<DisclosureProfile>(
+    () => ({ age: ageThreshold, nationality: includeNationality }),
+    [ageThreshold, includeNationality],
+  );
 
   useEffect(() => setInjected(getInjected()), []);
 
   useEffect(() => {
-    if (!account) return;
+    if (!account || !verificationSession) return;
     if (!SELF_ENDPOINT) {
       setSelfApp(null);
       return;
     }
     try {
-      setSelfApp(buildSelfApp(account, SELF_ENDPOINT));
+      setSelfApp(buildSelfApp(account, SELF_ENDPOINT, disclosureProfile, verificationSession));
       setBuildError(null);
     } catch (e) {
       setSelfApp(null);
       setBuildError(errMessage(e));
     }
-  }, [account]);
+  }, [account, disclosureProfile, verificationSession]);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -310,6 +322,7 @@ function MintFlow() {
       const addr = accounts[0] as Address | undefined;
       if (!addr) throw new Error("No account returned.");
       setAccount(addr);
+      setVerificationSession(newVerificationSession());
       setPhase("scan");
       setNote(null);
     } catch (e) {
@@ -318,19 +331,35 @@ function MintFlow() {
   }, [injected]);
 
   const startPolling = useCallback(() => {
-    if (!account) return;
+    if (!account || !verificationSession) return;
     stopPolling();
     pollTimer.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/self-verify?address=${account}`);
+        const res = await fetch(`/api/self-verify?address=${account}`, {
+          headers: { "x-poh-verification-session": verificationSession },
+        });
         const data = (await res.json()) as {
           status: string;
           proof?: RelayReady["proof"];
           vouchers?: SignedForChain[];
+          credential?: SerializedHumanCredential;
+          credentialSig?: Hex;
+          issuer?: Address;
           error?: string;
         };
         if (data.status === "ready" && data.vouchers && data.proof) {
-          setReady({ status: "ready", proof: data.proof, vouchers: data.vouchers });
+          const nextReady: RelayReady = {
+            status: "ready",
+            proof: data.proof,
+            vouchers: data.vouchers,
+            credential: data.credential,
+            credentialSig: data.credentialSig,
+            issuer: data.issuer,
+          };
+          setReady(nextReady);
+          if (data.credential && data.credentialSig) {
+            saveHeldCredential({ credential: data.credential, credentialSig: data.credentialSig, issuer: data.issuer });
+          }
           setSelectedChainId(data.vouchers[0]?.chainId ?? null);
           setPhase("ready");
           stopPolling();
@@ -349,7 +378,7 @@ function MintFlow() {
         /* transient — keep polling */
       }
     }, 2500);
-  }, [account, stopPolling]);
+  }, [account, stopPolling, verificationSession]);
 
   const onQrSuccess = useCallback(() => {
     setPhase("waiting");
@@ -453,12 +482,17 @@ function MintFlow() {
       setMinted({ tokenId, tokenURI: tokenURI as string, valid: valid as boolean, locked: locked as boolean, nullifier });
       setPhase("minted");
       setNote({ kind: "ok", text: `Minted Proof of Humanity #${tokenId} on ${chainCfg.name}.` });
-      fetch(`/api/self-verify?address=${account}`, { method: "DELETE" }).catch(() => {});
+      if (verificationSession) {
+        fetch(`/api/self-verify?address=${account}`, {
+          method: "DELETE",
+          headers: { "x-poh-verification-session": verificationSession },
+        }).catch(() => {});
+      }
     } catch (e) {
       setNote({ kind: "err", text: errMessage(e) });
       setPhase("ready");
     }
-  }, [injected, account, selected, ensureChain]);
+  }, [injected, account, selected, ensureChain, verificationSession]);
 
   const decodedMetadata = useMemo(() => {
     if (!minted) return null;
@@ -515,6 +549,43 @@ function MintFlow() {
 
             {account && buildError && <div className="notice err">Could not build the Self request: {buildError}</div>}
 
+            {account && (phase === "scan" || phase === "waiting") && (
+              <div className="disclosure-picker">
+                <div>
+                  <b>Prepare private predicate claims</b>
+                  <p className="muted small">
+                    Optional. Your exact birth date is never requested or stored. Choosing nationality reveals its
+                    three-letter country code to the issuer so it can sign a private browser-held credential.
+                  </p>
+                </div>
+                <label>
+                  <span>Age proof</span>
+                  <select
+                    value={ageThreshold ?? ""}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      setAgeThreshold(value === 18 ? 18 : value === 21 ? 21 : null);
+                    }}
+                    disabled={phase === "waiting"}
+                  >
+                    <option value="">Not requested</option>
+                    <option value="18">18+ (also sanctions)</option>
+                    <option value="21">21+ (also proves 18+)</option>
+                  </select>
+                </label>
+                <label className="check-field">
+                  <input
+                    type="checkbox"
+                    checked={includeNationality}
+                    onChange={(event) => setIncludeNationality(event.target.checked)}
+                    disabled={phase === "waiting"}
+                  />
+                  <span>Include nationality for private comparisons</span>
+                </label>
+                <span className="pill ok">Sanctions-clear is always required</span>
+              </div>
+            )}
+
             {account && SELF_ENDPOINT && selfApp && (phase === "scan" || phase === "waiting") && (
               <div className="row" style={{ alignItems: "flex-start", gap: "1.1rem" }}>
                 <div className="qr">
@@ -531,8 +602,8 @@ function MintFlow() {
                     </p>
                   )}
                   <p className="muted small" style={{ marginTop: "0.8rem" }}>
-                    Your passport is scanned on-device. The proof discloses no name, number, nationality or age —
-                    only that you are a unique, sanctions-clear human.
+                    Your passport is scanned on-device. No name, document number, face, or birth date is sent to us.
+                    The issuer receives only the claims you selected above plus the mandatory sanctions result.
                   </p>
                 </div>
               </div>
@@ -540,7 +611,8 @@ function MintFlow() {
 
             {account && SELF_ENDPOINT && ready && phase !== "scan" && phase !== "waiting" && (
               <div className="notice ok">
-                Unique human verified. Voucher signed for {ready.vouchers.length} chain(s).
+                Unique human verified. Voucher signed for {ready.vouchers.length} chain(s); private predicate
+                credential saved for this browser session.
               </div>
             )}
           </div>
@@ -649,25 +721,22 @@ const GATE_CODE = `<span class="c">// One human, one vote — gate on the soulbo
 <span class="c">// credential, no personal data touched.</span>
 <span class="t">IProofOfHumanity</span> poh = <span class="t">IProofOfHumanity</span>(<span class="s">0xPoH…</span>);
 
-<span class="k">function</span> castVote(<span class="t">uint256</span> id, <span class="t">bool</span> yes) <span class="k">external</span> {
-    <span class="t">uint256</span> tokenId = poh.tokenOf(msg.sender);
-    <span class="k">require</span>(tokenId != 0, <span class="s">"verify at proofofhumanity.org"</span>);
+<span class="k">function</span> castVote(<span class="t">uint256</span> id, <span class="t">uint256</span> tokenId, <span class="t">bool</span> yes) <span class="k">external</span> {
+    <span class="k">require</span>(poh.ownerOf(tokenId) == msg.sender, <span class="s">"not your credential"</span>);
     <span class="k">require</span>(poh.isValid(tokenId), <span class="s">"credential expired"</span>);
     _castVote(id, msg.sender, yes);
 }`;
 
-const TS_GATE_CODE = `<span class="c">// Off-chain gate — a DAO's API asks for a predicate</span>
-<span class="c">// and learns only the boolean, nothing else.</span>
-<span class="k">import</span> { verifyPredicate } <span class="k">from</span> <span class="s">"@ubi2/poh"</span>;
+const TS_GATE_CODE = `<span class="c">// Read-only gate — validate the exact EIP-712 artifact</span>
+<span class="c">// against the deployed verifier. The API receives no passport data.</span>
+<span class="k">const</span> allowed = <span class="k">await</span> publicClient.readContract({
+    address: PREDICATE_VERIFIER,
+    abi: predicateVerifierAbi,
+    functionName: <span class="s">"check"</span>,
+    args: [attestation, signature, wallet, APP_ADDRESS],
+});
 
-<span class="k">async function</span> canJoin(att, sig) {
-    <span class="k">const</span> ok = <span class="k">await</span> verifyPredicate(att, sig, {
-        predicate: <span class="s">"age>=18"</span>,   <span class="c">// fresh proof, per request</span>
-        consumer:  DAO_ADDRESS,  <span class="c">// bound to us → unlinkable</span>
-        issuer:    POH_ISSUER,
-    });
-    <span class="k">return</span> ok;  <span class="c">// true — and we learned nothing more</span>
-}`;
+<span class="k">if</span> (!allowed) <span class="k">throw new</span> Error(<span class="s">"predicate not satisfied"</span>);`;
 
 /** The builders code panel: switch between the on-chain gate and the off-chain SDK gate. */
 function BuilderCode() {
@@ -700,189 +769,6 @@ function BuilderCode() {
         </div>
       </div>
       <pre dangerouslySetInnerHTML={{ __html: tab === "sol" ? GATE_CODE : TS_GATE_CODE }} />
-    </div>
-  );
-}
-
-/*//////////////////////////////////////////////////////////////
-                     PREDICATE DEMO — "Prove you're 18+"
-//////////////////////////////////////////////////////////////*/
-
-/**
- * A self-contained, phone-free, chain-free demo of the PREDICATE LAYER (v1).
- *
- * It walks the whole thesis in the browser:
- *   1. mint a PRIVATE demo HumanCredential (kept in localStorage — the raw age /
- *      nationality live here, never leave the client store);
- *   2. ask `/api/predicate` to attest "age>=18" for one consumer + context + subject;
- *   3. verify, client-side, that the returned digest matches a locally-recomputed
- *      `hashPredicateAttestation` and that the signature recovers to the issuer.
- *
- * The punchline the UI drives home: the credential (with the actual nationality /
- * age facts) stays private; ONLY the boolean `result` crosses to the consumer,
- * and the attestation is bound to THIS consumer, so it is unlinkable across consumers.
- *
- * Demo domain constants: these are deterministic first-deploy anvil addresses, used
- * only so the EIP-712 domain (verifyingContract + chainId) is well-defined off-chain.
- * With a local anvil + a deployed `SybilResistantVote`, the same attestation would
- * cast a real gated vote (see `test/predicate.crossstack.ts`).
- */
-const DEMO_CHAIN_ID = 31337;
-const DEMO_VERIFIER = "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address; // anvil deploy #0
-const DEMO_CONSUMER = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address; // anvil deploy #1
-const DEMO_SUBJECT = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC" as Address; // anvil acct #2 — "the human"
-// bytes32("proposal:demo") right-padded.
-const DEMO_CONTEXT = "0x70726f706f73616c3a64656d6f00000000000000000000000000000000000000" as Hex;
-const CREDENTIAL_STORE_KEY = "poh:humanCredential";
-
-interface DemoProof {
-  attestation: SerializedPredicateAttestation;
-  credential: SerializedHumanCredential;
-  parity: boolean;
-  issuerOk: boolean;
-  issuer: string;
-}
-
-function PredicateDemo() {
-  const [phase, setPhase] = useState<"idle" | "working" | "proven">("idle");
-  const [proof, setProof] = useState<DemoProof | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const prove = useCallback(async () => {
-    setPhase("working");
-    setErr(null);
-    setProof(null);
-    try {
-      // 1) Obtain a PRIVATE held credential (demo issuance) and store it locally.
-      const credRes = (await (
-        await fetch("/api/predicate/demo-credential", { method: "POST" })
-      ).json()) as { ok: boolean; credential?: SerializedHumanCredential; credentialSig?: Hex; error?: string };
-      if (!credRes.ok || !credRes.credential || !credRes.credentialSig) {
-        throw new Error(credRes.error ?? "Could not issue a demo credential.");
-      }
-      try {
-        localStorage.setItem(
-          CREDENTIAL_STORE_KEY,
-          JSON.stringify({ credential: credRes.credential, credentialSig: credRes.credentialSig }),
-        );
-      } catch {
-        /* storage may be unavailable — the demo still works from memory */
-      }
-
-      // 2) Request an "age>=18" attestation bound to one consumer + context + subject.
-      const nonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
-      const attRes = (await (
-        await fetch("/api/predicate", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            credential: credRes.credential,
-            credentialSig: credRes.credentialSig,
-            predicate: "age>=18",
-            consumer: DEMO_CONSUMER,
-            context: DEMO_CONTEXT,
-            subject: DEMO_SUBJECT,
-            nonce: nonce.toString(),
-            verifier: DEMO_VERIFIER,
-            chainId: DEMO_CHAIN_ID,
-          }),
-        })
-      ).json()) as {
-        ok: boolean;
-        attestation?: SerializedPredicateAttestation;
-        signature?: Hex;
-        digest?: Hex;
-        issuer?: string;
-        error?: string;
-      };
-      if (!attRes.ok || !attRes.attestation || !attRes.signature || !attRes.digest || !attRes.issuer) {
-        throw new Error(attRes.error ?? "Attestation request failed.");
-      }
-
-      // 3) Client-side parity: recompute the digest + recover the signer.
-      const att = deserializePredicateAttestation(attRes.attestation);
-      const localDigest = hashPredicateAttestation(att, DEMO_CHAIN_ID, DEMO_VERIFIER);
-      const signer = await recoverPredicateSigner(att, attRes.signature, DEMO_CHAIN_ID, DEMO_VERIFIER);
-      setProof({
-        attestation: attRes.attestation,
-        credential: credRes.credential,
-        parity: localDigest.toLowerCase() === attRes.digest.toLowerCase(),
-        issuerOk: signer.toLowerCase() === attRes.issuer.toLowerCase(),
-        issuer: attRes.issuer,
-      });
-      setPhase("proven");
-    } catch (e) {
-      setErr(errMessage(e));
-      setPhase("idle");
-    }
-  }, []);
-
-  return (
-    <div className="predicate-demo">
-      <div className="pd-head">
-        <div>
-          <span className="eyebrow">Live demo · issuer-attested (v1)</span>
-          <h3>Prove you are 18+ — reveal only the answer.</h3>
-          <p className="muted small">
-            A private credential is issued and kept in your browser. The issuer attests one predicate to one consumer.
-            Only the boolean crosses the wire — no birthdate, no age, no nationality.
-          </p>
-        </div>
-        <button className="btn primary" onClick={prove} disabled={phase === "working"}>
-          {phase === "working" ? "Proving…" : proof ? "Prove again" : "Prove you're 18+"}
-        </button>
-      </div>
-
-      {err && <p className="pd-note err">{err}</p>}
-
-      {proof && (
-        <div className="pd-grid">
-          <div className="pd-col">
-            <div className="pd-verdict">
-              <span className="pd-badge">{proof.attestation.result ? "PROVEN ✓" : "NOT PROVEN"}</span>
-              <span>
-                <b>age ≥ 18</b> → <span className="mono">{String(proof.attestation.result)}</span>
-              </span>
-            </div>
-            <div className="kv">
-              <span className="k">Digest parity</span>
-              <span>{proof.parity ? "matches on-chain hash ✓" : "MISMATCH ✗"}</span>
-            </div>
-            <div className="kv">
-              <span className="k">Signed by</span>
-              <span>{proof.issuerOk ? `issuer ${short(proof.issuer)} ✓` : "unknown signer ✗"}</span>
-            </div>
-            <div className="kv">
-              <span className="k">Bound to</span>
-              <span className="mono">{short(proof.attestation.consumer)}</span>
-            </div>
-            <p className="muted small" style={{ marginTop: "0.5rem" }}>
-              Bound to one consumer — a different consumer gets a different, unlinkable attestation.
-            </p>
-          </div>
-
-          <div className="pd-col">
-            <div className="pd-panel">
-              <div className="pd-panel-title ok">What crossed the wire (public)</div>
-              <pre className="json">{JSON.stringify(proof.attestation, null, 2)}</pre>
-            </div>
-            <div className="pd-panel">
-              <div className="pd-panel-title priv">What stayed private (your browser)</div>
-              <pre className="json">
-                {JSON.stringify(
-                  {
-                    ageFlags: proof.credential.ageFlags,
-                    nationality: bytes3ToNationality(proof.credential.nationality) || "(undisclosed)",
-                    ofacClear: proof.credential.ofacClear,
-                  },
-                  null,
-                  2,
-                )}
-              </pre>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1113,10 +999,10 @@ export default function Page() {
           <nav className="nav-links">
             <a href="#how">How it works</a>
             <a href="#mint">App</a>
+            <a href="/verify">Verify facts</a>
+            <a href="/developers">Developers</a>
             <a href="#privacy">Privacy</a>
-            <a href="#builders">Builders</a>
             <a href="#ubi">UBI</a>
-            <a href="#tech">Tech</a>
           </nav>
           <a className="btn primary sm nav-cta" href="#mint">
             Verify with Self
@@ -1259,8 +1145,8 @@ export default function Page() {
                 <span className="num">STEP 04</span>
                 <h3>Prove predicates on demand</h3>
                 <p>
-                  Later, prove a fact — over 18, a nationality, sanctions-clear — as a fresh zero-knowledge proof that
-                  reveals only the answer, never the underlying data.
+                  Later, request a consumer-bound yes/no attestation — over 18, a nationality, sanctions-clear. In v1
+                  the issuer evaluates your private credential; the consumer receives only the signed Boolean.
                 </p>
               </div>
             </div>
@@ -1292,8 +1178,8 @@ export default function Page() {
               <h2>Nothing personal on-chain. The predicates travel, not the data.</h2>
               <p>
                 Most identity systems store your attributes publicly and hope no one misuses them. Proof of Humanity
-                stores the minimum that makes you countable — and keeps every attribute as a proof you disclose only
-                when, and to whom, you choose.
+                stores the minimum that makes you countable. Optional facts stay in your browser session and are
+                disclosed only to the issuer when you prepare or request a consumer-bound v1 attestation.
               </p>
             </div>
             <div className="privacy-grid">
@@ -1320,7 +1206,7 @@ export default function Page() {
                       <span className="mk y">✓</span> Soulbound: bound to you, non-transferable, one per human
                     </li>
                     <li>
-                      <span className="mk y">✓</span> Attributes proven on demand, unlinkable per context
+                      <span className="mk y">✓</span> Boolean attestations bound to one consumer, context and subject
                     </li>
                   </ul>
                 </div>
@@ -1388,8 +1274,8 @@ export default function Page() {
                   <li>
                     <span className="dot" />
                     <span>
-                      <b>Gated sub-groups.</b> Ask a holder to prove a predicate — over 18, a nationality, sanctions-clear
-                      — to join, revealing only the answer.
+                      <b>Gated sub-groups.</b> Ask a holder for a signed age, nationality or sanctions Boolean. Consumers
+                      receive the answer and its bindings, never the private credential.
                     </span>
                   </li>
                   <li>
@@ -1403,7 +1289,19 @@ export default function Page() {
               </div>
               <BuilderCode />
             </div>
-            <PredicateDemo />
+            <div className="section-head predicate-section-head">
+              <span className="eyebrow">Predicate center</span>
+              <h2>Verify age, nationality or sanctions status.</h2>
+              <p>
+                Prepare optional claims during the Self scan, then issue a narrowly scoped artifact for one app or
+                contract. The API checks the live soulbound token and configured verifier before signing.
+              </p>
+            </div>
+            <PredicateCenter />
+            <div className="builder-links">
+              <a className="btn primary" href="/verify">Open full verification app</a>
+              <a className="btn ghost" href="/developers">Read developer documentation</a>
+            </div>
           </div>
         </section>
 
@@ -1413,7 +1311,7 @@ export default function Page() {
             <div className="section-head">
               <span className="eyebrow">Under the hood</span>
               <h2>Open standards, all the way down.</h2>
-              <p>No custom trust assumptions — audited primitives composed into a minimal credential.</p>
+              <p>Audited primitives, explicit trust boundaries, and byte-for-byte EIP-712 parity with Solidity.</p>
             </div>
             <p className="chips-hint muted small">Tap any primitive to see what it does and where to read more.</p>
             <TechChips />
@@ -1462,6 +1360,8 @@ export default function Page() {
             <p className="fine">One human. One credential. Soulbound. Prove you are human without revealing who you are.</p>
           </div>
           <div className="links">
+            <a href="/verify">Verify facts</a>
+            <a href="/developers">Developers</a>
             <a href="https://ubi.eth.limo/" target="_blank" rel="noreferrer">
               UBI
             </a>
