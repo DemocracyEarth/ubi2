@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Solidity/TypeScript integration examples, and `PREDICATES.md`.
 - Add Ethereum, Base, Celo, Optimism, World Chain, and Robinhood Chain mainnet configuration pairs,
   plus all five Phase 2 testnets. Predicate issuance stays disabled until both deployment addresses exist.
-- Publish the verified Base Sepolia, Ethereum Sepolia, Celo Sepolia, and Robinhood Chain Testnet
-  contract pairs, explorer links, deployment transactions, and live-gate evidence in the app and
-  contract registry.
+- Publish verified contract pairs for all five Phase 2 testnets—Base Sepolia, Ethereum Sepolia,
+  Celo Sepolia, World Chain Sepolia, and Robinhood Chain Testnet—with explorer links, deployment
+  transactions, and live-gate evidence in the app and contract registry.
 
 ### Changed
 
