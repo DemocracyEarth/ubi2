@@ -82,8 +82,14 @@ export const CHAINS: ChainConfig[] = [
     chainId: 11142220,
     name: "Celo Sepolia",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_SEPOLIA_RPC_URL ?? "https://forno.celo-sepolia.celo-testnet.org",
-    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH),
-    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_SEPOLIA_PREDICATE),
+    pohAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH,
+      "0xb0317d3481a2A78959b51C4D5DCE3f4991e50E12",
+    ),
+    predicateAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_CELO_SEPOLIA_PREDICATE,
+      "0x4A1a892552B284eeDa540ECF3E3e44797a9D307e",
+    ),
     explorer: "https://celo-sepolia.blockscout.com",
   },
   {
@@ -98,8 +104,14 @@ export const CHAINS: ChainConfig[] = [
     chainId: 46630,
     name: "Robinhood Chain Testnet",
     rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_RPC_URL ?? "https://rpc.testnet.chain.robinhood.com",
-    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH),
-    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_PREDICATE),
+    pohAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH,
+      "0xb0317d3481a2A78959b51C4D5DCE3f4991e50E12",
+    ),
+    predicateAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_PREDICATE,
+      "0x4A1a892552B284eeDa540ECF3E3e44797a9D307e",
+    ),
     explorer: "https://explorer.testnet.chain.robinhood.com",
   },
   {
