@@ -158,14 +158,30 @@ export default function DevelopersPage() {
             <p>The app exposes issuance only when both contract addresses are configured. Zero addresses fail closed.</p>
             <div className="network-table">
               <div className="network-row head"><span>Network</span><span>Chain</span><span>PoH</span><span>Predicate</span><span>Status</span></div>
-              {CHAINS.filter((chain) => chain.chainId !== 31337).map((chain) => (
-                <div className="network-row" key={chain.chainId}>
-                  <span>{chain.name}</span><code>{chain.chainId}</code>
-                  <code>{isPredicateDeployed(chain) ? `${chain.pohAddress.slice(0, 8)}…` : "—"}</code>
-                  <code>{isPredicateDeployed(chain) ? `${chain.predicateAddress.slice(0, 8)}…` : "—"}</code>
-                  <span className={isPredicateDeployed(chain) ? "net-live" : "net-pending"}>{isPredicateDeployed(chain) ? "configured" : "pending deploy"}</span>
-                </div>
-              ))}
+              {CHAINS.filter((chain) => chain.chainId !== 31337).map((chain) => {
+                const deployed = isPredicateDeployed(chain);
+                const explorer = chain.explorer;
+                return (
+                  <div className="network-row" key={chain.chainId}>
+                    <span>{chain.name}</span><code>{chain.chainId}</code>
+                    <code>
+                      {deployed && explorer ? (
+                        <a href={`${explorer}/address/${chain.pohAddress}#code`} target="_blank" rel="noreferrer" title={chain.pohAddress}>
+                          {chain.pohAddress.slice(0, 8)}…
+                        </a>
+                      ) : "—"}
+                    </code>
+                    <code>
+                      {deployed && explorer ? (
+                        <a href={`${explorer}/address/${chain.predicateAddress}#code`} target="_blank" rel="noreferrer" title={chain.predicateAddress}>
+                          {chain.predicateAddress.slice(0, 8)}…
+                        </a>
+                      ) : "—"}
+                    </code>
+                    <span className={deployed ? "net-live" : "net-pending"}>{deployed ? "configured" : "pending deploy"}</span>
+                  </div>
+                );
+              })}
             </div>
           </section>
 

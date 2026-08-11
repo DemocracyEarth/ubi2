@@ -85,9 +85,14 @@ if "$SCRIPT_DIR/phase2.sh" deploy local >/dev/null 2>&1; then
   echo "ERROR: Phase 2 wrapper broadcast without an exact confirmation" >&2
   exit 1
 fi
+if "$SCRIPT_DIR/phase2-all.sh" deploy local >/dev/null 2>&1; then
+  echo "ERROR: aggregate Phase 2 wrapper accepted a broadcast action" >&2
+  exit 1
+fi
 
 export PHASE2_BROADCAST_CONFIRM=local:31337
 "$SCRIPT_DIR/phase2.sh" deploy local
 "$SCRIPT_DIR/phase2.sh" e2e local
+"$SCRIPT_DIR/phase2-all.sh" e2e local
 
 echo "Phase 2 local deployment tooling rehearsal PASS"

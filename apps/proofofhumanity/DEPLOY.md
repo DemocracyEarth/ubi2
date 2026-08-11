@@ -18,10 +18,16 @@ Contract deployment is a separate release step. Complete the testnet-only
 here. Its deployer uses encrypted Foundry keystores; do not reuse the app's raw server-side issuer
 secret for contract deployment.
 
+The app ships the verified Base Sepolia and Ethereum Sepolia contract pairs as public defaults.
+They can be overridden with `NEXT_PUBLIC_*` variables, but the server still fails closed unless its
+issuer signer matches both live `issuer()` getters. Celo Sepolia, World Chain Sepolia, Robinhood
+Chain Testnet, and every mainnet remain zero-addressed and visibly unavailable. See the public
+[`contracts/DEPLOYMENTS.md`](../../contracts/DEPLOYMENTS.md) registry for addresses and transactions.
+
 ## Pre-deploy checklist — first mainnet release
 
 - [ ] `pnpm --filter @ubi2/proofofhumanity typecheck`, `test:contracts`, and `build` pass on the release commit.
-- [ ] `contracts/scripts/phase2-all.sh` is green on Ethereum Sepolia, Base Sepolia, Celo Sepolia,
+- [ ] `contracts/scripts/phase2-all.sh e2e` is green on Ethereum Sepolia, Base Sepolia, Celo Sepolia,
       World Chain Sepolia, and Robinhood Chain Testnet with verified source and a live mint.
 - [ ] `ISSUER_PRIVATE_KEY` set to the production signer (its address must equal each chain's
       `ProofOfHumanity.issuer()` and `PredicateVerifier.issuer()`) — **not** the deployer or dev key.
@@ -53,6 +59,10 @@ Client vars (`NEXT_PUBLIC_*`) are inlined into the browser bundle; server vars a
 
 Supported prefixes are `ETHEREUM`, `BASE`, `CELO`, `WORLD`, `ROBINHOOD`, and `OP`, plus their
 testnet forms shown in [`.env.example`](.env.example).
+
+The checked-in nonzero testnet defaults are release registry entries, not secrets. Missing or empty
+environment values keep those defaults; set the zero address to deliberately disable one of those
+testnet targets in a deployment. A malformed address also fails closed to zero.
 
 ## Recommended first-release topology: one Node container
 

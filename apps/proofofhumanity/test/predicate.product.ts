@@ -9,6 +9,7 @@ import {
 } from "../app/lib/disclosure-profile";
 import { evalPredicate, nationalityToBytes3 } from "../app/lib/predicate";
 import { predicateDescriptorHash } from "@ubi2/sdk";
+import { CHAINS, isPredicateDeployed } from "../app/config";
 
 for (const profile of [
   { age: null, nationality: false },
@@ -43,4 +44,11 @@ assert.throws(() => evalPredicate("nationality=arg", attributes));
 
 assert.equal(predicateDescriptorHash("age>=18"), "0xe3e8342a70f40c3ef2dacba55a24b87789c9ddaf64d9d329e304d6478e856e96");
 
-console.log("predicate product: disclosure profiles + canonical evaluation PASS");
+const ethereumSepolia = CHAINS.find((chain) => chain.chainId === 11155111);
+const baseSepolia = CHAINS.find((chain) => chain.chainId === 84532);
+const ethereumMainnet = CHAINS.find((chain) => chain.chainId === 1);
+assert.ok(ethereumSepolia && isPredicateDeployed(ethereumSepolia));
+assert.ok(baseSepolia && isPredicateDeployed(baseSepolia));
+assert.ok(ethereumMainnet && !isPredicateDeployed(ethereumMainnet));
+
+console.log("predicate product: disclosure profiles + canonical evaluation + deployment registry PASS");
