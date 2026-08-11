@@ -299,7 +299,7 @@ h3 {
 
 .card-frame {
   width: 100%;
-  max-width: 380px;
+  max-width: 430px;
   filter: drop-shadow(0 40px 80px rgba(0, 0, 0, 0.6));
 }
 
@@ -307,7 +307,7 @@ h3 {
   width: 100%;
   height: auto;
   display: block;
-  border-radius: 22px;
+  border-radius: 26px;
 }
 
 @media (max-width: 900px) {

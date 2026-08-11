@@ -47,60 +47,76 @@ const HEAD_PATH =
 
 /** The LOCKED minimal card, as a self-contained SVG string. Only `HUMAN ID` is dynamic. */
 function minimalCardSvg(humanId: string): string {
-  return `<svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" role="img"><title>Proof of Humanity — minimal credential</title>
+  return `<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" role="img"><title>Proof of Humanity — zero-knowledge</title>
 <defs>
 <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFE24B"/><stop offset="52%" stop-color="#FF9A55"/><stop offset="100%" stop-color="#FF6B8A"/></linearGradient>
 <linearGradient id="ok" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#6EE7B7"/><stop offset="100%" stop-color="#22C55E"/></linearGradient>
 <linearGradient id="card" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#101016"/><stop offset="100%" stop-color="#08080B"/></linearGradient>
-<radialGradient id="glow" cx="50%" cy="38%" r="42%"><stop offset="0%" stop-color="#FF7A66" stop-opacity="0.15"/><stop offset="100%" stop-color="#000000" stop-opacity="0"/></radialGradient>
+<radialGradient id="glow" cx="50%" cy="27%" r="46%"><stop offset="0%" stop-color="#FF7A66" stop-opacity="0.16"/><stop offset="100%" stop-color="#000000" stop-opacity="0"/></radialGradient>
 </defs>
-<rect width="640" height="900" fill="#000000"/>
-<rect width="640" height="900" fill="url(#glow)"/>
-<path d="M54 24 H562 L616 78 V846 A30 30 0 0 1 586 876 H54 A30 30 0 0 1 24 846 V54 A30 30 0 0 1 54 24 Z" fill="url(#card)" stroke="url(#g)" stroke-width="2"/>
-<path d="M70 58 L74 74 L90 78 L74 82 L70 98 L66 82 L50 78 L66 74 Z" fill="url(#g)" opacity="0.9"/>
-<text x="584" y="62" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="3" fill="#C9A24E">HUMAN ID</text>
-<text x="584" y="86" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="16" fill="#E8E8EC">${humanId}</text>
-<text x="54" y="152" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="54" font-weight="800" letter-spacing="-1.5" fill="#F5F5F7">Proof of</text>
-<text x="54" y="206" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="54" font-weight="800" letter-spacing="-1.5" fill="#F5F5F7">Humanity</text>
-<text x="56" y="242" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="22" font-weight="600" fill="url(#g)">Verified with Self</text>
-<circle cx="320" cy="368" r="112" fill="none" stroke="url(#g)" stroke-opacity="0.30" stroke-width="1" stroke-dasharray="1.5 7"/>
-<circle cx="212" cy="368" r="3.5" fill="url(#g)"/>
-<circle cx="428" cy="368" r="3.5" fill="url(#g)"/>
-<circle cx="320" cy="368" r="86" fill="#0B0B10" stroke="url(#g)" stroke-opacity="0.55" stroke-width="1.5"/>
-<g transform="translate(273,308) scale(0.253)"><path fill="url(#g)" d="${HEAD_PATH}"/></g>
-<line x1="64" y1="516" x2="158" y2="516" stroke="url(#g)" stroke-opacity="0.4"/>
-<line x1="482" y1="516" x2="576" y2="516" stroke="url(#g)" stroke-opacity="0.4"/>
-<text x="320" y="521" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" letter-spacing="5" fill="#C9A24E">ZERO-KNOWLEDGE HUMANITY</text>
-<rect x="52" y="540" width="536" height="54" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>
-<circle cx="84" cy="562" r="5.5" fill="none" stroke="url(#g)" stroke-width="1.5"/>
-<path d="M73 579 q11 -13 22 0" fill="none" stroke="url(#g)" stroke-width="1.5" stroke-linecap="round"/>
-<text x="116" y="573" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="#EAEAEE">Unique human</text>
-<text x="524" y="573" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="#F2F2F4">Verified</text>
-<circle cx="560" cy="567" r="13" fill="none" stroke="url(#ok)" stroke-width="1.6"/>
-<path d="M554 567 l4 4 l8 -8.5" fill="none" stroke="url(#ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<rect x="52" y="608" width="536" height="54" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>
-<rect x="76" y="636" width="16" height="12" rx="2" fill="none" stroke="url(#g)" stroke-width="1.5"/>
-<path d="M79 636 v-4 a5 5 0 0 1 10 0 v4" fill="none" stroke="url(#g)" stroke-width="1.5"/>
-<text x="116" y="641" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="#EAEAEE">Personal data on-chain</text>
-<text x="524" y="641" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="18" fill="url(#ok)">None</text>
-<circle cx="560" cy="635" r="13" fill="none" stroke="url(#ok)" stroke-width="1.6"/>
-<path d="M554 635 l4 4 l8 -8.5" fill="none" stroke="url(#ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<text x="320" y="706" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" letter-spacing="4" fill="#C9A24E">PROVABLE ON DEMAND</text>
-<g font-family="Helvetica,Arial,sans-serif" font-size="15" font-weight="500">
-<rect x="52" y="722" width="168" height="46" rx="23" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<line x1="74" y1="723.5" x2="198" y2="723.5" stroke="#FFFFFF" stroke-opacity="0.06"/>
-<circle cx="96" cy="745" r="2.5" fill="url(#g)"/><text x="110" y="750" fill="#EDEDF1">Age 18+</text>
-<rect x="236" y="722" width="168" height="46" rx="23" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<line x1="258" y1="723.5" x2="382" y2="723.5" stroke="#FFFFFF" stroke-opacity="0.06"/>
-<circle cx="270" cy="745" r="2.5" fill="url(#g)"/><text x="284" y="750" fill="#EDEDF1">Nationality</text>
-<rect x="420" y="722" width="168" height="46" rx="23" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
-<line x1="442" y1="723.5" x2="566" y2="723.5" stroke="#FFFFFF" stroke-opacity="0.06"/>
-<circle cx="454" cy="745" r="2.5" fill="url(#g)"/><text x="468" y="750" fill="#EDEDF1">Sanctions</text>
+<rect width="1000" height="1000" fill="#08080B"/>
+<rect width="1000" height="1000" fill="url(#glow)"/>
+<rect x="24" y="24" width="952" height="952" rx="44" fill="url(#card)" stroke="url(#g)" stroke-width="2"/>
+
+<path d="M74 60 L79 78 L97 83 L79 88 L74 106 L69 88 L51 83 L69 78 Z" fill="url(#g)" opacity="0.9"/>
+<text x="936" y="74" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="13" letter-spacing="3" fill="#C9A24E">HUMAN ID</text>
+<text x="936" y="100" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="18" fill="#E8E8EC">${humanId}</text>
+
+<path d="M656 250 L578 385 L422 385 L344 250 L422 115 L578 115 Z" fill="none" stroke="url(#g)" stroke-opacity="0.18" stroke-width="1.2" stroke-dasharray="2 9"/>
+<circle cx="500" cy="250" r="146" fill="none" stroke="url(#g)" stroke-opacity="0.26" stroke-width="1" stroke-dasharray="1.5 7"/>
+<circle cx="382" cy="250" r="3.5" fill="url(#g)"/>
+<circle cx="618" cy="250" r="3.5" fill="url(#g)"/>
+<circle cx="500" cy="250" r="118" fill="#0B0B10" stroke="url(#g)" stroke-opacity="0.5" stroke-width="1.5"/>
+<g transform="translate(427,157) scale(0.42)"><path fill="url(#g)" d="${HEAD_PATH}"/></g>
+
+<text x="500" y="452" text-anchor="middle" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="50" font-weight="800" letter-spacing="-1.5" fill="#F5F5F7">Proof of Humanity</text>
+<text x="500" y="489" text-anchor="middle" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="21" font-weight="600" fill="url(#g)">Verified with Self</text>
+
+<line x1="152" y1="537" x2="352" y2="537" stroke="url(#g)" stroke-opacity="0.4"/>
+<line x1="648" y1="537" x2="848" y2="537" stroke="url(#g)" stroke-opacity="0.4"/>
+<text x="500" y="542" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="13" letter-spacing="4.5" fill="#C9A24E">ZERO-KNOWLEDGE PROOF OF HUMANITY</text>
+
+<rect x="60" y="562" width="880" height="54" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>
+<rect x="76" y="578" width="28" height="22" rx="3" fill="none" stroke="url(#g)" stroke-width="1.5"/>
+<circle cx="85" cy="586" r="3.6" fill="none" stroke="url(#g)" stroke-width="1.4"/>
+<line x1="93" y1="584" x2="100" y2="584" stroke="url(#g)" stroke-width="1.4"/><line x1="93" y1="590" x2="100" y2="590" stroke="url(#g)" stroke-width="1.4"/><line x1="80" y1="595" x2="100" y2="595" stroke="url(#g)" stroke-width="1.4" stroke-opacity="0.7"/>
+<text x="130" y="596" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="#EAEAEE">Valid passport</text>
+<text x="856" y="596" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="#F2F2F4">Verified</text>
+<circle cx="900" cy="589" r="13" fill="none" stroke="url(#ok)" stroke-width="1.7"/>
+<path d="M893 589 l5 5 l9 -9.5" fill="none" stroke="url(#ok)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+
+<rect x="60" y="624" width="880" height="54" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>
+<circle cx="90" cy="645" r="6" fill="none" stroke="url(#g)" stroke-width="1.6"/>
+<path d="M78 664 q12 -14 24 0" fill="none" stroke="url(#g)" stroke-width="1.6" stroke-linecap="round"/>
+<text x="130" y="658" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="#EAEAEE">Unique human</text>
+<text x="856" y="658" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="#F2F2F4">Verified</text>
+<circle cx="900" cy="651" r="13" fill="none" stroke="url(#ok)" stroke-width="1.7"/>
+<path d="M893 651 l5 5 l9 -9.5" fill="none" stroke="url(#ok)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+
+<rect x="60" y="686" width="880" height="54" rx="15" fill="#0D0D12" stroke="url(#g)" stroke-opacity="0.20"/>
+<rect x="82" y="712" width="18" height="13" rx="2" fill="none" stroke="url(#g)" stroke-width="1.6"/>
+<path d="M85 712 v-4 a6 6 0 0 1 12 0 v4" fill="none" stroke="url(#g)" stroke-width="1.6"/>
+<text x="130" y="720" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="#EAEAEE">Personal data on-chain</text>
+<text x="856" y="720" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="19" fill="url(#ok)">None</text>
+<circle cx="900" cy="713" r="13" fill="none" stroke="url(#ok)" stroke-width="1.7"/>
+<path d="M893 713 l5 5 l9 -9.5" fill="none" stroke="url(#ok)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+
+<text x="500" y="782" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" letter-spacing="3.5" fill="#C9A24E">PROVABLE ON DEMAND · NEVER STORED</text>
+<g font-family="Helvetica,Arial,sans-serif" font-size="16" font-weight="500">
+<rect x="60" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
+<g stroke="url(#g)" stroke-width="1.5" fill="none" stroke-linecap="round"><rect x="81" y="826" width="14" height="6" rx="1.5"/><line x1="88" y1="826" x2="88" y2="821"/></g><circle cx="88" cy="818.5" r="1.5" fill="url(#g)"/>
+<text x="110" y="831" fill="#EDEDF1">Age 18+</text>
+<rect x="360" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
+<g stroke="url(#g)" fill="none"><circle cx="388" cy="825" r="8" stroke-width="1.5"/><line x1="380" y1="825" x2="396" y2="825" stroke-width="1.3"/><path d="M388 817 C383 820 383 830 388 833" stroke-width="1.3"/><path d="M388 817 C393 820 393 830 388 833" stroke-width="1.3"/></g>
+<text x="410" y="831" fill="#EDEDF1">Nationality</text>
+<rect x="660" y="800" width="280" height="50" rx="25" fill="#12121A" stroke="url(#g)" stroke-opacity="0.5"/>
+<g fill="none" stroke="url(#g)" stroke-linecap="round" stroke-linejoin="round"><path d="M688 817 l7 3 v5 c0 4 -3 6.3 -7 7.6 c-4 -1.3 -7 -3.6 -7 -7.6 v-5 z" stroke-width="1.5"/><path d="M685 825 l2.2 2.2 l4 -4.4" stroke-width="1.6"/></g>
+<text x="710" y="831" fill="#EDEDF1">Sanctions</text>
 </g>
-<text x="320" y="800" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12.5" fill="#7C7C86">Zero-knowledge predicates — nothing stored on-chain</text>
-<path d="M96 844 l6 5 l-6 4 z" fill="url(#g)"/><path d="M96 844 l-6 5 l6 4 z" fill="url(#g)" opacity="0.55"/>
-<text x="320" y="852" text-anchor="middle" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" letter-spacing="3" fill="url(#g)">ONE HUMAN · ONE CREDENTIAL · SOULBOUND</text>
-<path d="M544 844 l6 5 l-6 4 z" fill="url(#g)" opacity="0.55"/><path d="M544 844 l-6 5 l6 4 z" fill="url(#g)"/>
+
+<path d="M244 903 l7 6 l-7 5 z" fill="url(#g)"/><path d="M244 903 l-7 6 l7 5 z" fill="url(#g)" opacity="0.55"/>
+<text x="500" y="913" text-anchor="middle" font-family="Helvetica,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" letter-spacing="2" fill="url(#g)">ONE HUMAN · ONE CREDENTIAL · SOULBOUND</text>
+<path d="M756 903 l7 6 l-7 5 z" fill="url(#g)" opacity="0.55"/><path d="M756 903 l-7 6 l7 5 z" fill="url(#g)"/>
 </svg>`;
 }
 
