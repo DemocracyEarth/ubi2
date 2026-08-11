@@ -20,6 +20,7 @@ export { SelfQRcodeWrapper, getUniversalLink };
 export type { SelfApp };
 
 import { SELF_APP_NAME, SELF_SCOPE, SELF_ENDPOINT_TYPE } from "./config";
+import { encodeDisclosureRequest, type DisclosureProfile } from "./lib/disclosure-profile";
 
 /**
  * Build the Proof-of-Humanity SelfApp descriptor.
@@ -28,17 +29,18 @@ import { SELF_APP_NAME, SELF_SCOPE, SELF_ENDPOINT_TYPE } from "./config";
  *   - `endpoint`     = the public URL of THIS app's `/api/self-verify` relay.
  *   - `endpointType` = "staging_https" (staging) or "https" (production), in lockstep with the
  *                      backend `mockPassport` flag (see config.ts SELF_ENV).
- *   - `userId`/`userDefinedData` = the connected EVM address (`userIdType: "hex"`). This is what
- *                      binds the proof to the wallet: the disclosed `userIdentifier` the backend
- *                      reads out is exactly this address, and the voucher's `to` is set from it.
- *   - `disclosures`  = { ofac } only. The credential is MINIMAL — the proof asserts a unique human
- *                      (the nullifier) and a sanctions screen; it discloses NO nationality / gender
- *                      / age. Those stay zero-knowledge predicates a holder proves on demand, never
- *                      stored on-chain and never mapped into the voucher.
+ *   - `userId`       = the connected EVM address (`userIdType: "hex"`). This binds the proof to the
+ *                      wallet; the voucher recipient is the verified `userIdentifier`.
+ *   - `userDefinedData` = a fixed disclosure-profile id plus a random 128-bit browser capability.
+ *                      The backend enforces the age policy and requires that capability to poll the
+ *                      short-lived result, so a wallet address alone cannot retrieve the credential.
+ *   - `disclosures`  = OFAC is mandatory. Age and nationality are explicit user opt-ins used only
+ *                      to prepare the holder's private predicate credential; they never enter the
+ *                      soulbound token or a public attestation.
  *
  * Throws if `endpoint` is empty or a loopback URL — callers should catch and show the caveat.
  */
-export function buildSelfApp(address: string, endpoint: string): SelfApp {
+export function buildSelfApp(address: string, endpoint: string, profile: DisclosureProfile, session: string): SelfApp {
   return new SelfAppBuilder({
     version: 2,
     appName: SELF_APP_NAME,
@@ -47,9 +49,11 @@ export function buildSelfApp(address: string, endpoint: string): SelfApp {
     endpointType: SELF_ENDPOINT_TYPE,
     userId: address,
     userIdType: "hex",
-    userDefinedData: address,
+    userDefinedData: encodeDisclosureRequest(profile, session),
     disclosures: {
       ofac: true,
+      ...(profile.age ? { minimumAge: profile.age } : {}),
+      ...(profile.nationality ? { nationality: true } : {}),
     },
   }).build();
 }

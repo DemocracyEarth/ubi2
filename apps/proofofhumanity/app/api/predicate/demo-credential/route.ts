@@ -25,7 +25,7 @@ import {
   signHumanCredential,
   type HumanCredential,
 } from "../../../lib/predicate";
-import { ISSUER_PRIVATE_KEY } from "../../../config";
+import { getIssuerPrivateKey } from "../../../server-config";
 
 export const runtime = "nodejs";
 
@@ -52,8 +52,9 @@ export async function POST(_req: NextRequest) {
     epoch: epochNow(),
   };
 
-  const signature = await signHumanCredential(ISSUER_PRIVATE_KEY, credential);
-  const issuer = privateKeyToAccount(ISSUER_PRIVATE_KEY).address as Address;
+  const issuerPrivateKey = getIssuerPrivateKey();
+  const signature = await signHumanCredential(issuerPrivateKey, credential);
+  const issuer = privateKeyToAccount(issuerPrivateKey).address as Address;
 
   return NextResponse.json({
     ok: true,
