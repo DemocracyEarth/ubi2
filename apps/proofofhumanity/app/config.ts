@@ -13,6 +13,15 @@
 
 import type { Address } from "viem";
 
+export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+
+/** Empty env values keep the checked-in default; malformed values fail closed to zero. */
+function configuredAddress(value: string | undefined, fallback: Address = ZERO_ADDRESS): Address {
+  const candidate = value?.trim();
+  if (!candidate) return fallback;
+  return /^0x[0-9a-fA-F]{40}$/.test(candidate) ? (candidate as Address) : ZERO_ADDRESS;
+}
+
 export interface ChainConfig {
   chainId: number;
   name: string;
@@ -26,8 +35,8 @@ export interface ChainConfig {
 }
 
 /**
- * Per-chain ProofOfHumanity deployments the mint UI offers. Addresses are overridable via env so
- * a real deployment can be wired without a rebuild. The zero-address placeholders mark chains that
+ * Per-chain ProofOfHumanity deployments the mint UI offers. Addresses are overridable at build time
+ * via public env values. The zero-address placeholders mark chains that
  * are configured but not yet deployed — the UI disables minting on those.
  *
  * NOTE: the same bytecode is deployed per chain, but each has its own EIP-712 domain
@@ -38,113 +47,107 @@ export const CHAINS: ChainConfig[] = [
     chainId: Number(process.env.NEXT_PUBLIC_LOCAL_CHAIN_ID ?? 31337),
     name: process.env.NEXT_PUBLIC_LOCAL_CHAIN_NAME ?? "Anvil (local)",
     rpcUrl: process.env.NEXT_PUBLIC_LOCAL_RPC_URL ?? "http://127.0.0.1:8545",
-    pohAddress: (process.env.NEXT_PUBLIC_LOCAL_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_LOCAL_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_LOCAL_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_LOCAL_PREDICATE),
   },
   {
     chainId: 11155111,
     name: "Ethereum Sepolia",
     rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
-    pohAddress: (process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_POH,
+      "0x9538c846ac749444729EaE41599AB7A26683f347",
+    ),
+    predicateAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_PREDICATE,
+      "0x3AAC42302aB365b8D0af2EE0a2f44aDEF3E2796B",
+    ),
     explorer: "https://sepolia.etherscan.io",
   },
   {
     chainId: 84532,
     name: "Base Sepolia",
     rpcUrl: process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org",
-    pohAddress: (process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_BASE_SEPOLIA_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH,
+      "0x06BD253009F74ad934A4DaEac133b153d9Fe8029",
+    ),
+    predicateAddress: configuredAddress(
+      process.env.NEXT_PUBLIC_BASE_SEPOLIA_PREDICATE,
+      "0x2051D33c2F10CDd3739324afc4C6fD957564a9D6",
+    ),
     explorer: "https://sepolia.basescan.org",
   },
   {
     chainId: 11142220,
     name: "Celo Sepolia",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_SEPOLIA_RPC_URL ?? "https://forno.celo-sepolia.celo-testnet.org",
-    pohAddress: (process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_CELO_SEPOLIA_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_SEPOLIA_PREDICATE),
     explorer: "https://celo-sepolia.blockscout.com",
   },
   {
     chainId: 4801,
     name: "World Chain Sepolia",
     rpcUrl: process.env.NEXT_PUBLIC_WORLD_SEPOLIA_RPC_URL ?? "https://worldchain-sepolia.g.alchemy.com/public",
-    pohAddress: (process.env.NEXT_PUBLIC_WORLD_SEPOLIA_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_WORLD_SEPOLIA_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_SEPOLIA_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_SEPOLIA_PREDICATE),
     explorer: "https://sepolia.worldscan.org",
   },
   {
     chainId: 46630,
     name: "Robinhood Chain Testnet",
     rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_RPC_URL ?? "https://rpc.testnet.chain.robinhood.com",
-    pohAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_PREDICATE),
     explorer: "https://explorer.testnet.chain.robinhood.com",
   },
   {
     chainId: 1,
     name: "Ethereum",
     rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com",
-    pohAddress: (process.env.NEXT_PUBLIC_ETHEREUM_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_ETHEREUM_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ETHEREUM_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ETHEREUM_PREDICATE),
     explorer: "https://etherscan.io",
   },
   {
     chainId: 8453,
     name: "Base",
     rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
-    pohAddress: (process.env.NEXT_PUBLIC_BASE_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_BASE_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_BASE_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_BASE_PREDICATE),
     explorer: "https://basescan.org",
   },
   {
     chainId: 42220,
     name: "Celo",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_RPC_URL ?? "https://forno.celo.org",
-    pohAddress: (process.env.NEXT_PUBLIC_CELO_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_CELO_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_PREDICATE),
     explorer: "https://celoscan.io",
   },
   {
     chainId: 10,
     name: "Optimism",
     rpcUrl: process.env.NEXT_PUBLIC_OP_RPC_URL ?? "https://mainnet.optimism.io",
-    pohAddress: (process.env.NEXT_PUBLIC_OP_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_OP_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_OP_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_OP_PREDICATE),
     explorer: "https://optimistic.etherscan.io",
   },
   {
     chainId: 480,
     name: "World Chain",
     rpcUrl: process.env.NEXT_PUBLIC_WORLD_RPC_URL ?? "https://worldchain-mainnet.g.alchemy.com/public",
-    pohAddress: (process.env.NEXT_PUBLIC_WORLD_POH ?? "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_WORLD_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_PREDICATE),
     explorer: "https://worldscan.org",
   },
   {
     chainId: 4663,
     name: "Robinhood Chain",
     rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com",
-    pohAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_POH ??
-      "0x0000000000000000000000000000000000000000") as Address,
-    predicateAddress: (process.env.NEXT_PUBLIC_ROBINHOOD_PREDICATE ??
-      "0x0000000000000000000000000000000000000000") as Address,
+    pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_POH),
+    predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_PREDICATE),
     explorer: "https://robinhoodchain.blockscout.com",
   },
 ];
@@ -158,8 +161,6 @@ export function isDeployed(chain: ChainConfig): boolean {
 export function isPredicateDeployed(chain: ChainConfig): boolean {
   return isDeployed(chain) && /^0x0{40}$/i.test(chain.predicateAddress) === false;
 }
-
-export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 
 /*//////////////////////////////////////////////////////////////
                           SELF (self.xyz)

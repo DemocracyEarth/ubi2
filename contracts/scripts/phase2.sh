@@ -178,8 +178,23 @@ deployer_balance="$(cast balance "$deployer_address" --rpc-url "$rpc_url")"
 [[ "$deployer_balance" != "0" ]] || die "deployer has no gas funds on $network"
 
 commit="$(git rev-parse HEAD)"
-if [[ "$network" != "local" && -n "$(git status --porcelain)" ]]; then
-  die "testnet deploys require a clean git worktree"
+dirty_entries=()
+if [[ "$network" != "local" ]]; then
+  while IFS= read -r entry; do
+    # Successful testnet runs intentionally leave public Foundry manifests in
+    # contracts/broadcast. They are audit records, not executable source, and
+    # must not prevent the next network's preflight. Everything else remains a
+    # hard failure, including modified tracked manifests.
+    if [[ "$entry" =~ ^\?\?\ contracts/broadcast/Deploy\.s\.sol/[0-9]+/(dry-run/)?run-([0-9]+|latest)\.json$ ]]; then
+      continue
+    fi
+    dirty_entries+=("$entry")
+  done < <(git status --porcelain=v1 --untracked-files=all)
+fi
+if ((${#dirty_entries[@]} > 0)); then
+  printf 'ERROR: testnet deploys require a clean git worktree; found:\n' >&2
+  printf '  %s\n' "${dirty_entries[@]}" >&2
+  exit 1
 fi
 
 echo "Phase 2 preflight PASS"
@@ -262,25 +277,43 @@ assert_address_eq "$(cast call "$predicate" 'prover()(address)' --rpc-url "$rpc_
 recipient="${PHASE2_E2E_RECIPIENT:-$deployer_address}"
 recipient="$(normalise_address "$recipient")"
 epoch="$(cast call "$poh" 'currentEpoch()(uint32)' --rpc-url "$rpc_url")"
-nullifier="$(cast keccak "ubi2-poh-phase2:$chain_id:$poh")"
+e2e_run_id="${PHASE2_E2E_RUN_ID:-}"
+[[ "$e2e_run_id" != *$'\n'* && "$e2e_run_id" != *$'\r'* ]] || die "PHASE2_E2E_RUN_ID must be one line"
+nullifier_seed="ubi2-poh-phase2:$chain_id:$poh"
+if [[ -n "$e2e_run_id" ]]; then
+  nullifier_seed+=":$e2e_run_id"
+fi
+nullifier="$(cast keccak "$nullifier_seed")"
 token_before="$(cast call "$poh" 'tokenOfNullifier(uint256)(uint256)' "$nullifier" --rpc-url "$rpc_url")"
-[[ "$token_before" == "0" ]] || die "deterministic e2e nullifier is already used by token $token_before"
 
-voucher="($recipient,$nullifier,$epoch)"
+mint_tx="existing token (no transaction sent)"
+if [[ "$token_before" == "0" ]]; then
+  voucher_epoch="$epoch"
+else
+  voucher_epoch="$(cast call "$poh" 'epochOf(uint256)(uint32)' "$token_before" --rpc-url "$rpc_url")"
+fi
+voucher="($recipient,$nullifier,$voucher_epoch)"
 digest="$(cast call "$poh" 'hashVoucher((address,uint256,uint32))(bytes32)' "$voucher" --rpc-url "$rpc_url")"
 signature="$(cast wallet sign "$digest" --no-hash "${issuer_wallet_args[@]}")"
 
-mint_tx="$(
-  cast send "$poh" 'mintWithVoucher((address,uint256,uint32),bytes)' "$voucher" "$signature" \
-    --rpc-url "$rpc_url" "${deployer_wallet_args[@]}" --async
-)"
-status="$(cast receipt "$mint_tx" status --rpc-url "$rpc_url" --confirmations 1)"
-case "$status" in
-  1 | 0x1 | success | "1 (success)") ;;
-  *) die "mint transaction failed with status '$status': $mint_tx" ;;
-esac
+if [[ "$token_before" == "0" ]]; then
+  mint_tx="$(
+    cast send "$poh" 'mintWithVoucher((address,uint256,uint32),bytes)' "$voucher" "$signature" \
+      --rpc-url "$rpc_url" "${deployer_wallet_args[@]}" --async
+  )"
+  status="$(cast receipt "$mint_tx" status --rpc-url "$rpc_url" --confirmations 1)"
+  case "$status" in
+    1 | 0x1 | success | "1 (success)") ;;
+    *) die "mint transaction failed with status '$status': $mint_tx" ;;
+  esac
+fi
 
-token_id="$(cast call "$poh" 'tokenOfNullifier(uint256)(uint256)' "$nullifier" --rpc-url "$rpc_url")"
+token_id="$token_before"
+for _ in {1..10}; do
+  token_id="$(cast call "$poh" 'tokenOfNullifier(uint256)(uint256)' "$nullifier" --rpc-url "$rpc_url")"
+  [[ "$token_id" != "0" ]] && break
+  sleep 1
+done
 [[ "$token_id" != "0" ]] || die "mint did not allocate a token"
 assert_address_eq "$(cast call "$poh" 'ownerOf(uint256)(address)' "$token_id" --rpc-url "$rpc_url")" "$recipient" "token owner"
 [[ "$(cast call "$poh" 'isValid(uint256)(bool)' "$token_id" --rpc-url "$rpc_url")" == "true" ]] || die "minted token is not valid"
@@ -294,6 +327,26 @@ if cast call "$poh" 'transferFrom(address,address,uint256)' "$recipient" "$issue
   die "soulbound transfer unexpectedly succeeded"
 fi
 
+predicate_context="$(cast keccak "ubi2-poh-phase2-predicate:$chain_id:$predicate")"
+predicate_id="$(cast keccak 'age>=18')"
+predicate_nonce="$nullifier"
+predicate_attestation="($deployer_address,$predicate_context,$predicate_id,true,$recipient,$epoch,$predicate_nonce)"
+predicate_digest="$(
+  cast call "$predicate" 'hashAttestation((address,bytes32,bytes32,bool,address,uint32,uint256))(bytes32)' \
+    "$predicate_attestation" --rpc-url "$rpc_url"
+)"
+predicate_signature="$(cast wallet sign "$predicate_digest" --no-hash "${issuer_wallet_args[@]}")"
+predicate_result="$(
+  cast call "$predicate" 'check((address,bytes32,bytes32,bool,address,uint32,uint256),bytes,address,address)(bool)' \
+    "$predicate_attestation" "$predicate_signature" "$recipient" "$deployer_address" --rpc-url "$rpc_url"
+)"
+[[ "$predicate_result" == "true" ]] || die "signed age>=18 predicate did not return true"
+if cast call "$predicate" 'check((address,bytes32,bytes32,bool,address,uint32,uint256),bytes,address,address)(bool)' \
+  "$predicate_attestation" "$predicate_signature" "$zero_address" "$deployer_address" \
+  --rpc-url "$rpc_url" >/dev/null 2>&1; then
+  die "wrong-subject predicate check unexpectedly succeeded"
+fi
+
 echo "Phase 2 e2e PASS"
 echo "  network            : $network ($chain_id)"
 echo "  PoHCardRenderer     : $renderer"
@@ -303,4 +356,5 @@ echo "  mint tx             : $mint_tx"
 echo "  token id            : $token_id"
 echo "  valid / locked      : true / true"
 echo "  replay / transfer   : reverted / reverted"
+echo "  age>=18 predicate   : true; wrong subject reverted"
 echo "  predicate prover    : unset"

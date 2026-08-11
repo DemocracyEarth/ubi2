@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Solidity/TypeScript integration examples, and `PREDICATES.md`.
 - Add Ethereum, Base, Celo, Optimism, World Chain, and Robinhood Chain mainnet configuration pairs,
   plus all five Phase 2 testnets. Predicate issuance stays disabled until both deployment addresses exist.
+- Publish the verified Base Sepolia and Ethereum Sepolia contract pairs, explorer links, deployment
+  transactions, and live-gate evidence in the app and contract deployment registry.
 
 ### Changed
 
@@ -35,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in session storage, fail closed on a missing production issuer key, and add bounded rate limits.
 - Replace the fabricated age-only demo and inaccurate trustless-ZK copy with the real issuer-attested
   v1 flow and an explicit unshipped holder-ZK status.
+- Make Phase 2 live probes repeatable, include a signed predicate negative-space check, tolerate only
+  public Foundry broadcast manifests in an otherwise clean tree, and forbid aggregate broadcasts.
 
 ## [0.1.0] — 2026-08-09
 
