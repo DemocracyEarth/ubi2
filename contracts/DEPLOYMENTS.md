@@ -17,7 +17,7 @@ owner multisig or production issuer.
 | Ethereum Sepolia (`11155111`) | [`751e8fc`](https://github.com/DemocracyEarth/ubi2/commit/751e8fce183c70343ef2d59b122ea5329509767b) | [`0x82B5…E680`](https://sepolia.etherscan.io/address/0x82b5efbb809645baa6770bd102ce7649e466e680#code) | [`0x9538…f347`](https://sepolia.etherscan.io/address/0x9538c846ac749444729eae41599ab7a26683f347#code) | [`0x3AAC…796B`](https://sepolia.etherscan.io/address/0x3aac42302ab365b8d0af2ee0a2f44adef3e2796b#code) | verified source; mint/replay/soulbound/predicate PASS |
 | Celo Sepolia (`11142220`) | [`8f44008`](https://github.com/DemocracyEarth/ubi2/commit/8f440081620c702ab784fd0e813e46b0bd1b751e) | [`0x7691…CE53`](https://sepolia.celoscan.io/address/0x7691e41cdd222ad5552a09ed3840433a16c5ce53#code) | [`0xb031…0E12`](https://sepolia.celoscan.io/address/0xb0317d3481a2a78959b51C4D5DCE3f4991e50E12#code) | [`0x4A1a…307e`](https://sepolia.celoscan.io/address/0x4A1a892552B284eeDa540ECF3E3e44797a9D307e#code) | verified source; mint/replay/soulbound/predicate PASS |
 | Robinhood Chain Testnet (`46630`) | [`032ade9`](https://github.com/DemocracyEarth/ubi2/commit/032ade93f16aa63ab0bec3f686d5900f45fa407c) | [`0x7691…CE53`](https://explorer.testnet.chain.robinhood.com/address/0x7691e41cdd222ad5552a09ed3840433a16c5ce53?tab=contract) | [`0xb031…0E12`](https://explorer.testnet.chain.robinhood.com/address/0xb0317d3481a2a78959b51c4d5dce3f4991e50e12?tab=contract) | [`0x4A1a…307e`](https://explorer.testnet.chain.robinhood.com/address/0x4a1a892552b284eeda540ecf3e3e44797a9d307e?tab=contract) | verified source; mint/replay/soulbound/predicate PASS |
-| World Chain Sepolia (`4801`) | pending | — | — | — | pending |
+| World Chain Sepolia (`4801`) | [`e95455d`](https://github.com/DemocracyEarth/ubi2/commit/e95455de5d077ad7aa3eb4c165d9141a38db6574) | [`0x7691…CE53`](https://sepolia.worldscan.org/address/0x7691e41cdd222ad5552a09ed3840433a16c5ce53#code) | [`0xb031…0E12`](https://sepolia.worldscan.org/address/0xb0317d3481a2A78959b51C4D5DCE3f4991e50E12#code) | [`0x4A1a…307e`](https://sepolia.worldscan.org/address/0x4A1a892552B284eeDa540ECF3E3e44797a9D307e#code) | verified source; mint/replay/soulbound/predicate PASS |
 
 ## Transactions
 
@@ -48,6 +48,13 @@ owner multisig or production issuer.
 - ProofOfHumanity deployment: [`0x656a…59b2`](https://explorer.testnet.chain.robinhood.com/tx/0x656a07784ea949dd112390bd61f7961aec24b76297fd7d21ff00c831843f59b2)
 - PredicateVerifier deployment: [`0x5f60…53ae`](https://explorer.testnet.chain.robinhood.com/tx/0x5f60519efcb90e728113c94f0135c027ac7758c707193385f25be6f04bfc53ae)
 - Live mint: [`0xcaa3…32ab`](https://explorer.testnet.chain.robinhood.com/tx/0xcaa37a4963e011e6f2e1d7d2bf30cbcd71980429492a1fcdb8a93f3702bb32ab)
+
+### World Chain Sepolia
+
+- Renderer deployment: [`0xa26a…39c8`](https://sepolia.worldscan.org/tx/0xa26adda78cafb85f0ebffad362afed1b0b0e2aa66b6ab399282110aef99d39c8)
+- ProofOfHumanity deployment: [`0x38a3…ddb7`](https://sepolia.worldscan.org/tx/0x38a3804531e042b415deb6087e8d3405c304314a7a611cc07ea923cdacbdddb7)
+- PredicateVerifier deployment: [`0x141b…ed47`](https://sepolia.worldscan.org/tx/0x141bea5e8f1314df6984d42afc0a20e331b12823b59159bafdc827f249a8ed47)
+- Live mint: [`0xb25d…3cec`](https://sepolia.worldscan.org/tx/0xb25d6e616161119524e369692162a4f5d8736d3539257413c167a568498c3cec)
 
 The live gate checks deployed bytecode, owner/issuer/renderer wiring, an unset predicate prover,
 credential validity, ERC-5192 locking, voucher replay rejection, transfer rejection, a signed
