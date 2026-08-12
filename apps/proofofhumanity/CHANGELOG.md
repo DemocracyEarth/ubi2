@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a clearly labeled v2 policy designer to `/verify` covering age ranges, nationality/issuing-state sets,
+  passport validity and authenticity, scoped uniqueness, short-lived sanctions status, and consented private
+  name matching. It builds canonical SDK policies and hashes but never presents a preview as a generated proof.
+- Add the versioned `@ubi2/sdk` v2 policy and EVM presentation-binding schemas, normalization, country-set
+  commitments, deterministic ABI hashes, negative-space tests, and developer integration documentation.
+- Add a passkey-oriented encrypted credential-vault foundation using random AES-256-GCM vault keys,
+  WebAuthn-PRF/HKDF wrapping, authenticated bindings, and independent multi-passkey key slots.
+- Add a type-searchable ISO 3166-1 country selector with flags, keyboard navigation, and complete
+  alpha-2/alpha-3/name matching for nationality predicates.
 - Add a deterministic contract CI gate covering formatting, optimized bytecode size, the complete
   Forge suite, target-contract line/branch coverage, gas regression, Solidity/TypeScript EIP-712
   parity, and an encrypted-keystore deployment rehearsal on Anvil.
@@ -27,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Redesign `/verify` as a guided, mobile-ready flow with plain-language field explainers, proactive
+  on-chain credential ownership/freshness checks, actionable failure states, and a self-verifying
+  integration artifact for every signed true or false result.
 - Reject exact same-epoch humanity voucher replays while preserving strictly newer in-place refreshes.
 - Run predicate cross-stack parity against the production `PredicateVerifier` and
   `SybilResistantVote` artifacts instead of mirrored fixture implementations.

@@ -17,6 +17,7 @@
     "@selfxyz/core": "1.0.8",
     "@selfxyz/qrcode": "1.0.24",
     "@ubi2/sdk": "workspace:*",
+    "i18n-iso-countries": "7.14.0",
     "next": "15.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

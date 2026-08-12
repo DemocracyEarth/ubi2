@@ -7,8 +7,18 @@ import {
   verificationConfigFor,
   type DisclosureProfile,
 } from "../app/lib/disclosure-profile";
+import { COUNTRIES, countryByAlpha3, searchCountries } from "../app/lib/countries";
 import { evalPredicate, nationalityToBytes3 } from "../app/lib/predicate";
-import { predicateDescriptorHash } from "@ubi2/sdk";
+import {
+  verificationGuidance,
+  type VerificationStateInput,
+} from "../app/predicates/verify-state";
+import {
+  countrySetCommitment,
+  normalizeZkIdentityPolicy,
+  predicateDescriptorHash,
+  zkIdentityPolicyHash,
+} from "@ubi2/sdk";
 import { CHAINS, isPredicateDeployed } from "../app/config";
 
 for (const profile of [
@@ -44,6 +54,58 @@ assert.throws(() => evalPredicate("nationality=arg", attributes));
 
 assert.equal(predicateDescriptorHash("age>=18"), "0xe3e8342a70f40c3ef2dacba55a24b87789c9ddaf64d9d329e304d6478e856e96");
 
+assert.equal(COUNTRIES.length, 249);
+assert.equal(new Set(COUNTRIES.map((country) => country.alpha2)).size, 249);
+assert.equal(new Set(COUNTRIES.map((country) => country.alpha3)).size, 249);
+assert.deepEqual(countryByAlpha3("arg"), {
+  alpha2: "AR",
+  alpha3: "ARG",
+  flag: "🇦🇷",
+  name: "Argentina",
+  search: "argentina ar arg",
+});
+assert.equal(countryByAlpha3("XKK"), null);
+assert.equal(searchCountries("arg")[0]?.alpha3, "ARG");
+assert.equal(searchCountries("united sta").some((country) => country.alpha3 === "USA"), true);
+assert.equal(searchCountries("deu")[0]?.name, "Germany");
+
+const readyState: VerificationStateInput = {
+  accountConnected: true,
+  chainName: "Base Sepolia",
+  chainState: "ready",
+  claimAvailable: true,
+  consumerValid: true,
+  contextValid: true,
+  countrySelected: true,
+  hasCredential: true,
+  nationalitySelected: false,
+};
+const guidance = (overrides: Partial<VerificationStateInput>) =>
+  verificationGuidance({ ...readyState, ...overrides });
+
+assert.equal(guidance({ hasCredential: false }).eyebrow, "Step 1 of 3");
+assert.equal(guidance({ claimAvailable: false }).eyebrow, "Claim not prepared");
+assert.equal(guidance({ accountConnected: false }).eyebrow, "Step 2 of 3");
+assert.equal(guidance({ chainState: "checking" }).eyebrow, "Checking contract");
+assert.equal(guidance({ chainState: "missing" }).eyebrow, "Mint required");
+assert.equal(guidance({ chainState: "wrong-owner" }).eyebrow, "Wallet mismatch");
+assert.equal(guidance({ chainState: "expired" }).eyebrow, "Credential expired");
+assert.equal(guidance({ chainState: "unavailable" }).eyebrow, "Network unavailable");
+assert.equal(guidance({ nationalitySelected: true, countrySelected: false }).title, "Choose a country");
+assert.equal(guidance({ contextValid: false }).title, "Name this verification context");
+assert.equal(guidance({ consumerValid: false }).title, "Enter the receiving app or contract");
+assert.equal(guidance({}).canIssue, true);
+
+const v2Policy = normalizeZkIdentityPolicy({
+  kind: "country-set",
+  attribute: "nationality",
+  operator: "in",
+  setId: "mercosur:2026-08",
+  setRoot: countrySetCommitment({ setId: "mercosur:2026-08", members: ["ARG", "BOL", "BRA", "PRY", "URY"] }),
+});
+assert.equal(v2Policy.kind, "country-set");
+assert.match(zkIdentityPolicyHash(v2Policy), /^0x[0-9a-f]{64}$/);
+
 const ethereumSepolia = CHAINS.find((chain) => chain.chainId === 11155111);
 const baseSepolia = CHAINS.find((chain) => chain.chainId === 84532);
 const celoSepolia = CHAINS.find((chain) => chain.chainId === 11142220);
@@ -57,4 +119,4 @@ assert.ok(worldSepolia && isPredicateDeployed(worldSepolia));
 assert.ok(robinhoodTestnet && isPredicateDeployed(robinhoodTestnet));
 assert.ok(ethereumMainnet && !isPredicateDeployed(ethereumMainnet));
 
-console.log("predicate product: disclosure profiles + canonical evaluation + deployment registry PASS");
+console.log("predicate product: disclosures + country selector + guidance + deployments PASS");

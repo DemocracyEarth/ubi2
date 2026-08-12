@@ -1,6 +1,7 @@
 # 09 — Predicate v1.5: trustless on-demand age (+ nationality / OFAC) proofs via Self
 
-- **Status:** proposed (implementation spec for [ADR-0009](adr/0009-predicate-v2-and-final-onchain-surface.md))
+- **Status:** deferred as a standalone product release by [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md);
+  its Self/Groth16 components remain reusable v2 issuance/verifier infrastructure
 - **Owner:** architect → protocol-engineer (contract), interface-engineer (SDK/app), security-engineer (gate)
 - **Depends on:** [ADR-0008](adr/0008-predicate-layer.md) (predicate v1), [ADR-0009](adr/0009-predicate-v2-and-final-onchain-surface.md)
   (the fixed `IPredicateProver` seam), [`06-zk-passport-poh.md`](06-zk-passport-poh.md) +
@@ -8,6 +9,9 @@
   `crates/zkpoh` (the pinned Self verifying key + captured proofs).
 
 ## Goal
+
+> **Sequencing update (2026-08-11):** the project is building the reusable v2 credential next. This spec is
+> retained as a bounded fallback and source of shared Self verifier work, not as a required v1.5 launch.
 
 Deliver the **first fully-trustless predicate prover** — proving `age>=N` (then `nationality=A3`,
 `sanctions-clear`) with **no issuer signature over the boolean** — by reusing **Self's existing Groth16
