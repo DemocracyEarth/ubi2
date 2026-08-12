@@ -15,6 +15,63 @@ The consumer receives only the Boolean and its binding envelope. The v1 issuer s
 credential while evaluating it. Holder-side ZK is specified as a future prover implementation but
 is not built or deployed; `PredicateVerifier.prover() == address(0)` disables that path.
 
+The active v2 design is [`docs/specs/10-evm-zk-identity-v2.md`](../../docs/specs/10-evm-zk-identity-v2.md):
+one encrypted private passport credential, passkey-protected and portable across enrolled devices, produces
+reusable holder-side proofs. The vault SDK foundation is exported from `@ubi2/sdk`, but production persistence
+is intentionally not wired until the WebAuthn ceremony, recovery, schema validation and security review land.
+
+### v2 vault foundation (experimental)
+
+The application first generates a PRF salt, passes its decoded 32 bytes to a user-verified WebAuthn
+create/get ceremony as `extensions.prf.eval.first`, and reads `results.first`. The ceremony is intentionally
+application-owned because RP origin, challenge, credential allowlist and user-verification policy are security
+decisions:
+
+```ts
+import {
+  addPasskeyKeySlot,
+  createPasskeyProtectedCredentialVault,
+  generatePasskeyPrfSalt,
+  parseCredentialVault,
+  unlockCredentialVault,
+} from "@ubi2/sdk";
+
+const prfSalt = generatePasskeyPrfSalt();
+const { credentialId, prfOutput } = await yourVerifiedWebAuthnPrfCeremony(prfSalt);
+
+const vault = await createPasskeyProtectedCredentialVault(
+  validatedPrivateCredential,
+  { schema: "org.proofofhumanity.passport.v2", rpId: "proofofhumanity.org" },
+  { credentialId, prfSalt, prfOutput },
+);
+
+// Persist only JSON.stringify(vault). Treat deserialized data as untrusted.
+const stored = parseCredentialVault(JSON.parse(await loadEncryptedVault()));
+const plaintext = await unlockCredentialVault(stored, { credentialId, prfOutput });
+const credential = validatePrivateCredentialSchema(plaintext);
+
+// After authenticating the existing and new passkeys, both can wrap the same vault key.
+const portable = await addPasskeyKeySlot(stored, existingUnlock, newPasskeyEnrollment);
+```
+
+Do not persist `prfOutput`, decrypted plaintext, or a raw vault key. Feature-detect WebAuthn PRF and make an
+unsupported authenticator/recovery state explicit; never silently downgrade to a password-derived key.
+
+### v2 canonical policies (experimental)
+
+`@ubi2/sdk` also exports the version-1 semantic policy contract used by the `/verify` v2 designer:
+
+- `normalizeZkIdentityPolicy` validates and pins age ranges, country-set membership/non-membership,
+  document validity/authenticity, scoped uniqueness, dynamic sanctions status, and consented private matches;
+- `zkIdentityPolicyHash` commits to the complete normalized policy with EVM ABI encoding;
+- `countrySetCommitment` produces deterministic demo/registry commitments from sorted ISO alpha-3 members;
+- `normalizeZkPresentationBinding` and `zkPresentationBindingHash` bind a policy to chain, verifier, consumer,
+  subject, context, challenge, and epoch.
+
+These helpers are real SDK inputs and deterministic hashes, but they are **not proofs**. Do not authorize from
+them until an audited circuit and configured `IPredicateProver` authenticate the same policy and presentation
+binding. Production country/status roots must come from allowlisted governed registries, not local demo lists.
+
 ## Install
 
 The repository SDK exports the public ABI, types, descriptor helpers, EIP-712 digest recovery, and
@@ -144,7 +201,9 @@ function join(PredicateVerifier.PredicateAttestation calldata att, bytes calldat
 - Maintain your own chain ID, contract address, issuer, descriptor, and context allowlists.
 - Require `result == true`; a valid signature can intentionally attest `false`.
 - Use `consume` for votes, claims, mints, grants, or any action where replay matters.
-- Never log or persist the holder's `HumanCredential`, Self proof payload, or passport attributes.
+- Never log the holder's `HumanCredential`, Self proof payload, vault plaintext, PRF output, vault key, or
+  passport attributes. v1 credentials remain session-only. v2 may persist only the authenticated ciphertext
+  envelope after the passkey/recovery integration passes its security gate.
 - Treat the issuer as an operational signer with no gas funds; keep the owner as a separate multisig.
 - A configured `prover()` address is a separate security release. Zero means issuer path only.
 

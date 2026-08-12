@@ -69,6 +69,30 @@ const result = await checkPredicateArtifact({
 
 if (!result) throw new Error("predicate not satisfied");`;
 
+const V2_POLICY_EXAMPLE = `import {
+  countrySetCommitment,
+  normalizeZkIdentityPolicy,
+  zkIdentityPolicyHash,
+} from "@ubi2/sdk";
+
+const setId = "eu-eea:2026-08";
+const setRoot = countrySetCommitment({
+  setId,
+  members: ["AUT", "BEL", "DEU", "ESP", "FRA" /* complete registry set */],
+});
+
+const policy = normalizeZkIdentityPolicy({
+  kind: "country-set",
+  attribute: "nationality",
+  operator: "in",
+  setId,
+  setRoot,
+});
+
+const policyHash = zkIdentityPolicyHash(policy);
+// Bind policyHash to chain, verifier, consumer, subject, context,
+// challenge and epoch with zkPresentationBindingHash(...).`;
+
 const descriptors = ["age>=18", "age>=21", "nationality=ARG", "sanctions-clear"] as const;
 
 export default function DevelopersPage() {
@@ -86,6 +110,7 @@ export default function DevelopersPage() {
         <aside className="docs-nav">
           <span>Integration guide</span>
           <a href="#model">Trust model</a>
+          <a href="#v2-policies">v2 policy SDK</a>
           <a href="#descriptors">Descriptors</a>
           <a href="#request">Request an attestation</a>
           <a href="#contract">Consume on-chain</a>
@@ -96,7 +121,7 @@ export default function DevelopersPage() {
 
         <article className="docs-content">
           <div className="docs-hero">
-            <span className="eyebrow">Proof of Humanity · v1</span>
+            <span className="eyebrow">Proof of Humanity · v1 live + v2 foundation</span>
             <h1>Build gates for humans,<br /><span className="grad-text">not identity databases.</span></h1>
             <p>
               Integrate a minimal soulbound humanity credential, or require a narrowly scoped age, nationality, or
@@ -112,7 +137,7 @@ export default function DevelopersPage() {
             <span className="doc-number">01</span><h2>Trust model</h2>
             <div className="trust-table">
               <div><b>Live v1 · issuer-attested</b><p>Self verifies passport facts. The issuer evaluates the private held credential and signs one Boolean attestation.</p></div>
-              <div><b>Future v1.5 · holder-side ZK</b><p>Specified but not implemented or deployed. PredicateVerifier exposes a fixed prover seam; a zero address means this path is disabled.</p></div>
+              <div><b>v2 · reusable holder-side ZK</b><p>Foundation in development. Canonical policies and encrypted vault code are available; issuance circuits, local proving, status roots and prover contracts are not deployed.</p></div>
             </div>
             <div className="notice warn">
               Do not describe v1 predicate attestations as trustless ZK. Consumers trust the configured issuer to
@@ -120,8 +145,22 @@ export default function DevelopersPage() {
             </div>
           </section>
 
+          <section id="v2-policies" className="docs-section">
+            <span className="doc-number">02</span><h2>Build canonical v2 policies</h2>
+            <p>
+              v2 policies are versioned objects with deterministic EVM hashes. The same object shown in the
+              <a href="/verify"> policy designer</a> is intended to become a circuit public input and consumer
+              allowlist value. Current helpers build and hash policies; they do not generate a proof.
+            </p>
+            <pre className="docs-code"><code>{V2_POLICY_EXAMPLE}</code></pre>
+            <div className="notice warn">
+              Treat country-set and status roots as governed registries. A friendly label is not security: consumers
+              must allowlist the exact set id, root, version, circuit/prover, chain and verifier they reviewed.
+            </div>
+          </section>
+
           <section id="descriptors" className="docs-section">
-            <span className="doc-number">02</span><h2>Canonical descriptors</h2>
+            <span className="doc-number">03</span><h2>Canonical v1 descriptors</h2>
             <p>Consumers require the hash of an exact canonical string. No spaces or aliases are accepted.</p>
             <div className="descriptor-table">
               {descriptors.map((descriptor) => (
@@ -132,7 +171,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="request" className="docs-section">
-            <span className="doc-number">03</span><h2>Request an attestation</h2>
+            <span className="doc-number">04</span><h2>Request a v1 attestation</h2>
             <p>
               The holder calls the API from the verification app. Before signing, the server verifies the private
               credential signature and freshness, the subject&apos;s live SBT ownership, both contract issuer addresses,
@@ -144,7 +183,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="contract" className="docs-section">
-            <span className="doc-number">04</span><h2>Consume atomically on-chain</h2>
+            <span className="doc-number">05</span><h2>Consume v1 atomically on-chain</h2>
             <p>
               A state-changing consumer must call <code>consume</code> itself. The verifier requires
               <code>att.consumer == msg.sender</code>, checks subject and freshness, and marks the
@@ -154,7 +193,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="networks" className="docs-section">
-            <span className="doc-number">05</span><h2>Configured networks</h2>
+            <span className="doc-number">06</span><h2>Configured networks</h2>
             <p>The app exposes issuance only when both contract addresses are configured. Zero addresses fail closed.</p>
             <div className="network-table">
               <div className="network-row head"><span>Network</span><span>Chain</span><span>PoH</span><span>Predicate</span><span>Status</span></div>
@@ -186,7 +225,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="security" className="docs-section">
-            <span className="doc-number">06</span><h2>Security checklist</h2>
+            <span className="doc-number">07</span><h2>Security checklist</h2>
             <ul className="docs-checks">
               <li>Require the exact descriptor hash, <code>result == true</code>, consumer, context, and subject your action expects.</li>
               <li>Use <code>consume</code> inside state-changing flows; use <code>check</code> only when replay is harmless.</li>
@@ -194,11 +233,12 @@ export default function DevelopersPage() {
               <li>Keep the issuer key server-side in an HSM or managed signer; never expose it as <code>NEXT_PUBLIC_*</code>.</li>
               <li>Keep owner and issuer roles distinct: owner is the governance multisig; issuer is the narrow operational signer.</li>
               <li>Do not log held credentials, Self proof payloads, passport attributes, or issuer secrets.</li>
+              <li>Never accept a v2 policy preview as evidence. Require an audited configured prover and verify the exact policy and presentation-binding hashes.</li>
             </ul>
           </section>
 
           <section id="release" className="docs-section release-gate">
-            <span className="doc-number">07</span><h2>Mainnet release gate</h2>
+            <span className="doc-number">08</span><h2>Mainnet release gate</h2>
             <p>
               Mainnet is intentionally not activated by code merge alone. Every target chain must pass deterministic
               CI, testnet deployment and verification, live contract probes, issuer/owner checks, app configuration,

@@ -5,13 +5,17 @@ smallest demoable step. Each must be demonstrable end-to-end.
 
 Legend: ✅ done · 🚧 in progress · ⬜ planned
 
-> **Freshness note (as of 2026-07-01):** refreshed against `main`. M6 (ZK-Passport PoH) and the
+> **Freshness note (updated 2026-08-11):** M6 (ZK-Passport PoH) and the
 > Browser/Mobile Light Node track — both listed below as ⬜ planned in the previous revision — have each
 > shipped their first two stages (M6 Stages A+B; light-node Stages 1+2). See each section for exactly
 > what shipped vs. what's still open. M5 Stage A also shipped; **M5 Stage B (rotating proposer + view
 > change) is the recommended next milestone-level priority** — it is also the last prerequisite, via
 > Stage C, for M6's cross-node ZK quorum (EC-7). See "Re-sequencing reality" in the sequencing rationale
 > below for how M6's crypto shipped ahead of that dependency without violating it.
+>
+> **Product sequencing update:** EVM predicate development now goes directly from the live v1 issuer path to
+> the reusable **ZK Identity v2** track below. v1 remains the fallback; v1.5 is reusable Self/Groth16
+> infrastructure rather than a separate release. M5 Stage B remains the next native-chain consensus priority.
 
 ---
 
@@ -179,6 +183,39 @@ assurance level. Full UBI eligibility is unchanged for all verified humans regar
 [ADR-0005](specs/adr/0005-zk-passport-poh.md).
 **Depends on:** M5 Stage A (shipped — the substrate this track's chain integration sits on). EC-7
 specifically depends on M5 Stage C (not yet started); Stages A/B did not need to wait for it.
+
+---
+
+## EVM ZK Identity v2 🚧 *(foundation started; parallel product track)*
+
+**Goal:** one passport scan issues a portable private credential that can generate unlimited unlinkable,
+consumer-bound ZK proofs on the holder's device. Initial policies cover age thresholds/ranges, nationality
+and issuing-state sets, document expiry/assurance, one-person-per-context and short-lived sanctions status.
+The NFT remains an optional public uniqueness/freshness anchor and stores no attributes.
+
+**Current Stage 0:** [ADR-0010](specs/adr/0010-direct-v2-portable-zk-credential.md) and the full
+[v2 spec](specs/10-evm-zk-identity-v2.md) define the privacy boundary, threat model, predicate matrix and
+delivery gates. The SDK now has a versioned AES-GCM credential vault with WebAuthn-PRF/HKDF key wrapping,
+tamper detection and multiple passkey key slots. It also pins canonical policy/presentation-binding hashes,
+and `/verify` exposes an honest non-proof designer for all planned passport use cases. Production persistence
+and v2 proof generation are not enabled yet.
+
+**Stages:**
+- **Stage 0 🚧** — architecture + encrypted portable-vault foundation and CI tests.
+- **Stage 1 🚧** — policy/binding schema pinned; measured circuit/credential-authentication spike plus
+  credential, public-signal and scoped-nullifier encodings remain.
+- **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
+- **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
+- **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
+- **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
+
+**Mainnet gate:** no open Critical/High; circuit, Solidity and browser/vault reviews complete; reproducible
+verifier bytecode; recovery/revocation/key-rotation drills; measured mobile proving and EVM gas budgets. L2s
+ship before Ethereum L1 unless the recorded gas gate supports simultaneous release.
+
+**Relationship to M6:** M6 proves passport uniqueness and attributes on the ubi2 native chain. This track
+provides the portable holder credential and cross-EVM presentation layer. They should share passport roots,
+encodings and test vectors where possible, but neither may silently inherit the other's trust assumptions.
 
 ---
 

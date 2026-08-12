@@ -9,6 +9,11 @@
   predicate **verifier** evolves so the on-chain deployment can be **final now**.
 - **Companion spec:** [`09-predicate-v1_5-self-age.md`](../09-predicate-v1_5-self-age.md) (the first ZK prover).
 
+> **Sequencing update (2026-08-11):** [ADR-0010](0010-direct-v2-portable-zk-credential.md) supersedes the
+> “Why NOT go straight to full v2” conclusion below. The fixed `IPredicateProver` surface and migration
+> analysis in this ADR remain the chosen architecture; v1.5 is now reusable infrastructure rather than the
+> next standalone product release.
+
 ---
 
 ## Context

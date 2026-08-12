@@ -17,6 +17,8 @@ export * from "./explorer";
 export * from "./oracle";
 export * from "./passport";
 export * from "./predicate";
+export * from "./credential-vault";
+export * from "./zk-identity-policy";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;

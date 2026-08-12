@@ -105,7 +105,14 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
-_(none — M4 shipped; M5 next)_
+- **ZKID-V2-T0 · architect/SDK/security** — direct-v2 architecture + portable encrypted credential-vault
+  foundation. *Accepts:* predicate matrix and threat model documented; plaintext never persisted; AES-GCM
+  tamper/binding failures tested; two independent passkeys unlock the same credential; SDK tests run in CI.
+  Production UI persistence remains gated on WebAuthn ceremony, recovery and independent review.
+- **ZKID-V2-T1 · architect/interface/SDK** — canonical policy + presentation-binding schema and expanded
+  `/verify` v2 demo lab. *Accepts:* all documented passport use cases produce normalized deterministic policy
+  hashes; chain/consumer/context/subject/challenge bindings are pinned; invalid ranges/roots/consent fail closed;
+  the UI labels previews as non-proofs and preserves the separately live v1 verification flow.
 
 ## 👀 Review (awaiting gates)
 _(none)_
