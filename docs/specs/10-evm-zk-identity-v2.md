@@ -195,7 +195,9 @@ encrypted backup must not authorize the smart account.
 
 **Implemented foundation (2026-08-12):** the encrypted multi-passkey vault, canonical policy schema,
 deterministic EVM policy/presentation-binding hashes, SDK vectors, and the explicitly non-proof `/verify` policy
-designer are implemented. Ratification/security review and the Stage 1 cryptographic benchmark remain open.
+designer are implemented. The first Stage 1 compatibility slice also pins the private-credential ABI,
+nullifier scope/preimage, and lossless public-signal layout across TypeScript, Solidity, and Rust. Ratification,
+security review, and the Stage 1 cryptographic benchmark remain open.
 
 Pinned TypeScript vectors (`packages/sdk/src/zk-identity-policy.test.ts`):
 
@@ -211,11 +213,72 @@ The country root above is a deliberately small parity fixture, not a production 
 ### Stage 1 — cryptographic spike and pinned schemas
 
 - Pin canonical credential, policy, public-signal and nullifier encodings with cross-language vectors.
-- The policy and EVM presentation-binding portion is now pinned in `packages/sdk/src/zk-identity-policy.ts`;
-  credential, circuit public-signal, scoped-nullifier and cross-language encodings remain to be pinned.
+- **Compatibility slice implemented:** policy and EVM presentation bindings are pinned in
+  [`zk-identity-policy.ts`](../../packages/sdk/src/zk-identity-policy.ts). The private-credential ABI,
+  scoped-nullifier preimage, and public-signal layout are pinned in
+  [`zk-identity-encoding.ts`](../../packages/sdk/src/zk-identity-encoding.ts),
+  [`ZkIdentityEncoding.sol`](../../contracts/src/ZkIdentityEncoding.sol), and
+  [`v2_identity.rs`](../../crates/zkpoh/src/v2_identity.rs), with identical fixtures in all three languages.
 - Benchmark signature/accumulator and proof-system candidates on desktop, mid-range mobile and EVM L1/L2.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
+
+#### Pinned private credential ABI (version 1)
+
+The private credential is ABI-encoded in this exact order:
+
+```text
+domain, version, issuerKeyId, statusId, holderSecret, credentialBlinding,
+dateOfBirth, nationality, issuingState, expiryDate, documentClass,
+assurance, issuedAtEpoch
+```
+
+Dates are `YYYYMMDD` `uint32` values; country codes are ISO alpha-3 `bytes3`; holder secret and blinding are
+non-zero canonical BN254 scalar-field elements. The fixture's Keccak fingerprint exists only to detect
+cross-language encoding drift. It is **not** the circuit credential commitment and must never be published as
+a presentation identifier. The circuit-native commitment and issuer-authentication scheme remain Stage 1
+benchmark decisions.
+
+#### Pinned scoped-nullifier input (version 1)
+
+The public scope hash commits to:
+
+```text
+domain, version, mode, chainId, verifier, consumer, context, policyHash
+```
+
+The ordered private circuit preimage is:
+
+```text
+nullifierDomainHi, nullifierDomainLo, version, holderSecret, scopeHashHi, scopeHashLo
+```
+
+`subject`, challenge, and epoch are deliberately absent. A holder must not gain another one-per-scope slot by
+changing wallets, refreshing a challenge, or waiting for a new epoch. A measured SNARK-native hash consumes
+this preimage; this slice does not pre-select Poseidon or another candidate.
+
+#### Pinned public signals (version 1)
+
+Every entry is a strict canonical BN254 scalar and the vector has exactly 18 entries:
+
+| Index | Signal |
+|---:|---|
+| 0 | layout version |
+| 1–2 | circuit id, high/low 128-bit limbs |
+| 3–4 | issuer key id, high/low limbs |
+| 5–6 | active credential root, high/low limbs |
+| 7–8 | policy hash, high/low limbs |
+| 9–10 | presentation binding hash, high/low limbs |
+| 11–12 | nullifier scope hash, high/low limbs |
+| 13 | scoped nullifier |
+| 14 | EVM subject as a zero-extended `uint160` |
+| 15 | Boolean result (`0` or `1`) |
+| 16 | credential epoch (`uint32`) |
+| 17 | dynamic-status epoch (`uint32`; `0` when unused) |
+
+All `bytes32` values use two 128-bit limbs rather than modular reduction. This is lossless and prevents two
+different EVM hashes from aliasing to the same circuit field. SDK, Solidity, and Rust decoders reject wide
+limbs, zero identifiers, non-canonical fields, invalid subjects/results, and oversized epochs.
 
 ### Stage 2 — one-time issuance on testnet
 

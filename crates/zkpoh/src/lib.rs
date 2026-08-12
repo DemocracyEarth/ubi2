@@ -46,6 +46,7 @@ mod keys;
 mod public_inputs;
 mod self_layout;
 mod snarkjs;
+mod v2_identity;
 mod verifier;
 
 pub use genesis_vk::{pinned_passport_vk, HAS_PINNED_PASSPORT_VK};
@@ -58,6 +59,13 @@ pub use self_layout::{
     SELF_NPUBLIC, UBI2_SELF_SCOPE, UBI2_SELF_SCOPE_SEED,
 };
 pub use snarkjs::{SnarkjsImportError, SnarkjsVk};
+pub use v2_identity::{
+    split_bytes32 as split_v2_bytes32, V2PublicSignalError, V2PublicSignals, BN254_SCALAR_FIELD,
+    V2_IDX_ACTIVE_ROOT_HI, V2_IDX_BINDING_HASH_HI, V2_IDX_CIRCUIT_ID_HI, V2_IDX_CREDENTIAL_EPOCH,
+    V2_IDX_ISSUER_KEY_ID_HI, V2_IDX_LAYOUT_VERSION, V2_IDX_NULLIFIER_SCOPE_HASH_HI,
+    V2_IDX_POLICY_HASH_HI, V2_IDX_RESULT, V2_IDX_SCOPED_NULLIFIER, V2_IDX_STATUS_EPOCH,
+    V2_IDX_SUBJECT, V2_PUBLIC_SIGNALS_VERSION, V2_PUBLIC_SIGNAL_COUNT,
+};
 pub use verifier::{Groth16Verifier, PassportLayout};
 // The trait + the plain-bytes types + the mock now live in `crates/runtime` (dependency-free, ADR-0005
 // D2); re-export them so `ubi2_zkpoh` stays a single import surface for the verifier seam.
