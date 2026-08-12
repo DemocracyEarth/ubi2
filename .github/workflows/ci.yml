@@ -43,6 +43,33 @@ jobs:
       - name: Test (qa + reliability property tests)
         run: cargo test --workspace --locked -- --test-threads=1
 
+  v2-crypto-benchmark:
+    name: v2 identity (isolated circuit benchmark)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: tools/v2-crypto-bench
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (pinned via rust-toolchain.toml)
+        run: rustup show && rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/v2-crypto-bench -> target
+      - name: Format
+        run: cargo fmt -- --check
+      - name: Lint
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+      - name: Relation tests and pinned constraint budgets
+        run: cargo test --release --locked
+      - name: Generate and verify every Groth16 candidate proof
+        run: >-
+          cargo test --release --locked
+          all_candidates_generate_verified_groth16_proofs -- --ignored --nocapture
+      - name: Emit deterministic constraint report
+        run: cargo run --release --locked -- --constraints-only
+
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)
     runs-on: ubuntu-latest

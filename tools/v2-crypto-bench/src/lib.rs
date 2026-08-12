@@ -1,0 +1,622 @@
+//! Reproducible Stage-1 circuit-authentication spike for ubi2 ZK Identity v2.
+//!
+//! This is measurement code, not a production circuit. It deliberately lives
+//! in an isolated Cargo workspace so none of its prover or gadget dependencies
+//! can enter `ubi2-zkpoh`'s consensus verifier graph.
+
+use ark_bn254::{Bn254, Fr as CircuitField};
+use ark_crypto_primitives::sponge::{
+    constraints::CryptographicSpongeVar,
+    poseidon::{
+        constraints::PoseidonSpongeVar, find_poseidon_ark_and_mds, PoseidonConfig, PoseidonSponge,
+    },
+    CryptographicSponge, FieldBasedCryptographicSponge,
+};
+use ark_ec::{AdditiveGroup, CurveGroup, PrimeGroup};
+use ark_ed_on_bn254::{constraints::EdwardsVar, EdwardsProjective, Fr as JubjubScalar};
+use ark_ff::{BigInteger, PrimeField};
+use ark_groth16::Groth16;
+use ark_r1cs_std::{
+    fields::{emulated_fp::EmulatedFpVar, fp::FpVar},
+    prelude::*,
+};
+use ark_relations::r1cs::{
+    ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, SynthesisError,
+};
+use ark_serialize::CanonicalSerialize;
+use ark_snark::SNARK;
+use ark_std::rand::{rngs::StdRng, SeedableRng};
+use serde::Serialize;
+use std::time::Instant;
+
+// The ABI has 13 logical fields. Its three bytes32 fields are split into two
+// lossless 128-bit limbs, so the circuit commitment absorbs 16 field elements.
+pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
+pub const NULLIFIER_FIELD_COUNT: usize = 6;
+pub const REGISTRY_DEPTH: usize = 32;
+const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
+const NULLIFIER_HOLDER_SECRET_INDEX: usize = 3;
+
+// Deliberately pinned by CI. A gadget or relation change must update the
+// measured report and these budgets in the same reviewed change.
+pub const ISSUER_SIGNATURE_CONSTRAINTS: usize = 11_995;
+pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 18_605;
+pub const HYBRID_CONSTRAINTS: usize = 27_452;
+
+const CREDENTIAL_DOMAIN: u64 = 1;
+const NULLIFIER_DOMAIN: u64 = 2;
+const REGISTRY_NODE_DOMAIN: u64 = 3;
+const SIGNATURE_CHALLENGE_DOMAIN: u64 = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Authentication {
+    IssuerSignature,
+    ActiveRegistry,
+    SignatureAndRegistry,
+}
+
+impl Authentication {
+    fn includes_signature(self) -> bool {
+        matches!(self, Self::IssuerSignature | Self::SignatureAndRegistry)
+    }
+
+    fn includes_registry(self) -> bool {
+        matches!(self, Self::ActiveRegistry | Self::SignatureAndRegistry)
+    }
+}
+
+#[derive(Clone)]
+pub struct SpikeCircuit {
+    authentication: Authentication,
+    credential_elements: [CircuitField; CREDENTIAL_ELEMENT_COUNT],
+    nullifier_fields: [CircuitField; NULLIFIER_FIELD_COUNT],
+    expected_nullifier: CircuitField,
+    issuer_public_key: EdwardsProjective,
+    signature_commitment: EdwardsProjective,
+    signature_response: JubjubScalar,
+    registry_siblings: [CircuitField; REGISTRY_DEPTH],
+    registry_directions: [bool; REGISTRY_DEPTH],
+    expected_registry_root: CircuitField,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SuiteReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub curve: &'static str,
+    pub poseidon_profile: &'static str,
+    pub registry_depth: usize,
+    pub proof_measurements_enabled: bool,
+    pub build_profile: &'static str,
+    pub target_os: &'static str,
+    pub target_arch: &'static str,
+    pub results: Vec<CandidateReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CandidateReport {
+    pub authentication: Authentication,
+    pub constraints: usize,
+    pub public_inputs: usize,
+    pub witness_variables: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prove_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifying_key_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_verified: Option<bool>,
+}
+
+impl SpikeCircuit {
+    pub fn fixture(authentication: Authentication) -> Self {
+        let poseidon = poseidon_config();
+        let credential_elements =
+            std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 1_000_003));
+        let mut nullifier_fields =
+            std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 9_000_001));
+        nullifier_fields[NULLIFIER_HOLDER_SECRET_INDEX] =
+            credential_elements[CREDENTIAL_HOLDER_SECRET_INDEX];
+        let credential_commitment =
+            poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
+        let expected_nullifier =
+            poseidon_native(&poseidon, NULLIFIER_DOMAIN, nullifier_fields.as_slice());
+
+        let issuer_secret = JubjubScalar::from(4_242_424u64);
+        let issuer_public_key = EdwardsProjective::generator() * issuer_secret;
+        let signature_nonce = JubjubScalar::from(8_181_818u64);
+        let signature_commitment = EdwardsProjective::generator() * signature_nonce;
+        let challenge = signature_challenge_native(
+            &poseidon,
+            &signature_commitment,
+            &issuer_public_key,
+            credential_commitment,
+        );
+        let challenge_scalar = jubjub_scalar_from_circuit_field(challenge);
+        let signature_response = signature_nonce - challenge_scalar * issuer_secret;
+
+        let registry_siblings =
+            std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 7_000_001));
+        let registry_directions = std::array::from_fn(|index| index % 3 == 1);
+        let expected_registry_root = merkle_root_native(
+            &poseidon,
+            credential_commitment,
+            &registry_siblings,
+            &registry_directions,
+        );
+
+        Self {
+            authentication,
+            credential_elements,
+            nullifier_fields,
+            expected_nullifier,
+            issuer_public_key,
+            signature_commitment,
+            signature_response,
+            registry_siblings,
+            registry_directions,
+            expected_registry_root,
+        }
+    }
+
+    pub fn authentication(&self) -> Authentication {
+        self.authentication
+    }
+
+    pub fn public_inputs(&self) -> Vec<CircuitField> {
+        let mut inputs = vec![self.expected_nullifier];
+        if self.authentication.includes_signature() {
+            let issuer = self.issuer_public_key.into_affine();
+            inputs.push(issuer.x);
+            inputs.push(issuer.y);
+        }
+        if self.authentication.includes_registry() {
+            inputs.push(self.expected_registry_root);
+        }
+        inputs
+    }
+
+    #[cfg(test)]
+    fn tamper_signature(&mut self) {
+        self.signature_response += JubjubScalar::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn tamper_registry(&mut self) {
+        self.registry_siblings[REGISTRY_DEPTH / 2] += CircuitField::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn tamper_credential(&mut self) {
+        self.credential_elements[CREDENTIAL_ELEMENT_COUNT / 2] += CircuitField::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn tamper_holder_secret(&mut self) {
+        self.credential_elements[CREDENTIAL_HOLDER_SECRET_INDEX] += CircuitField::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn tamper_nullifier_preimage(&mut self) {
+        self.nullifier_fields[NULLIFIER_HOLDER_SECRET_INDEX + 1] += CircuitField::from(1u64);
+    }
+}
+
+impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
+    fn generate_constraints(
+        self,
+        cs: ConstraintSystemRef<CircuitField>,
+    ) -> Result<(), SynthesisError> {
+        let poseidon = poseidon_config();
+        let credential_vars = self
+            .credential_elements
+            .iter()
+            .map(|value| FpVar::new_witness(cs.clone(), || Ok(*value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let credential_commitment = poseidon_gadget(
+            cs.clone(),
+            &poseidon,
+            CREDENTIAL_DOMAIN,
+            credential_vars.as_slice(),
+        )?;
+
+        let nullifier_vars = self
+            .nullifier_fields
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                if index == NULLIFIER_HOLDER_SECRET_INDEX {
+                    Ok(credential_vars[CREDENTIAL_HOLDER_SECRET_INDEX].clone())
+                } else {
+                    FpVar::new_witness(cs.clone(), || Ok(*value))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let computed_nullifier = poseidon_gadget(
+            cs.clone(),
+            &poseidon,
+            NULLIFIER_DOMAIN,
+            nullifier_vars.as_slice(),
+        )?;
+        let public_nullifier = FpVar::new_input(cs.clone(), || Ok(self.expected_nullifier))?;
+        computed_nullifier.enforce_equal(&public_nullifier)?;
+
+        if self.authentication.includes_signature() {
+            enforce_signature(
+                cs.clone(),
+                &poseidon,
+                &credential_commitment,
+                self.issuer_public_key,
+                self.signature_commitment,
+                self.signature_response,
+            )?;
+        }
+
+        if self.authentication.includes_registry() {
+            enforce_registry_membership(
+                cs,
+                &poseidon,
+                credential_commitment,
+                &self.registry_siblings,
+                &self.registry_directions,
+                self.expected_registry_root,
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn run_suite(with_proofs: bool) -> Result<SuiteReport, SynthesisError> {
+    let mut results = Vec::new();
+    for authentication in [
+        Authentication::IssuerSignature,
+        Authentication::ActiveRegistry,
+        Authentication::SignatureAndRegistry,
+    ] {
+        results.push(measure_candidate(
+            SpikeCircuit::fixture(authentication),
+            with_proofs,
+        )?);
+    }
+
+    Ok(SuiteReport {
+        schema: "org.proofofhumanity.v2-crypto-benchmark/1",
+        warning: "research harness only; not a production circuit or cryptographic ratification",
+        curve: "Groth16/BN254 with Baby-Jubjub authentication model",
+        poseidon_profile: "width=3 rate=2 capacity=1 alpha=5 full=8 partial=57 skip_matrices=0",
+        registry_depth: REGISTRY_DEPTH,
+        proof_measurements_enabled: with_proofs,
+        build_profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        target_os: std::env::consts::OS,
+        target_arch: std::env::consts::ARCH,
+        results,
+    })
+}
+
+fn measure_candidate(
+    circuit: SpikeCircuit,
+    with_proofs: bool,
+) -> Result<CandidateReport, SynthesisError> {
+    let cs = ConstraintSystem::<CircuitField>::new_ref();
+    circuit.clone().generate_constraints(cs.clone())?;
+    cs.finalize();
+    if !cs.is_satisfied()? {
+        return Err(SynthesisError::Unsatisfiable);
+    }
+
+    let mut result = CandidateReport {
+        authentication: circuit.authentication(),
+        constraints: cs.num_constraints(),
+        public_inputs: cs.num_instance_variables().saturating_sub(1),
+        witness_variables: cs.num_witness_variables(),
+        setup_ms: None,
+        prove_ms: None,
+        verify_ms: None,
+        proof_bytes: None,
+        verifying_key_bytes: None,
+        proof_verified: None,
+    };
+
+    if with_proofs {
+        let seed = match circuit.authentication() {
+            Authentication::IssuerSignature => 0x51_47_4e,
+            Authentication::ActiveRegistry => 0x52_45_47,
+            Authentication::SignatureAndRegistry => 0x48_59_42,
+        };
+        let mut setup_rng = StdRng::seed_from_u64(seed);
+        let setup_started = Instant::now();
+        let (proving_key, verifying_key) =
+            Groth16::<Bn254>::circuit_specific_setup(circuit.clone(), &mut setup_rng)?;
+        result.setup_ms = Some(milliseconds(setup_started));
+
+        let mut proof_rng = StdRng::seed_from_u64(seed ^ 0xa5_a5_a5);
+        let prove_started = Instant::now();
+        let proof = Groth16::<Bn254>::prove(&proving_key, circuit.clone(), &mut proof_rng)?;
+        result.prove_ms = Some(milliseconds(prove_started));
+
+        let processed = Groth16::<Bn254>::process_vk(&verifying_key)?;
+        let verify_started = Instant::now();
+        let verified = Groth16::<Bn254>::verify_with_processed_vk(
+            &processed,
+            &circuit.public_inputs(),
+            &proof,
+        )?;
+        result.verify_ms = Some(milliseconds(verify_started));
+
+        let mut proof_bytes = Vec::new();
+        proof
+            .serialize_compressed(&mut proof_bytes)
+            .map_err(|_| SynthesisError::Unsatisfiable)?;
+        let mut verifying_key_bytes = Vec::new();
+        verifying_key
+            .serialize_compressed(&mut verifying_key_bytes)
+            .map_err(|_| SynthesisError::Unsatisfiable)?;
+        result.proof_bytes = Some(proof_bytes.len());
+        result.verifying_key_bytes = Some(verifying_key_bytes.len());
+        result.proof_verified = Some(verified);
+    }
+
+    Ok(result)
+}
+
+fn milliseconds(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1_000.0
+}
+
+fn poseidon_config() -> PoseidonConfig<CircuitField> {
+    const FULL_ROUNDS: u64 = 8;
+    const PARTIAL_ROUNDS: u64 = 57;
+    const RATE: usize = 2;
+    let (ark, mds) = find_poseidon_ark_and_mds::<CircuitField>(
+        CircuitField::MODULUS_BIT_SIZE as u64,
+        RATE,
+        FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+        0,
+    );
+    PoseidonConfig::new(
+        FULL_ROUNDS as usize,
+        PARTIAL_ROUNDS as usize,
+        5,
+        mds,
+        ark,
+        RATE,
+        1,
+    )
+}
+
+fn poseidon_native(
+    config: &PoseidonConfig<CircuitField>,
+    domain: u64,
+    inputs: &[CircuitField],
+) -> CircuitField {
+    let mut sponge = PoseidonSponge::new(config);
+    sponge.absorb(&CircuitField::from(domain));
+    sponge.absorb(&inputs);
+    sponge.squeeze_native_field_elements(1)[0]
+}
+
+fn poseidon_gadget(
+    cs: ConstraintSystemRef<CircuitField>,
+    config: &PoseidonConfig<CircuitField>,
+    domain: u64,
+    inputs: &[FpVar<CircuitField>],
+) -> Result<FpVar<CircuitField>, SynthesisError> {
+    let mut sponge = PoseidonSpongeVar::new(cs, config);
+    sponge.absorb(&FpVar::Constant(CircuitField::from(domain)))?;
+    sponge.absorb(&inputs)?;
+    Ok(sponge.squeeze_field_elements(1)?[0].clone())
+}
+
+fn signature_challenge_native(
+    config: &PoseidonConfig<CircuitField>,
+    signature_commitment: &EdwardsProjective,
+    issuer_public_key: &EdwardsProjective,
+    credential_commitment: CircuitField,
+) -> CircuitField {
+    let r = signature_commitment.into_affine();
+    let a = issuer_public_key.into_affine();
+    poseidon_native(
+        config,
+        SIGNATURE_CHALLENGE_DOMAIN,
+        &[r.x, r.y, a.x, a.y, credential_commitment],
+    )
+}
+
+fn jubjub_scalar_from_circuit_field(value: CircuitField) -> JubjubScalar {
+    JubjubScalar::from_be_bytes_mod_order(&value.into_bigint().to_bytes_be())
+}
+
+fn enforce_signature(
+    cs: ConstraintSystemRef<CircuitField>,
+    config: &PoseidonConfig<CircuitField>,
+    credential_commitment: &FpVar<CircuitField>,
+    issuer_public_key: EdwardsProjective,
+    signature_commitment: EdwardsProjective,
+    signature_response: JubjubScalar,
+) -> Result<(), SynthesisError> {
+    let public_key = EdwardsVar::new_input(cs.clone(), || Ok(issuer_public_key))?;
+    public_key.enforce_prime_order()?;
+    public_key.is_zero()?.enforce_equal(&Boolean::FALSE)?;
+
+    let r = EdwardsVar::new_witness(cs.clone(), || Ok(signature_commitment))?;
+    r.is_zero()?.enforce_equal(&Boolean::FALSE)?;
+    let challenge = poseidon_gadget(
+        cs.clone(),
+        config,
+        SIGNATURE_CHALLENGE_DOMAIN,
+        &[
+            r.x.clone(),
+            r.y.clone(),
+            public_key.x.clone(),
+            public_key.y.clone(),
+            credential_commitment.clone(),
+        ],
+    )?;
+
+    let response =
+        EmulatedFpVar::<JubjubScalar, CircuitField>::new_witness(cs, || Ok(signature_response))?;
+    let response_bits = response.to_bits_le()?;
+    let mut response_times_generator = EdwardsVar::zero();
+    let mut generator_power = EdwardsProjective::generator();
+    let mut generator_powers = Vec::with_capacity(response_bits.len());
+    for _ in 0..response_bits.len() {
+        generator_powers.push(generator_power);
+        generator_power.double_in_place();
+    }
+    response_times_generator
+        .precomputed_base_scalar_mul_le(response_bits.iter().zip(generator_powers.iter()))?;
+
+    let challenge_bits = challenge.to_bits_le()?;
+    let challenge_times_key = public_key.scalar_mul_le(challenge_bits.iter())?;
+    (response_times_generator + challenge_times_key).enforce_equal(&r)
+}
+
+fn merkle_root_native(
+    config: &PoseidonConfig<CircuitField>,
+    leaf: CircuitField,
+    siblings: &[CircuitField; REGISTRY_DEPTH],
+    directions: &[bool; REGISTRY_DEPTH],
+) -> CircuitField {
+    siblings
+        .iter()
+        .zip(directions)
+        .fold(leaf, |current, (sibling, current_is_right)| {
+            let (left, right) = if *current_is_right {
+                (*sibling, current)
+            } else {
+                (current, *sibling)
+            };
+            poseidon_native(config, REGISTRY_NODE_DOMAIN, &[left, right])
+        })
+}
+
+fn enforce_registry_membership(
+    cs: ConstraintSystemRef<CircuitField>,
+    config: &PoseidonConfig<CircuitField>,
+    mut current: FpVar<CircuitField>,
+    siblings: &[CircuitField; REGISTRY_DEPTH],
+    directions: &[bool; REGISTRY_DEPTH],
+    expected_root: CircuitField,
+) -> Result<(), SynthesisError> {
+    for (sibling, current_is_right) in siblings.iter().zip(directions) {
+        let sibling = FpVar::new_witness(cs.clone(), || Ok(*sibling))?;
+        let current_is_right = Boolean::new_witness(cs.clone(), || Ok(*current_is_right))?;
+        let left = current_is_right.select(&sibling, &current)?;
+        let right = current_is_right.select(&current, &sibling)?;
+        current = poseidon_gadget(cs.clone(), config, REGISTRY_NODE_DOMAIN, &[left, right])?;
+    }
+    let public_root = FpVar::new_input(cs, || Ok(expected_root))?;
+    current.enforce_equal(&public_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_candidate_relations_are_satisfied() {
+        let report = run_suite(false).expect("all benchmark fixtures synthesize");
+        assert_eq!(report.results.len(), 3);
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.constraints)
+                .collect::<Vec<_>>(),
+            [
+                ISSUER_SIGNATURE_CONSTRAINTS,
+                ACTIVE_REGISTRY_CONSTRAINTS,
+                HYBRID_CONSTRAINTS,
+            ],
+            "constraint drift requires an explicit benchmark-report review"
+        );
+    }
+
+    #[test]
+    fn a_modified_issuer_signature_fails_closed() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::IssuerSignature);
+        circuit.tamper_signature();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn a_modified_registry_path_fails_closed() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        circuit.tamper_registry();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn a_modified_credential_fails_both_authentication_relations() {
+        for authentication in [
+            Authentication::IssuerSignature,
+            Authentication::ActiveRegistry,
+            Authentication::SignatureAndRegistry,
+        ] {
+            let mut circuit = SpikeCircuit::fixture(authentication);
+            circuit.tamper_credential();
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            circuit.generate_constraints(cs.clone()).unwrap();
+            assert!(
+                !cs.is_satisfied().unwrap(),
+                "{authentication:?} must bind the complete credential commitment"
+            );
+        }
+    }
+
+    #[test]
+    fn a_modified_nullifier_preimage_fails_closed() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::IssuerSignature);
+        circuit.tamper_nullifier_preimage();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn holder_secret_is_bound_to_authentication_and_nullifier() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndRegistry);
+        circuit.tamper_holder_secret();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn hybrid_cost_contains_both_authentication_costs() {
+        let report = run_suite(false).unwrap();
+        let signature = &report.results[0];
+        let registry = &report.results[1];
+        let hybrid = &report.results[2];
+        assert!(hybrid.constraints > signature.constraints);
+        assert!(hybrid.constraints > registry.constraints);
+        assert_eq!(signature.public_inputs, 3);
+        assert_eq!(registry.public_inputs, 2);
+        assert_eq!(hybrid.public_inputs, 4);
+    }
+
+    #[test]
+    #[ignore = "CI runs the release-mode Groth16 round trip explicitly"]
+    fn all_candidates_generate_verified_groth16_proofs() {
+        let report = run_suite(true).expect("all candidates prove and verify");
+        assert!(report.results.iter().all(|result| {
+            result.proof_verified == Some(true) && result.proof_bytes == Some(128)
+        }));
+    }
+}

@@ -197,7 +197,9 @@ encrypted backup must not authorize the smart account.
 deterministic EVM policy/presentation-binding hashes, SDK vectors, and the explicitly non-proof `/verify` policy
 designer are implemented. The first Stage 1 compatibility slice also pins the private-credential ABI,
 nullifier scope/preimage, and lossless public-signal layout across TypeScript, Solidity, and Rust. Ratification,
-security review, and the Stage 1 cryptographic benchmark remain open.
+security review, and the final Stage 1 cryptographic decision remain open. A first isolated, reproducible
+[desktop authentication spike](../../tools/v2-crypto-bench/README.md) now compares issuer signature, depth-32
+active-registry membership, and both together; it is explicitly preliminary and does not ratify a circuit.
 
 Pinned TypeScript vectors (`packages/sdk/src/zk-identity-policy.test.ts`):
 
@@ -220,6 +222,10 @@ The country root above is a deliberately small parity fixture, not a production 
   [`ZkIdentityEncoding.sol`](../../contracts/src/ZkIdentityEncoding.sol), and
   [`v2_identity.rs`](../../crates/zkpoh/src/v2_identity.rs), with identical fixtures in all three languages.
 - Benchmark signature/accumulator and proof-system candidates on desktop, mid-range mobile and EVM L1/L2.
+- **Desktop authentication baseline implemented:** the isolated
+  [`v2-crypto-bench`](../../tools/v2-crypto-bench/README.md) harness pins constraint counts, tests invalid
+  signatures/paths fail closed, and generates/verifies a Groth16 proof for each signature, registry, and hybrid
+  relation in CI. Mobile/browser, alternate hash/proof-system, EVM gas, and witness-update measurements remain.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
