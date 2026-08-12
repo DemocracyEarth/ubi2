@@ -84,23 +84,11 @@ library ZkIdentityEncoding {
     /// @notice Diagnostic parity fingerprint of the private credential ABI.
     /// @dev Never publish or use this stable value as a presentation identifier.
     function privateCredentialFingerprint(PrivateCredential memory credential) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                PRIVATE_CREDENTIAL_DOMAIN,
-                PRIVATE_CREDENTIAL_VERSION,
-                credential.issuerKeyId,
-                credential.statusId,
-                credential.holderSecret,
-                credential.credentialBlinding,
-                credential.dateOfBirth,
-                credential.nationality,
-                credential.issuingState,
-                credential.expiryDate,
-                credential.documentClass,
-                credential.assurance,
-                credential.issuedAtEpoch
-            )
-        );
+        // `PrivateCredential` is an all-static tuple, so encoding it after the two
+        // domain fields is byte-identical to listing each member inline. Keeping
+        // the tuple grouped also compiles when `forge coverage` disables the
+        // optimizer; the flattened 13-argument form exhausts the legacy stack.
+        return keccak256(abi.encode(PRIVATE_CREDENTIAL_DOMAIN, PRIVATE_CREDENTIAL_VERSION, credential));
     }
 
     /// @notice Stable consumer scope for a scoped-nullifier derivation.
