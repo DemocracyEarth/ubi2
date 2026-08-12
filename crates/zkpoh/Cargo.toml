@@ -58,3 +58,7 @@ ark-std = { version = "0.5.0", default-features = false, features = ["std"] }
 # arrays `SnarkjsVk` consumes. The crate itself never depends on serde_json — the node parses JSON and
 # hands strings to `SnarkjsVk` (keeping the verifier path arkworks-only), so this is dev-only.
 serde_json = { workspace = true }
+# Tests-only EVM ABI + Keccak parity with the SDK and Solidity library. These crates are already
+# workspace dependencies and never enter the consensus/verifier dependency surface.
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }

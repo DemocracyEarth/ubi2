@@ -4908,6 +4908,8 @@ dependencies = [
 name = "ubi2-zkpoh"
 version = "0.0.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
  "ark-bn254",
  "ark-ec",
  "ark-ff 0.5.0",

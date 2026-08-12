@@ -112,7 +112,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
 - **ZKID-V2-T1 · architect/interface/SDK** — canonical policy + presentation-binding schema and expanded
   `/verify` v2 demo lab. *Accepts:* all documented passport use cases produce normalized deterministic policy
   hashes; chain/consumer/context/subject/challenge bindings are pinned; invalid ranges/roots/consent fail closed;
-  the UI labels previews as non-proofs and preserves the separately live v1 verification flow.
+  the UI labels previews as non-proofs and preserves the separately live v1 verification flow. Compatibility
+  slice complete: private-credential ABI, scoped-nullifier preimage, strict lossless 18-field public-signal layout, and
+  TypeScript/Solidity/Rust parity vectors. Remaining: measured circuit/hash/credential-authentication decision.
 
 ## 👀 Review (awaiting gates)
 _(none)_

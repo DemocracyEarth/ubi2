@@ -202,8 +202,9 @@ and v2 proof generation are not enabled yet.
 
 **Stages:**
 - **Stage 0 🚧** — architecture + encrypted portable-vault foundation and CI tests.
-- **Stage 1 🚧** — policy/binding schema pinned; measured circuit/credential-authentication spike plus
-  credential, public-signal and scoped-nullifier encodings remain.
+- **Stage 1 🚧** — policy/binding, private-credential ABI, scoped-nullifier preimage, and lossless 18-field
+  public-signal layout are pinned with TypeScript/Solidity/Rust parity vectors. The measured circuit,
+  credential-authentication, accumulator, and SNARK-native hash decision remains.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
