@@ -113,8 +113,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   `/verify` v2 demo lab. *Accepts:* all documented passport use cases produce normalized deterministic policy
   hashes; chain/consumer/context/subject/challenge bindings are pinned; invalid ranges/roots/consent fail closed;
   the UI labels previews as non-proofs and preserves the separately live v1 verification flow. Compatibility
-  slice complete: private-credential ABI, scoped-nullifier preimage, strict lossless 18-field public-signal layout, and
-  TypeScript/Solidity/Rust parity vectors. Remaining: measured circuit/hash/credential-authentication decision.
+  slice complete: private-credential ABI, scoped-nullifier preimage, strict lossless 18-field public-signal layout,
+  and TypeScript/Solidity/Rust parity vectors. The first isolated desktop circuit baseline now compares direct
+  issuer signature, depth-32 active-registry membership, and their hybrid with pinned CI constraints and valid
+  Groth16 round trips. Remaining: mobile/browser, alternate hash/proof-system, EVM gas, witness-update testing,
+  and the measured decision ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_

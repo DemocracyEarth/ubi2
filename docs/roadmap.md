@@ -203,8 +203,10 @@ and v2 proof generation are not enabled yet.
 **Stages:**
 - **Stage 0 🚧** — architecture + encrypted portable-vault foundation and CI tests.
 - **Stage 1 🚧** — policy/binding, private-credential ABI, scoped-nullifier preimage, and lossless 18-field
-  public-signal layout are pinned with TypeScript/Solidity/Rust parity vectors. The measured circuit,
-  credential-authentication, accumulator, and SNARK-native hash decision remains.
+  public-signal layout are pinned with TypeScript/Solidity/Rust parity vectors. An isolated desktop circuit
+  harness now measures issuer-signature, depth-32 registry, and hybrid relations with pinned CI budgets and real
+  Groth16 proof round trips. Mobile/browser, alternate hash/proof-system, EVM gas, accumulator operations, and
+  the final measured decision ADR remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
