@@ -116,8 +116,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   slice complete: private-credential ABI, scoped-nullifier preimage, strict lossless 18-field public-signal layout,
   and TypeScript/Solidity/Rust parity vectors. The first isolated desktop circuit baseline now compares direct
   issuer signature, depth-32 active-registry membership, and their hybrid with pinned CI constraints and valid
-  Groth16 round trips. Remaining: mobile/browser, alternate hash/proof-system, EVM gas, witness-update testing,
-  and the measured decision ADR.
+  Groth16 round trips. Issuer coordinates are now privately/losslessly bound to `issuerKeyId`, and the active
+  leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. Remaining:
+  mobile/browser, alternate hash/proof-system, EVM gas, operational witness distribution, and the measured ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_

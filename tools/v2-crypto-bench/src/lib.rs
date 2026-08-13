@@ -35,18 +35,26 @@ pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
 pub const NULLIFIER_FIELD_COUNT: usize = 6;
 pub const REGISTRY_DEPTH: usize = 32;
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
+const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
+const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
+const CREDENTIAL_STATUS_ID_HIGH_INDEX: usize = 5;
+const CREDENTIAL_STATUS_ID_LOW_INDEX: usize = 6;
 const NULLIFIER_HOLDER_SECRET_INDEX: usize = 3;
+const BYTES32_LIMB_BITS: usize = 128;
 
 // Deliberately pinned by CI. A gadget or relation change must update the
 // measured report and these budgets in the same reviewed change.
-pub const ISSUER_SIGNATURE_CONSTRAINTS: usize = 11_995;
-pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 18_605;
-pub const HYBRID_CONSTRAINTS: usize = 27_452;
+pub const ISSUER_SIGNATURE_CONSTRAINTS: usize = 13_528;
+pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 21_723;
+pub const HYBRID_CONSTRAINTS: usize = 31_843;
 
 const CREDENTIAL_DOMAIN: u64 = 1;
 const NULLIFIER_DOMAIN: u64 = 2;
 const REGISTRY_NODE_DOMAIN: u64 = 3;
 const SIGNATURE_CHALLENGE_DOMAIN: u64 = 4;
+const ISSUER_KEY_DOMAIN: u64 = 5;
+const STATUS_LEAF_DOMAIN: u64 = 6;
+const STATUS_INDEX_DOMAIN: u64 = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -73,11 +81,11 @@ pub struct SpikeCircuit {
     nullifier_fields: [CircuitField; NULLIFIER_FIELD_COUNT],
     expected_nullifier: CircuitField,
     issuer_public_key: EdwardsProjective,
+    issuer_key_id: [CircuitField; 2],
     signature_commitment: EdwardsProjective,
     signature_response: JubjubScalar,
     registry_siblings: [CircuitField; REGISTRY_DEPTH],
-    registry_directions: [bool; REGISTRY_DEPTH],
-    expected_registry_root: CircuitField,
+    expected_registry_root: [CircuitField; 2],
 }
 
 #[derive(Debug, Serialize)]
@@ -114,22 +122,33 @@ pub struct CandidateReport {
     pub proof_verified: Option<bool>,
 }
 
+struct SignatureWitness {
+    issuer_public_key: EdwardsProjective,
+    issuer_key_id: [FpVar<CircuitField>; 2],
+    signature_commitment: EdwardsProjective,
+    signature_response: JubjubScalar,
+}
+
 impl SpikeCircuit {
     pub fn fixture(authentication: Authentication) -> Self {
         let poseidon = poseidon_config();
-        let credential_elements =
+        let mut credential_elements =
             std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 1_000_003));
         let mut nullifier_fields =
             std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 9_000_001));
         nullifier_fields[NULLIFIER_HOLDER_SECRET_INDEX] =
             credential_elements[CREDENTIAL_HOLDER_SECRET_INDEX];
-        let credential_commitment =
-            poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
         let expected_nullifier =
             poseidon_native(&poseidon, NULLIFIER_DOMAIN, nullifier_fields.as_slice());
 
         let issuer_secret = JubjubScalar::from(4_242_424u64);
         let issuer_public_key = EdwardsProjective::generator() * issuer_secret;
+        let issuer_key_digest = issuer_key_digest_native(&poseidon, &issuer_public_key);
+        let issuer_key_id = split_field_to_u128_limbs(issuer_key_digest);
+        credential_elements[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX] = issuer_key_id[0];
+        credential_elements[CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX] = issuer_key_id[1];
+        let credential_commitment =
+            poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
         let signature_nonce = JubjubScalar::from(8_181_818u64);
         let signature_commitment = EdwardsProjective::generator() * signature_nonce;
         let challenge = signature_challenge_native(
@@ -143,13 +162,18 @@ impl SpikeCircuit {
 
         let registry_siblings =
             std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 7_000_001));
-        let registry_directions = std::array::from_fn(|index| index % 3 == 1);
-        let expected_registry_root = merkle_root_native(
+        let status_id = [
+            credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
+            credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
+        ];
+        let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
+        let registry_directions = status_path_directions_native(&poseidon, status_id);
+        let expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
-            credential_commitment,
+            active_leaf,
             &registry_siblings,
             &registry_directions,
-        );
+        ));
 
         Self {
             authentication,
@@ -157,12 +181,34 @@ impl SpikeCircuit {
             nullifier_fields,
             expected_nullifier,
             issuer_public_key,
+            issuer_key_id,
             signature_commitment,
             signature_response,
             registry_siblings,
-            registry_directions,
             expected_registry_root,
         }
+    }
+
+    #[cfg(test)]
+    fn recompute_registry_root(&mut self) {
+        let poseidon = poseidon_config();
+        let credential_commitment = poseidon_native(
+            &poseidon,
+            CREDENTIAL_DOMAIN,
+            self.credential_elements.as_slice(),
+        );
+        let status_id = [
+            self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
+            self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
+        ];
+        let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
+        let directions = status_path_directions_native(&poseidon, status_id);
+        self.expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
+            &poseidon,
+            active_leaf,
+            &self.registry_siblings,
+            &directions,
+        ));
     }
 
     pub fn authentication(&self) -> Authentication {
@@ -171,13 +217,9 @@ impl SpikeCircuit {
 
     pub fn public_inputs(&self) -> Vec<CircuitField> {
         let mut inputs = vec![self.expected_nullifier];
-        if self.authentication.includes_signature() {
-            let issuer = self.issuer_public_key.into_affine();
-            inputs.push(issuer.x);
-            inputs.push(issuer.y);
-        }
+        inputs.extend_from_slice(&self.issuer_key_id);
         if self.authentication.includes_registry() {
-            inputs.push(self.expected_registry_root);
+            inputs.extend_from_slice(&self.expected_registry_root);
         }
         inputs
     }
@@ -188,8 +230,89 @@ impl SpikeCircuit {
     }
 
     #[cfg(test)]
+    fn tamper_issuer_key_id(&mut self) {
+        self.issuer_key_id[1] += CircuitField::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn make_issuer_key_id_limb_wide(&mut self) {
+        let wide_limb = CircuitField::from_be_bytes_mod_order(&[
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        self.issuer_key_id[0] = wide_limb;
+        self.credential_elements[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX] = wide_limb;
+    }
+
+    #[cfg(test)]
+    fn make_status_id_limb_wide(&mut self) {
+        self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX] =
+            CircuitField::from_be_bytes_mod_order(&[
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
+    }
+
+    #[cfg(test)]
+    fn replace_issuer_key(&mut self) {
+        self.issuer_public_key = EdwardsProjective::generator() * JubjubScalar::from(9_999_991u64);
+    }
+
+    #[cfg(test)]
     fn tamper_registry(&mut self) {
         self.registry_siblings[REGISTRY_DEPTH / 2] += CircuitField::from(1u64);
+    }
+
+    #[cfg(test)]
+    fn rotate_unrelated_registry_leaf(&mut self) {
+        let poseidon = poseidon_config();
+        let status_id = [
+            self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
+            self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
+        ];
+        let directions = status_path_directions_native(&poseidon, status_id);
+        let changed_index = directions
+            .iter()
+            .position(|current_is_right| !current_is_right)
+            .expect("fixture path has a sibling leaf to rotate");
+        self.registry_siblings[changed_index] += CircuitField::from(1u64);
+        self.recompute_registry_root();
+    }
+
+    #[cfg(test)]
+    fn revoke_active_credential(&mut self) {
+        let poseidon = poseidon_config();
+        let status_id = [
+            self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
+            self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
+        ];
+        let directions = status_path_directions_native(&poseidon, status_id);
+        self.expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
+            &poseidon,
+            CircuitField::from(0u64),
+            &self.registry_siblings,
+            &directions,
+        ));
+    }
+
+    #[cfg(test)]
+    fn alias_registry_root_by_field_modulus(&mut self) {
+        let mut encoded = [0u8; 32];
+        for (limb_index, limb) in self.expected_registry_root.iter().enumerate() {
+            let bytes = limb.into_bigint().to_bytes_be();
+            encoded[limb_index * 16..(limb_index + 1) * 16]
+                .copy_from_slice(&bytes[bytes.len() - 16..]);
+        }
+        let modulus = CircuitField::MODULUS.to_bytes_be();
+        let mut carry = 0u16;
+        for index in (0..32).rev() {
+            let sum = encoded[index] as u16 + modulus[index] as u16 + carry;
+            encoded[index] = sum as u8;
+            carry = sum >> 8;
+        }
+        assert_eq!(carry, 0, "two BN254 scalars fit in bytes32");
+        self.expected_registry_root = [
+            CircuitField::from_be_bytes_mod_order(&encoded[..16]),
+            CircuitField::from_be_bytes_mod_order(&encoded[16..]),
+        ];
     }
 
     #[cfg(test)]
@@ -247,14 +370,33 @@ impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
         let public_nullifier = FpVar::new_input(cs.clone(), || Ok(self.expected_nullifier))?;
         computed_nullifier.enforce_equal(&public_nullifier)?;
 
+        let public_issuer_key_id = [
+            FpVar::new_input(cs.clone(), || Ok(self.issuer_key_id[0]))?,
+            FpVar::new_input(cs.clone(), || Ok(self.issuer_key_id[1]))?,
+        ];
+        // Signature relations reconstruct these limbs into the computed key
+        // digest below. Registry-only authentication still needs explicit limb
+        // bounds because it has no private issuer key to derive that digest.
+        if !self.authentication.includes_signature() {
+            enforce_u128_limb(&public_issuer_key_id[0])?;
+            enforce_u128_limb(&public_issuer_key_id[1])?;
+        }
+        credential_vars[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX]
+            .enforce_equal(&public_issuer_key_id[0])?;
+        credential_vars[CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX]
+            .enforce_equal(&public_issuer_key_id[1])?;
+
         if self.authentication.includes_signature() {
             enforce_signature(
                 cs.clone(),
                 &poseidon,
                 &credential_commitment,
-                self.issuer_public_key,
-                self.signature_commitment,
-                self.signature_response,
+                SignatureWitness {
+                    issuer_public_key: self.issuer_public_key,
+                    issuer_key_id: public_issuer_key_id,
+                    signature_commitment: self.signature_commitment,
+                    signature_response: self.signature_response,
+                },
             )?;
         }
 
@@ -263,8 +405,9 @@ impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
                 cs,
                 &poseidon,
                 credential_commitment,
+                credential_vars[CREDENTIAL_STATUS_ID_HIGH_INDEX].clone(),
+                credential_vars[CREDENTIAL_STATUS_ID_LOW_INDEX].clone(),
                 &self.registry_siblings,
-                &self.registry_directions,
                 self.expected_registry_root,
             )?;
         }
@@ -434,6 +577,27 @@ fn signature_challenge_native(
     )
 }
 
+fn issuer_key_digest_native(
+    config: &PoseidonConfig<CircuitField>,
+    issuer_public_key: &EdwardsProjective,
+) -> CircuitField {
+    let key = issuer_public_key.into_affine();
+    poseidon_native(config, ISSUER_KEY_DOMAIN, &[key.x, key.y])
+}
+
+fn split_field_to_u128_limbs(value: CircuitField) -> [CircuitField; 2] {
+    let mut bytes = value.into_bigint().to_bytes_be();
+    if bytes.len() < 32 {
+        let mut padded = vec![0u8; 32 - bytes.len()];
+        padded.extend_from_slice(&bytes);
+        bytes = padded;
+    }
+    [
+        CircuitField::from_be_bytes_mod_order(&bytes[..16]),
+        CircuitField::from_be_bytes_mod_order(&bytes[16..]),
+    ]
+}
+
 fn jubjub_scalar_from_circuit_field(value: CircuitField) -> JubjubScalar {
     JubjubScalar::from_be_bytes_mod_order(&value.into_bigint().to_bytes_be())
 }
@@ -442,15 +606,24 @@ fn enforce_signature(
     cs: ConstraintSystemRef<CircuitField>,
     config: &PoseidonConfig<CircuitField>,
     credential_commitment: &FpVar<CircuitField>,
-    issuer_public_key: EdwardsProjective,
-    signature_commitment: EdwardsProjective,
-    signature_response: JubjubScalar,
+    witness: SignatureWitness,
 ) -> Result<(), SynthesisError> {
-    let public_key = EdwardsVar::new_input(cs.clone(), || Ok(issuer_public_key))?;
+    let public_key = EdwardsVar::new_witness(cs.clone(), || Ok(witness.issuer_public_key))?;
     public_key.enforce_prime_order()?;
     public_key.is_zero()?.enforce_equal(&Boolean::FALSE)?;
+    let computed_key_id = poseidon_gadget(
+        cs.clone(),
+        config,
+        ISSUER_KEY_DOMAIN,
+        &[public_key.x.clone(), public_key.y.clone()],
+    )?;
+    enforce_lossless_bytes32_limbs(
+        &computed_key_id,
+        &witness.issuer_key_id[0],
+        &witness.issuer_key_id[1],
+    )?;
 
-    let r = EdwardsVar::new_witness(cs.clone(), || Ok(signature_commitment))?;
+    let r = EdwardsVar::new_witness(cs.clone(), || Ok(witness.signature_commitment))?;
     r.is_zero()?.enforce_equal(&Boolean::FALSE)?;
     let challenge = poseidon_gadget(
         cs.clone(),
@@ -465,8 +638,9 @@ fn enforce_signature(
         ],
     )?;
 
-    let response =
-        EmulatedFpVar::<JubjubScalar, CircuitField>::new_witness(cs, || Ok(signature_response))?;
+    let response = EmulatedFpVar::<JubjubScalar, CircuitField>::new_witness(cs, || {
+        Ok(witness.signature_response)
+    })?;
     let response_bits = response.to_bits_le()?;
     let mut response_times_generator = EdwardsVar::zero();
     let mut generator_power = EdwardsProjective::generator();
@@ -481,6 +655,28 @@ fn enforce_signature(
     let challenge_bits = challenge.to_bits_le()?;
     let challenge_times_key = public_key.scalar_mul_le(challenge_bits.iter())?;
     (response_times_generator + challenge_times_key).enforce_equal(&r)
+}
+
+fn enforce_lossless_bytes32_limbs(
+    value: &FpVar<CircuitField>,
+    high: &FpVar<CircuitField>,
+    low: &FpVar<CircuitField>,
+) -> Result<(), SynthesisError> {
+    let (high_bits, _) = high.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let (low_bits, _) = low.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let mut reconstructed_bits = low_bits;
+    reconstructed_bits.extend(high_bits);
+    // `le_bits_to_fp` deliberately reduces values modulo the field. Reject
+    // bytes32 encodings outside the canonical field range first, otherwise
+    // `digest` and `digest + modulus` would satisfy the same equality.
+    Boolean::enforce_in_field_le(&reconstructed_bits)?;
+    let reconstructed = Boolean::le_bits_to_fp(&reconstructed_bits)?;
+    reconstructed.enforce_equal(value)
+}
+
+fn enforce_u128_limb(value: &FpVar<CircuitField>) -> Result<(), SynthesisError> {
+    let _ = value.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    Ok(())
 }
 
 fn merkle_root_native(
@@ -505,20 +701,60 @@ fn merkle_root_native(
 fn enforce_registry_membership(
     cs: ConstraintSystemRef<CircuitField>,
     config: &PoseidonConfig<CircuitField>,
-    mut current: FpVar<CircuitField>,
+    credential_commitment: FpVar<CircuitField>,
+    status_id_high: FpVar<CircuitField>,
+    status_id_low: FpVar<CircuitField>,
     siblings: &[CircuitField; REGISTRY_DEPTH],
-    directions: &[bool; REGISTRY_DEPTH],
-    expected_root: CircuitField,
+    expected_root: [CircuitField; 2],
 ) -> Result<(), SynthesisError> {
-    for (sibling, current_is_right) in siblings.iter().zip(directions) {
+    let _ = status_id_high.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let _ = status_id_low.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let mut current = poseidon_gadget(
+        cs.clone(),
+        config,
+        STATUS_LEAF_DOMAIN,
+        &[
+            status_id_high.clone(),
+            status_id_low.clone(),
+            credential_commitment,
+        ],
+    )?;
+    let path_digest = poseidon_gadget(
+        cs.clone(),
+        config,
+        STATUS_INDEX_DOMAIN,
+        &[status_id_high, status_id_low],
+    )?;
+    let path_bits = path_digest.to_bits_le()?;
+    for (sibling, current_is_right) in siblings.iter().zip(path_bits.iter()) {
         let sibling = FpVar::new_witness(cs.clone(), || Ok(*sibling))?;
-        let current_is_right = Boolean::new_witness(cs.clone(), || Ok(*current_is_right))?;
         let left = current_is_right.select(&sibling, &current)?;
         let right = current_is_right.select(&current, &sibling)?;
         current = poseidon_gadget(cs.clone(), config, REGISTRY_NODE_DOMAIN, &[left, right])?;
     }
-    let public_root = FpVar::new_input(cs, || Ok(expected_root))?;
-    current.enforce_equal(&public_root)
+    let public_root_high = FpVar::new_input(cs.clone(), || Ok(expected_root[0]))?;
+    let public_root_low = FpVar::new_input(cs, || Ok(expected_root[1]))?;
+    enforce_lossless_bytes32_limbs(&current, &public_root_high, &public_root_low)
+}
+
+fn active_status_leaf_native(
+    config: &PoseidonConfig<CircuitField>,
+    status_id: [CircuitField; 2],
+    credential_commitment: CircuitField,
+) -> CircuitField {
+    poseidon_native(
+        config,
+        STATUS_LEAF_DOMAIN,
+        &[status_id[0], status_id[1], credential_commitment],
+    )
+}
+
+fn status_path_directions_native(
+    config: &PoseidonConfig<CircuitField>,
+    status_id: [CircuitField; 2],
+) -> [bool; REGISTRY_DEPTH] {
+    let digest = poseidon_native(config, STATUS_INDEX_DOMAIN, &status_id);
+    std::array::from_fn(|index| digest.into_bigint().get_bit(index))
 }
 
 #[cfg(test)]
@@ -554,12 +790,101 @@ mod tests {
     }
 
     #[test]
+    fn issuer_key_id_is_losslessly_bound_to_the_private_key_coordinates() {
+        for authentication in [
+            Authentication::IssuerSignature,
+            Authentication::SignatureAndRegistry,
+        ] {
+            let mut wrong_id = SpikeCircuit::fixture(authentication);
+            wrong_id.tamper_issuer_key_id();
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            wrong_id.generate_constraints(cs.clone()).unwrap();
+            assert!(!cs.is_satisfied().unwrap());
+
+            let mut wrong_key = SpikeCircuit::fixture(authentication);
+            wrong_key.replace_issuer_key();
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            wrong_key.generate_constraints(cs.clone()).unwrap();
+            assert!(!cs.is_satisfied().unwrap());
+
+            let mut wide_limb = SpikeCircuit::fixture(authentication);
+            wide_limb.make_issuer_key_id_limb_wide();
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            wide_limb.generate_constraints(cs.clone()).unwrap();
+            assert!(!cs.is_satisfied().unwrap());
+        }
+    }
+
+    #[test]
+    fn registry_authentication_binds_a_canonical_issuer_key_id() {
+        let mut wrong_id = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        wrong_id.tamper_issuer_key_id();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        wrong_id.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+
+        let mut wide_limb = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        wide_limb.make_issuer_key_id_limb_wide();
+        wide_limb.recompute_registry_root();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        wide_limb.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn registry_authentication_rejects_a_non_canonical_status_id() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        circuit.make_status_id_limb_wide();
+        circuit.recompute_registry_root();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
     fn a_modified_registry_path_fails_closed() {
         let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
         circuit.tamper_registry();
         let cs = ConstraintSystem::<CircuitField>::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn revoked_active_leaf_fails_closed() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        circuit.revoke_active_credential();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn active_root_rejects_a_modular_alias() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        circuit.alias_registry_root_by_field_modulus();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn unrelated_leaf_update_rejects_a_stale_witness_and_accepts_a_refreshed_one() {
+        let stale = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        let previous_root = stale.expected_registry_root;
+        let mut refreshed = stale.clone();
+        refreshed.rotate_unrelated_registry_leaf();
+        assert_ne!(refreshed.expected_registry_root, previous_root);
+
+        let mut stale = stale;
+        stale.expected_registry_root = refreshed.expected_registry_root;
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        stale.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        refreshed.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
     }
 
     #[test]
@@ -607,8 +932,8 @@ mod tests {
         assert!(hybrid.constraints > signature.constraints);
         assert!(hybrid.constraints > registry.constraints);
         assert_eq!(signature.public_inputs, 3);
-        assert_eq!(registry.public_inputs, 2);
-        assert_eq!(hybrid.public_inputs, 4);
+        assert_eq!(registry.public_inputs, 5);
+        assert_eq!(hybrid.public_inputs, 5);
     }
 
     #[test]

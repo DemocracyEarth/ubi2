@@ -12,7 +12,7 @@ Every candidate performs the same common work:
 
 - a domain-separated Poseidon commitment over all 13 logical fields in the pinned private-credential ABI,
   encoded as 16 field elements because each of the three `bytes32` values is split into lossless 128-bit limbs;
-- a domain-separated Poseidon scoped nullifier over the pinned six-field preimage; and
+- a domain-separated Poseidon scoped nullifier over the pinned six-field preimage;
 - structural reuse of the credential's authenticated `holderSecret` as the nullifier preimage's
   `holderSecret` (there is no second independently allocated secret); and
 - equality of the computed nullifier with a public input.
@@ -25,14 +25,23 @@ The authentication delta is then:
 | Active registry | Depth-32 Poseidon Merkle membership of the credential commitment | Combines issuance authorization and active status, but requires root governance and holder witness updates. |
 | Signature + registry | Both relations | Defense in depth and explicit separation of authenticity/status at the highest circuit cost. |
 
-The signature model enforces prime-subgroup membership for the issuer key and signature commitment. Its exact
-scheme, encoding, nonce derivation, domain constants, and Poseidon parameters still require cryptographic review.
-This first relation exposes the issuer public-key coordinates directly so their circuit cost is visible; binding
-those coordinates losslessly to the pinned 18-field `issuerKeyId` (or pinning a key per additive circuit version)
-is an explicit compatibility item for the next slice and is not solved by this harness.
+The signature model keeps issuer public-key coordinates private, enforces prime-subgroup membership, derives a
+domain-separated Poseidon key digest, and binds that digest losslessly to the two public 128-bit `issuerKeyId`
+limbs already pinned at signal indices 3–4. The same limbs are structurally reused inside the private credential
+commitment. Wrong keys, identifiers, signatures, and non-128-bit limbs fail closed. The exact signature scheme,
+encoding, nonce derivation, domain constants, and Poseidon parameters still require cryptographic review. The
+bytes32 reconstruction also rejects values at or above the BN254 field modulus before equality, preventing modular
+aliases.
+
+The active-registry model binds the credential commitment and private two-limb `statusId` into the active leaf.
+It derives the depth-32 path from `Poseidon(statusId)` inside the circuit and binds the root losslessly to the two
+public limbs already pinned at signal indices 5–6. Its public `issuerKeyId` limbs are canonical and structurally
+reused inside the credential commitment; the registry authorizes the resulting issuer/credential pair without
+exposing issuer key coordinates. Tests distinguish revocation, a stale witness after an unrelated leaf update, and
+a valid refreshed witness. They do not yet define the off-chain registry service or root-governance protocol.
 The benchmark's public-input counts cover only the relation delta; the product adapter retains the separately
 pinned 18-field public-signal layout. Attribute range/country/date predicates, presentation-binding checks,
-bytes32-to-limb binding, and field-specific canonicality constraints are also outside this authentication spike;
+the other public bytes32-to-limb bindings and field-specific canonicality constraints are outside this spike;
 the counts below are not an estimate for the complete presentation circuit.
 
 ## Reproduce
@@ -58,11 +67,11 @@ budget and must not be compared across machines as if deterministic.
 
 | Candidate | Constraints | Witness vars | Public inputs | Setup | Prove | Verify | Proof | VK |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Issuer signature | 11,995 | 11,696 | 3 | 528 ms | 527 ms | 0.89 ms | 128 B | 360 B |
-| Active registry | 18,605 | 18,656 | 2 | 1,713 ms | 1,010 ms | 0.82 ms | 128 B | 328 B |
-| Signature + registry | 27,452 | 27,184 | 4 | 1,319 ms | 1,444 ms | 0.90 ms | 128 B | 392 B |
+| Issuer signature | 13,528 | 12,916 | 3 | 1,003 ms | 809 ms | 1.42 ms | 128 B | 360 B |
+| Active registry | 21,723 | 21,301 | 5 | 1,708 ms | 1,431 ms | 1.24 ms | 128 B | 424 B |
+| Signature + registry | 31,843 | 30,793 | 5 | 3,177 ms | 2,372 ms | 1.82 ms | 128 B | 424 B |
 
-The deterministic result is that direct signature authentication is 6,610 constraints (35.5%) smaller than the
+The deterministic result is that direct signature authentication is 8,195 constraints (37.7%) smaller than the
 depth-32 registry relation in this harness. That makes the signature relation the current candidate to beat for
 credential authenticity, not the selected production design: revocation still needs a measured status mechanism,
 and a registry may remain valuable even if it is not the primary issuer-authentication primitive. A final ADR
@@ -71,5 +80,5 @@ still requires:
 - a reviewed alternate SNARK-native hash and at least one universal-setup proof-system comparison;
 - repeated browser/WASM and mid-range mobile time and peak-memory measurements;
 - EVM verifier bytecode/gas measurements on the target L1/L2s;
-- active-root governance, revocation latency, and Merkle-witness update/failure testing; and
+- active-root governance, revocation latency, and an operational witness-distribution/update prototype; and
 - a circuit threat model, constraint audit, setup/ceremony plan, and independent review.
