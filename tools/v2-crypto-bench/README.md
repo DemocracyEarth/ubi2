@@ -38,11 +38,37 @@ It derives the depth-32 path from `Poseidon(statusId)` inside the circuit and bi
 public limbs already pinned at signal indices 5–6. Its public `issuerKeyId` limbs are canonical and structurally
 reused inside the credential commitment; the registry authorizes the resulting issuer/credential pair without
 exposing issuer key coordinates. Tests distinguish revocation, a stale witness after an unrelated leaf update, and
-a valid refreshed witness. They do not yet define the off-chain registry service or root-governance protocol.
+a valid refreshed witness.
 The benchmark's public-input counts cover only the relation delta; the product adapter retains the separately
 pinned 18-field public-signal layout. Attribute range/country/date predicates, presentation-binding checks,
 the other public bytes32-to-limb bindings and field-specific canonicality constraints are outside this spike;
 the counts below are not an estimate for the complete presentation circuit.
+
+## Operational status-registry prototype
+
+[`status_registry.rs`](src/status_registry.rs) now exercises the complete holder witness lifecycle against the
+same Poseidon domains and depth-32 relation as the benchmark circuit:
+
+- activation reserves the private status-derived leaf index and returns the initial holder witness;
+- revocation replaces the active leaf with zero and future witness requests fail closed;
+- every mutation emits a versioned, canonical JSON delta containing only the changed index, old/new leaf and
+  sibling path — never the raw `statusId` or credential commitment — so clients can recompute both declared roots;
+- holders download the same unkeyed delta feed, update their witness locally, and do not identify their credential
+  to a witness endpoint;
+- missing, reordered, malformed, non-canonical or tampered deltas fail without mutating the saved witness;
+- a refreshed witness is accepted only if its final epoch/root matches an independently trusted checkpoint; and
+- direct circuit tests prove that initial and locally refreshed witnesses satisfy the exact active-registry
+  relation, including a batch with many unrelated activations and revocations.
+
+This remains a transport-neutral, in-memory research prototype. An unkeyed feed avoids a lookup privacy leak, but
+the public changed index and leaf can still be correlating metadata if exposed without a broader anonymity model.
+Production work must define authorized issuance/revocation, durable storage, authenticated checkpoint governance,
+delta retention/snapshots, availability/fork handling, privacy analysis, and browser/WASM integration before this
+becomes a network service or SDK feature.
+
+Depth 32 is retained only to match the measured circuit. A 32-bit hashed index reaches approximately 50% collision
+probability near 77,000 registrations, so the prototype rejects collisions instead of overwriting a credential.
+That is fail-closed behavior, not production scale: the final ADR must measure a deeper tree or another accumulator.
 
 ## Reproduce
 
@@ -80,5 +106,5 @@ still requires:
 - a reviewed alternate SNARK-native hash and at least one universal-setup proof-system comparison;
 - repeated browser/WASM and mid-range mobile time and peak-memory measurements;
 - EVM verifier bytecode/gas measurements on the target L1/L2s;
-- active-root governance, revocation latency, and an operational witness-distribution/update prototype; and
+- active-root governance, revocation latency, transport/retention and production witness-distribution hardening; and
 - a circuit threat model, constraint audit, setup/ceremony plan, and independent review.

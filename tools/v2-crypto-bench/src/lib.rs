@@ -29,6 +29,17 @@ use ark_std::rand::{rngs::StdRng, SeedableRng};
 use serde::Serialize;
 use std::time::Instant;
 
+mod status_registry;
+
+pub use status_registry::{
+    refresh_status_witness, StatusActivation, StatusCheckpoint, StatusRegistry,
+    StatusRegistryDelta, StatusRegistryError, StatusWitness, STATUS_REGISTRY_DELTA_MAX_JSON_BYTES,
+    STATUS_REGISTRY_DELTA_SCHEMA,
+};
+
+/// Native field used by the Stage-1 status-registry prototype.
+pub type StatusField = CircuitField;
+
 // The ABI has 13 logical fields. Its three bytes32 fields are split into two
 // lossless 128-bit limbs, so the circuit commitment absorbs 16 field elements.
 pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
@@ -753,8 +764,18 @@ fn status_path_directions_native(
     config: &PoseidonConfig<CircuitField>,
     status_id: [CircuitField; 2],
 ) -> [bool; REGISTRY_DEPTH] {
+    let index = status_path_index_native(config, status_id);
+    std::array::from_fn(|bit| index & (1u32 << bit) != 0)
+}
+
+fn status_path_index_native(
+    config: &PoseidonConfig<CircuitField>,
+    status_id: [CircuitField; 2],
+) -> u32 {
     let digest = poseidon_native(config, STATUS_INDEX_DOMAIN, &status_id);
-    std::array::from_fn(|index| digest.into_bigint().get_bit(index))
+    (0..REGISTRY_DEPTH).fold(0u32, |index, bit| {
+        index | (u32::from(digest.into_bigint().get_bit(bit)) << bit)
+    })
 }
 
 #[cfg(test)]
@@ -884,6 +905,47 @@ mod tests {
 
         let cs = ConstraintSystem::<CircuitField>::new_ref();
         refreshed.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn operational_registry_witness_satisfies_the_exact_circuit_relation() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::ActiveRegistry);
+        let poseidon = poseidon_config();
+        let status_id = [
+            circuit.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
+            circuit.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
+        ];
+        let credential_commitment = poseidon_native(
+            &poseidon,
+            CREDENTIAL_DOMAIN,
+            circuit.credential_elements.as_slice(),
+        );
+        let mut registry = StatusRegistry::new();
+        let activation = registry.activate(status_id, credential_commitment).unwrap();
+
+        circuit.registry_siblings = activation.witness.siblings;
+        circuit.expected_registry_root = split_field_to_u128_limbs(activation.witness.root);
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.clone().generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+
+        registry
+            .activate(
+                [CircuitField::from(0u64), CircuitField::from(42u64)],
+                CircuitField::from(4_242u64),
+            )
+            .unwrap();
+        let refreshed = refresh_status_witness(
+            &activation.witness,
+            registry.deltas_since(activation.witness.epoch).unwrap(),
+            registry.checkpoint(),
+        )
+        .unwrap();
+        circuit.registry_siblings = refreshed.siblings;
+        circuit.expected_registry_root = split_field_to_u128_limbs(refreshed.root);
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
     }
 
