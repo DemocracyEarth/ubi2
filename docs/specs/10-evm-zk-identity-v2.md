@@ -225,7 +225,10 @@ The country root above is a deliberately small parity fixture, not a production 
 - **Desktop authentication baseline implemented:** the isolated
   [`v2-crypto-bench`](../../tools/v2-crypto-bench/README.md) harness pins constraint counts, tests invalid
   signatures/paths fail closed, and generates/verifies a Groth16 proof for each signature, registry, and hybrid
-  relation in CI. Mobile/browser, alternate hash/proof-system, EVM gas, and witness-update measurements remain.
+  relation in CI. The follow-up binding slice keeps issuer coordinates private while losslessly binding them to
+  public `issuerKeyId` limbs, and binds `statusId`, active leaf, status-derived path, and two-limb active root with
+  revocation/stale/refreshed-witness tests. Mobile/browser, alternate hash/proof-system, EVM gas, and an
+  operational witness-distribution prototype remain.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
