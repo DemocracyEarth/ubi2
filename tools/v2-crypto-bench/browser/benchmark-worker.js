@@ -1,5 +1,7 @@
 import init, {
+  generatePackedStatusProvingKey,
   generateRegistryProvingKey,
+  provePackedStatus,
   proveRegistryDepth,
   wasmLinearMemoryBytes,
 } from "./pkg/ubi2_v2_crypto_bench.js";
@@ -16,7 +18,10 @@ self.onmessage = async ({ data }) => {
     const started = performance.now();
 
     if (data.phase === "setup") {
-      const provingKey = generateRegistryProvingKey(data.depth);
+      const provingKey =
+        data.candidate === "packed-status"
+          ? generatePackedStatusProvingKey()
+          : generateRegistryProvingKey(data.depth);
       const elapsedMs = performance.now() - started;
       const retainedMemoryBytes = wasmLinearMemoryBytes();
       const provingKeyBuffer = provingKey.buffer.slice(
@@ -28,6 +33,8 @@ self.onmessage = async ({ data }) => {
         {
           ok: true,
           phase: data.phase,
+          profileId: data.profileId,
+          candidate: data.candidate,
           depth: data.depth,
           elapsedMs,
           initialMemoryBytes,
@@ -47,11 +54,15 @@ self.onmessage = async ({ data }) => {
         throw new Error("Proving-key fingerprint changed during worker transfer");
       }
       const report = JSON.parse(
-        proveRegistryDepth(data.depth, new Uint8Array(data.provingKeyBuffer)),
+        data.candidate === "packed-status"
+          ? provePackedStatus(new Uint8Array(data.provingKeyBuffer))
+          : proveRegistryDepth(data.depth, new Uint8Array(data.provingKeyBuffer)),
       );
       self.postMessage({
         ok: true,
         phase: data.phase,
+        profileId: data.profileId,
+        candidate: data.candidate,
         depth: data.depth,
         elapsedMs: performance.now() - started,
         initialMemoryBytes,
@@ -67,6 +78,8 @@ self.onmessage = async ({ data }) => {
     self.postMessage({
       ok: false,
       phase: data.phase,
+      profileId: data.profileId,
+      candidate: data.candidate,
       depth: data.depth,
       error: error instanceof Error ? error.message : String(error),
     });

@@ -60,6 +60,7 @@ pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_9
 pub const REGISTRY_DEPTH_WITNESS_VARIABLES: [usize; 4] = [21_301, 36_757, 52_213, 67_669];
 pub const BROWSER_REGISTRY_DEPTHS: [usize; 2] = [96, 128];
 pub const BROWSER_REGISTRY_PROVING_KEY_BYTES: [usize; 2] = [10_452_496, 15_022_608];
+pub const BROWSER_PACKED_STATUS_PROVING_KEY_BYTES: usize = 5_250_320;
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
 const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
@@ -74,6 +75,7 @@ pub const ISSUER_SIGNATURE_CONSTRAINTS: usize = 13_528;
 pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 21_723;
 pub const HYBRID_CONSTRAINTS: usize = 31_843;
 pub const SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS: usize = 27_157;
+pub const SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES: usize = 26_253;
 
 const CREDENTIAL_DOMAIN: u64 = 1;
 const NULLIFIER_DOMAIN: u64 = 2;
@@ -206,6 +208,25 @@ pub struct BrowserRegistryProofReport {
 }
 
 #[derive(Debug, Serialize)]
+pub struct BrowserPackedStatusProofReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub depth: usize,
+    pub statuses_per_chunk: usize,
+    pub authentication: Authentication,
+    pub constraints: usize,
+    pub public_inputs: usize,
+    pub witness_variables: usize,
+    pub proving_key_bytes: usize,
+    pub key_deserialize_ms: f64,
+    pub prove_ms: f64,
+    pub verify_ms: f64,
+    pub proof_bytes: usize,
+    pub verifying_key_bytes: usize,
+    pub proof_verified: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RegistryTransportEstimateReport {
     pub schema: &'static str,
     pub warning: &'static str,
@@ -241,7 +262,7 @@ impl fmt::Display for BrowserBenchmarkError {
             ),
             Self::ProvingKeySizeMismatch { expected, actual } => write!(
                 formatter,
-                "proving key has {actual} bytes; depth profile requires exactly {expected}"
+                "proving key has {actual} bytes; benchmark profile requires exactly {expected}"
             ),
             Self::Synthesis(error) => write!(formatter, "circuit synthesis failed: {error}"),
             Self::Serialization(error) => {
@@ -864,6 +885,76 @@ pub fn prove_registry_depth_with_key(
     })
 }
 
+pub fn generate_packed_status_proving_key() -> Result<Vec<u8>, BrowserBenchmarkError> {
+    let circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+    let mut setup_rng = StdRng::seed_from_u64(packed_status_benchmark_seed());
+    let (proving_key, _) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut setup_rng)?;
+    let mut bytes = Vec::new();
+    proving_key.serialize_compressed(&mut bytes)?;
+    if bytes.len() != BROWSER_PACKED_STATUS_PROVING_KEY_BYTES {
+        return Err(BrowserBenchmarkError::ProvingKeySizeMismatch {
+            expected: BROWSER_PACKED_STATUS_PROVING_KEY_BYTES,
+            actual: bytes.len(),
+        });
+    }
+    Ok(bytes)
+}
+
+pub fn prove_packed_status_with_key(
+    proving_key_bytes: &[u8],
+) -> Result<BrowserPackedStatusProofReport, BrowserBenchmarkError> {
+    if proving_key_bytes.len() != BROWSER_PACKED_STATUS_PROVING_KEY_BYTES {
+        return Err(BrowserBenchmarkError::ProvingKeySizeMismatch {
+            expected: BROWSER_PACKED_STATUS_PROVING_KEY_BYTES,
+            actual: proving_key_bytes.len(),
+        });
+    }
+    let key_started = BenchmarkTimer::start();
+    let proving_key = ProvingKey::<Bn254>::deserialize_compressed(proving_key_bytes)?;
+    let key_deserialize_ms = key_started.elapsed_ms();
+
+    let circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+    let mut proof_rng =
+        StdRng::seed_from_u64(packed_status_benchmark_seed() ^ 0xa5_a5_a5_a5_a5_a5_a5_a5);
+    let prove_started = BenchmarkTimer::start();
+    let proof = Groth16::<Bn254>::prove(&proving_key, circuit.clone(), &mut proof_rng)?;
+    let prove_ms = prove_started.elapsed_ms();
+
+    let processed = Groth16::<Bn254>::process_vk(&proving_key.vk)?;
+    let verify_started = BenchmarkTimer::start();
+    let proof_verified =
+        Groth16::<Bn254>::verify_with_processed_vk(&processed, &circuit.public_inputs(), &proof)?;
+    let verify_ms = verify_started.elapsed_ms();
+    if !proof_verified {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+
+    let mut proof_bytes = Vec::new();
+    proof.serialize_compressed(&mut proof_bytes)?;
+    let mut verifying_key_bytes = Vec::new();
+    proving_key
+        .vk
+        .serialize_compressed(&mut verifying_key_bytes)?;
+
+    Ok(BrowserPackedStatusProofReport {
+        schema: "org.proofofhumanity.v2-browser-packed-status-proof/1",
+        warning: "research harness only; deterministic fixture key and proof are not deployable",
+        depth: PACKED_STATUS_DEPTH,
+        statuses_per_chunk: PACKED_STATUS_BITS_PER_CHUNK,
+        authentication: Authentication::SignatureAndPackedStatus,
+        constraints: SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS,
+        public_inputs: 5,
+        witness_variables: SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES,
+        proving_key_bytes: proving_key_bytes.len(),
+        key_deserialize_ms,
+        prove_ms,
+        verify_ms,
+        proof_bytes: proof_bytes.len(),
+        verifying_key_bytes: verifying_key_bytes.len(),
+        proof_verified,
+    })
+}
+
 fn validate_browser_registry_depth(depth: usize) -> Result<(usize, usize), BrowserBenchmarkError> {
     if !BROWSER_REGISTRY_DEPTHS.contains(&depth) {
         return Err(BrowserBenchmarkError::UnsupportedDepth(depth));
@@ -880,6 +971,10 @@ fn validate_browser_registry_depth(depth: usize) -> Result<(usize, usize), Brows
 
 fn registry_benchmark_seed(depth: usize) -> u64 {
     0x52_45_47_49_53_54_52_59 ^ depth as u64
+}
+
+fn packed_status_benchmark_seed() -> u64 {
+    0x50_41_43_4b_45_44_53_54
 }
 
 fn browser_proving_key_bytes(depth: usize) -> usize {
@@ -901,6 +996,19 @@ pub fn browser_generate_registry_proving_key(depth: u32) -> Result<Vec<u8>, JsVa
 pub fn browser_prove_registry_depth(depth: u32, proving_key: &[u8]) -> Result<String, JsValue> {
     let report = prove_registry_depth_with_key(depth as usize, proving_key)
         .map_err(browser_benchmark_js_error)?;
+    serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = generatePackedStatusProvingKey)]
+pub fn browser_generate_packed_status_proving_key() -> Result<Vec<u8>, JsValue> {
+    generate_packed_status_proving_key().map_err(browser_benchmark_js_error)
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = provePackedStatus)]
+pub fn browser_prove_packed_status(proving_key: &[u8]) -> Result<String, JsValue> {
+    let report = prove_packed_status_with_key(proving_key).map_err(browser_benchmark_js_error)?;
     serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -1322,6 +1430,10 @@ mod tests {
             ],
             "constraint drift requires an explicit benchmark-report review"
         );
+        assert_eq!(
+            report.results[3].witness_variables, SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES,
+            "packed-status witness drift requires an explicit browser-report review"
+        );
     }
 
     #[test]
@@ -1686,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_prover_rejects_unbenchmarked_depths_before_setup() {
+    fn browser_prover_rejects_unsupported_profiles_before_proving() {
         assert!(matches!(
             generate_registry_proving_key(64),
             Err(BrowserBenchmarkError::UnsupportedDepth(64))
@@ -1694,6 +1806,10 @@ mod tests {
         assert!(matches!(
             prove_registry_depth_with_key(32, &[]),
             Err(BrowserBenchmarkError::UnsupportedDepth(32))
+        ));
+        assert!(matches!(
+            prove_packed_status_with_key(&[]),
+            Err(BrowserBenchmarkError::ProvingKeySizeMismatch { .. })
         ));
     }
 
@@ -1720,5 +1836,13 @@ mod tests {
             assert_eq!(proving_key.len(), browser_proving_key_bytes(depth));
             assert_eq!(report.proving_key_bytes, proving_key.len());
         }
+        let proving_key = generate_packed_status_proving_key()
+            .expect("packed-status browser proving key serializes");
+        let report = prove_packed_status_with_key(&proving_key)
+            .expect("serialized packed-status key proves and verifies");
+        assert!(report.proof_verified);
+        assert_eq!(report.proof_bytes, 128);
+        assert_eq!(proving_key.len(), BROWSER_PACKED_STATUS_PROVING_KEY_BYTES);
+        assert_eq!(report.proving_key_bytes, proving_key.len());
     }
 }

@@ -1,10 +1,32 @@
-const depths = [96, 128];
+const profiles = Object.freeze([
+  {
+    id: "packed-status",
+    label: "Packed status · depth 24",
+    candidate: "packed-status",
+  },
+  {
+    id: "registry-96",
+    label: "Sparse registry · depth 96",
+    candidate: "registry",
+    depth: 96,
+  },
+  {
+    id: "registry-128",
+    label: "Sparse registry · depth 128",
+    candidate: "registry",
+    depth: 128,
+  },
+]);
 const fixtureArtifacts = Object.freeze({
-  96: {
+  "packed-status": {
+    bytes: 5_250_320,
+    sha256: "da3feed8bacf00ec5171954552ddde198633414a7897eebd6a95b8965596fa70",
+  },
+  "registry-96": {
     bytes: 10_452_496,
     sha256: "5c6a3b3c2a5b6ec9076d4a693bbd6ca52b5efffb320ec25dc4ba83782e3bf62f",
   },
-  128: {
+  "registry-128": {
     bytes: 15_022_608,
     sha256: "9298392aa0125509a7fdfce81ffa0fa4493721ac0e342ae30db58c6ed89304fa",
   },
@@ -54,23 +76,23 @@ function tableCell(text, { className, colSpan } = {}) {
   return cell;
 }
 
-function replaceResultRow(depth, cells) {
-  document.querySelector(`[data-depth="${depth}"]`).replaceChildren(...cells);
+function replaceResultRow(profileId, cells) {
+  document.querySelector(`[data-profile="${profileId}"]`).replaceChildren(...cells);
 }
 
-function setRunningRow(depth, label) {
-  replaceResultRow(depth, [
-    tableCell(depth),
+function setRunningRow(profile, label) {
+  replaceResultRow(profile.id, [
+    tableCell(profile.label),
     tableCell(label, { className: "pending", colSpan: 7 }),
     tableCell("Running", { className: "pending" }),
   ]);
 }
 
 function setResultRow(result) {
-  const { depth, setup, proof } = result;
+  const { profile, setup, proof } = result;
   const report = proof.report;
-  replaceResultRow(depth, [
-    tableCell(depth),
+  replaceResultRow(profile.id, [
+    tableCell(profile.label),
     tableCell(formatDuration(setup.elapsedMs)),
     tableCell(formatBytes(setup.provingKeyBytes)),
     tableCell(formatBytes(setup.retainedMemoryBytes)),
@@ -84,36 +106,45 @@ function setResultRow(result) {
   ]);
 }
 
-function setFailedRow(depth, error) {
-  replaceResultRow(depth, [
-    tableCell(depth),
+function setFailedRow(profile, error) {
+  replaceResultRow(profile.id, [
+    tableCell(profile.label),
     tableCell(error.message, { className: "fail", colSpan: 7 }),
     tableCell("Failed", { className: "fail" }),
   ]);
 }
 
-async function runDepth(depth) {
-  setRunningRow(depth, "Generating deterministic fixture key in a fresh worker…");
-  const setup = await runWorker({ phase: "setup", depth });
-  const expectedArtifact = fixtureArtifacts[depth];
+async function runProfile(profile) {
+  setRunningRow(profile, "Generating deterministic fixture key in a fresh worker…");
+  const setup = await runWorker({
+    phase: "setup",
+    profileId: profile.id,
+    candidate: profile.candidate,
+    depth: profile.depth,
+  });
+  const expectedArtifact = fixtureArtifacts[profile.id];
   if (
     setup.provingKeyBytes !== expectedArtifact.bytes ||
     setup.provingKeySha256 !== expectedArtifact.sha256
   ) {
-    throw new Error("Fixture proving key does not match the pinned artifact fingerprint");
+    throw new Error(
+      `Fixture proving key mismatch: got ${setup.provingKeyBytes} B / ${setup.provingKeySha256}`,
+    );
   }
-  setRunningRow(depth, "Loading the key and proving in a second fresh worker…");
+  setRunningRow(profile, "Loading the key and proving in a second fresh worker…");
   const provingKeyBuffer = setup.provingKeyBuffer;
   const proof = await runWorker(
     {
       phase: "prove",
-      depth,
+      profileId: profile.id,
+      candidate: profile.candidate,
+      depth: profile.depth,
       provingKeyBuffer,
       expectedProvingKeySha256: setup.provingKeySha256,
     },
     [provingKeyBuffer],
   );
-  const result = { depth, setup, proof };
+  const result = { profile, setup, proof };
   delete result.setup.provingKeyBuffer;
   setResultRow(result);
   return result;
@@ -127,23 +158,23 @@ async function runAll() {
   delete status.dataset.report;
   const results = [];
   try {
-    for (const depth of depths) {
-      status.textContent = `Running depth ${depth}…`;
+    for (const profile of profiles) {
+      status.textContent = `Running ${profile.label}…`;
       try {
-        results.push(await runDepth(depth));
+        results.push(await runProfile(profile));
       } catch (error) {
-        setFailedRow(depth, error);
+        setFailedRow(profile, error);
         throw error;
       }
     }
     latestReport = {
-      schema: "org.proofofhumanity.v2-browser-prover-run/1",
+      schema: "org.proofofhumanity.v2-browser-prover-run/2",
       warning: "single browser run; fixture setup and keys are not deployable",
       userAgent: navigator.userAgent,
       measuredAt: new Date().toISOString(),
       results,
     };
-    status.textContent = "Complete. Both browser proofs verified.";
+    status.textContent = "Complete. All browser proofs verified.";
     status.dataset.state = "complete";
     status.dataset.report = JSON.stringify(latestReport);
     downloadButton.disabled = false;

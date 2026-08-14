@@ -211,11 +211,13 @@ and v2 proof generation are not enabled yet.
   transport-neutral sparse-registry prototype now emits canonical unkeyed deltas, refreshes witnesses locally,
   verifies an independently accepted checkpoint, and feeds the exact circuit relation. Registry depths
   32/64/96/128 are now CI-pinned at 21,723/37,147/52,571/67,995 constraints with verified proofs; depth 96 is the
-  current candidate to beat, not a selection. A real fresh-worker Chromium/WASM path verifies depth-96 and
-  depth-128 proofs in 15.33 s / 214 MB and 21.04 s / 292 MB retained linear memory; mid-range mobile is still
-  unmeasured. The new packed candidate uses a canonical signed 32-bit slot, 256 revocation bits per chunk and a
-  depth-24 root; it verifies at 27,157 constraints versus 31,843 for signature + depth-32 registry. Deterministic
-  public multiproof/snapshot modeling cuts the holder witness floor from 3,140 B at depth 96 to 836 B and reduces
+  current candidate to beat, not a selection. A real fresh-worker Chromium/WASM path now compares packed status
+  with depth-96/128 sparse baselines. The packed proof verifies in 7.54 s with 90,308,608 B retained linear memory,
+  versus 15.11 s / 214,368,256 B at sparse depth 96; its proving key is 49.8% smaller and retained prover memory is
+  57.9% lower. Mid-range mobile is still unmeasured. The packed candidate uses a canonical signed 32-bit slot, 256
+  revocation bits per chunk and a depth-24 root; it verifies at 27,157 constraints versus 31,843 for signature +
+  depth-32 registry. Deterministic public multiproof/snapshot modeling cuts the holder witness floor from 3,140 B at
+  depth 96 to 836 B and reduces
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection; issuer slot allocation, uniqueness separation, mobile proving, alternate
   hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the final ADR remain.

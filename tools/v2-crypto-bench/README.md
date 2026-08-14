@@ -105,28 +105,32 @@ index allocation, EVM gas and alternate accumulators still decide the ADR.
 
 ## Browser/WASM feasibility
 
-The `browser/` harness is a real Web Worker/WASM proving path for depths 96 and 128. Setup runs in a disposable
-worker only to create a deterministic fixture proving key. The holder path starts a fresh worker, validates and
-deserializes that compressed key, generates a Groth16 proof and verifies it before reporting success. Fresh workers
-prevent the second depth from reusing the first run's already-grown allocator.
+The `browser/` harness is a real Web Worker/WASM proving path for signature + packed status and the depth-96/128
+sparse-registry baselines. Setup runs in a disposable worker only to create a deterministic fixture proving key. The
+holder path starts a fresh worker, validates the key's pinned size and SHA-256 fingerprint, deserializes it, generates
+a Groth16 proof and verifies it before reporting success. Fresh workers prevent one profile from reusing another's
+already-grown allocator. The packed fixture key is pinned at 5,250,320 bytes and
+`da3feed8bacf00ec5171954552ddde198633414a7897eebd6a95b8965596fa70`.
 
-Measured 2026-08-13 in Chromium 150 on the same aarch64 macOS workstation as the desktop baseline. Three consecutive
-runs per profile verified; the table records the middle machine-readable capture (holder-path totals spanned
-15.12–15.34 s at depth 96 and 20.87–21.15 s at depth 128). These are feasibility observations, not portable budgets
-or mobile results. “Memory” is retained WASM linear memory after the call: because WebAssembly memory grows in pages
-and does not shrink, it is a useful high-water signal for this worker, but it is not total browser-process or device
-memory.
+Measured 2026-08-14 in Chromium 150 on the same aarch64 macOS workstation as the desktop baseline. Three consecutive
+runs per profile verified; the table records the second complete machine-readable capture. Holder-path totals spanned
+7.40–7.61 s for packed status, 14.92–15.20 s at sparse depth 96 and 20.76–20.96 s at sparse depth 128. These are
+feasibility observations, not portable budgets or mobile results. “Memory” is retained WASM linear memory after the
+call: because WebAssembly memory grows in pages and does not shrink, it is a useful high-water signal for this worker,
+but it is not total browser-process or device memory.
 
-| Depth | Setup | Proving key | Setup memory | Key validate/load | Prove | Verify | Holder-path total | Prover memory |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 96 | 4.42 s | 10,452,496 B | 177,143,808 B | 11.08 s | 4.23 s | 2 ms | 15.33 s | 214,368,256 B |
-| 128 | 6.24 s | 15,022,608 B | 232,980,480 B | 14.94 s | 6.07 s | 2 ms | 21.04 s | 291,897,344 B |
+| Candidate | Setup | Proving key | Setup memory | Key validate/load | Prove | Verify | Holder-path total | Prover memory |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Packed status · depth 24 | 2.17 s | 5,250,320 B | 71,499,776 B | 5.55 s | 1.98 s | 3 ms | 7.54 s | 90,308,608 B |
+| Sparse registry · depth 96 | 4.32 s | 10,452,496 B | 177,143,808 B | 10.91 s | 4.17 s | 2 ms | 15.11 s | 214,368,256 B |
+| Sparse registry · depth 128 | 6.06 s | 15,022,608 B | 232,980,480 B | 14.78 s | 5.95 s | 3 ms | 20.76 s | 291,897,344 B |
 
-Both proofs verified and remained 128 bytes with a 424-byte verifier key. Depth 128 used 43.7% more proving-key
-bandwidth, 36.2% more retained prover memory and 37.2% more holder-path time than depth 96 in this run. Both are under
-the roadmap's 60-second modern-device ceiling on this desktop-class browser, but depth 96's roughly 204 MiB retained
-memory is not evidence that mid-range mobile devices are safe. Depth 96 therefore remains the candidate to beat, not
-a selected production parameter.
+All proofs remained 128 bytes with a 424-byte verifier key. Against sparse depth 96 in the representative run, packed
+status used 49.8% less proving-key bandwidth, 59.6% less setup memory, 57.9% less retained prover memory and 50.1%
+less holder-path time. It also authenticates the credential with the issuer signature, whereas this sparse baseline
+measures registry authorization/status; the trust models are not interchangeable. The packed candidate is comfortably
+under the roadmap's 60-second desktop-class ceiling, but roughly 86 MiB retained WASM memory is not evidence that
+mid-range mobile devices are safe. Packed status remains the candidate to beat, not a selected production parameter.
 
 ### Registry transport lower bounds
 
@@ -203,7 +207,7 @@ wasm-pack build tools/v2-crypto-bench --target web --out-dir browser/pkg --relea
 python3 -m http.server 4173 --bind 127.0.0.1 --directory tools/v2-crypto-bench/browser
 ```
 
-Open `http://127.0.0.1:4173/`, run both profiles and download the machine-readable report if needed. The generated
+Open `http://127.0.0.1:4173/`, run all profiles and download the machine-readable report if needed. The generated
 `browser/pkg/` directory is git-ignored; CI independently compiles the bridge for `wasm32-unknown-unknown`. The runner
 pins each deterministic fixture key's exact byte length and SHA-256 digest, checks the digest again after worker
 transfer, and then uses validated arkworks deserialization. Production must independently pin the ceremony artifact
