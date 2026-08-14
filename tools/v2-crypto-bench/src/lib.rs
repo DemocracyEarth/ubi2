@@ -4,7 +4,7 @@
 //! in an isolated Cargo workspace so none of its prover or gadget dependencies
 //! can enter `ubi2-zkpoh`'s consensus verifier graph.
 
-use ark_bn254::{Bn254, Fr as CircuitField};
+use ark_bn254::{Bn254, Fr as CircuitField, G1Affine, G2Affine};
 use ark_crypto_primitives::sponge::{
     constraints::CryptographicSpongeVar,
     poseidon::{
@@ -61,6 +61,9 @@ pub const REGISTRY_DEPTH_WITNESS_VARIABLES: [usize; 4] = [21_301, 36_757, 52_213
 pub const BROWSER_REGISTRY_DEPTHS: [usize; 2] = [96, 128];
 pub const BROWSER_REGISTRY_PROVING_KEY_BYTES: [usize; 2] = [10_452_496, 15_022_608];
 pub const BROWSER_PACKED_STATUS_PROVING_KEY_BYTES: usize = 5_250_320;
+/// Non-cryptographic drift fingerprint of the compact fixture-export JSON.
+/// A change requires reviewing and regenerating the Solidity verifier fixture.
+pub const PACKED_STATUS_EVM_FIXTURE_FNV64: u64 = 0x7b92_4d07_c905_43a3;
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
 const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
@@ -223,6 +226,49 @@ pub struct BrowserPackedStatusProofReport {
     pub verify_ms: f64,
     pub proof_bytes: usize,
     pub verifying_key_bytes: usize,
+    pub proof_verified: bool,
+}
+
+/// EIP-197 affine G1 encoding. Decimal strings keep the report lossless when
+/// consumed by Solidity generators or JavaScript tooling.
+#[derive(Debug, Serialize)]
+pub struct EvmG1Point {
+    pub x: String,
+    pub y: String,
+}
+
+/// EIP-197 affine G2 encoding. The precompile encodes `a * i + b` as
+/// `(a, b)`, so each coordinate is intentionally emitted imaginary-first.
+#[derive(Debug, Serialize)]
+pub struct EvmG2Point {
+    pub x_imaginary: String,
+    pub x_real: String,
+    pub y_imaginary: String,
+    pub y_real: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvmGroth16Proof {
+    pub a: EvmG1Point,
+    pub b: EvmG2Point,
+    pub c: EvmG1Point,
+}
+
+/// Reproducible bridge from the packed-status research fixture to the exact
+/// word order consumed by the BN254 EVM precompiles. This is deliberately not
+/// the product's 18-signal verifier artifact.
+#[derive(Debug, Serialize)]
+pub struct PackedStatusEvmFixtureReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub public_input_count: usize,
+    pub public_inputs: Vec<String>,
+    pub alpha_g1: EvmG1Point,
+    pub beta_g2: EvmG2Point,
+    pub gamma_g2: EvmG2Point,
+    pub delta_g2: EvmG2Point,
+    pub gamma_abc_g1: Vec<EvmG1Point>,
+    pub proof: EvmGroth16Proof,
     pub proof_verified: bool,
 }
 
@@ -953,6 +999,84 @@ pub fn prove_packed_status_with_key(
         verifying_key_bytes: verifying_key_bytes.len(),
         proof_verified,
     })
+}
+
+/// Generate the deterministic packed-status setup and export one verified
+/// proof plus its verifying key in EIP-197 word order.
+pub fn generate_packed_status_evm_fixture(
+) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
+    let proving_key = generate_packed_status_proving_key()?;
+    export_packed_status_evm_fixture_with_key(&proving_key)
+}
+
+fn export_packed_status_evm_fixture_with_key(
+    proving_key_bytes: &[u8],
+) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
+    if proving_key_bytes.len() != BROWSER_PACKED_STATUS_PROVING_KEY_BYTES {
+        return Err(BrowserBenchmarkError::ProvingKeySizeMismatch {
+            expected: BROWSER_PACKED_STATUS_PROVING_KEY_BYTES,
+            actual: proving_key_bytes.len(),
+        });
+    }
+    let proving_key = ProvingKey::<Bn254>::deserialize_compressed(proving_key_bytes)?;
+    let circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+    let public_inputs = circuit.public_inputs();
+    let mut proof_rng =
+        StdRng::seed_from_u64(packed_status_benchmark_seed() ^ 0xa5_a5_a5_a5_a5_a5_a5_a5);
+    let proof = Groth16::<Bn254>::prove(&proving_key, circuit, &mut proof_rng)?;
+    let processed = Groth16::<Bn254>::process_vk(&proving_key.vk)?;
+    let proof_verified =
+        Groth16::<Bn254>::verify_with_processed_vk(&processed, &public_inputs, &proof)?;
+    if !proof_verified {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+
+    Ok(PackedStatusEvmFixtureReport {
+        schema: "org.proofofhumanity.v2-packed-status-evm-fixture/1",
+        warning: "research fixture only; deterministic toxic-waste setup and 5-input relation are not deployable",
+        public_input_count: public_inputs.len(),
+        public_inputs: public_inputs
+            .into_iter()
+            .map(field_element_decimal)
+            .collect(),
+        alpha_g1: evm_g1(&proving_key.vk.alpha_g1),
+        beta_g2: evm_g2(&proving_key.vk.beta_g2),
+        gamma_g2: evm_g2(&proving_key.vk.gamma_g2),
+        delta_g2: evm_g2(&proving_key.vk.delta_g2),
+        gamma_abc_g1: proving_key
+            .vk
+            .gamma_abc_g1
+            .iter()
+            .map(evm_g1)
+            .collect(),
+        proof: EvmGroth16Proof {
+            a: evm_g1(&proof.a),
+            b: evm_g2(&proof.b),
+            c: evm_g1(&proof.c),
+        },
+        proof_verified,
+    })
+}
+
+fn field_element_decimal<F: PrimeField>(value: F) -> String {
+    value.into_bigint().to_string()
+}
+
+fn evm_g1(point: &G1Affine) -> EvmG1Point {
+    EvmG1Point {
+        x: field_element_decimal(point.x),
+        y: field_element_decimal(point.y),
+    }
+}
+
+fn evm_g2(point: &G2Affine) -> EvmG2Point {
+    EvmG2Point {
+        // EIP-197 encodes a * i + b, while arkworks stores c0 + c1 * u.
+        x_imaginary: field_element_decimal(point.x.c1),
+        x_real: field_element_decimal(point.x.c0),
+        y_imaginary: field_element_decimal(point.y.c1),
+        y_real: field_element_decimal(point.y.c0),
+    }
 }
 
 fn validate_browser_registry_depth(depth: usize) -> Result<(usize, usize), BrowserBenchmarkError> {
@@ -1844,5 +1968,21 @@ mod tests {
         assert_eq!(report.proof_bytes, 128);
         assert_eq!(proving_key.len(), BROWSER_PACKED_STATUS_PROVING_KEY_BYTES);
         assert_eq!(report.proving_key_bytes, proving_key.len());
+
+        let evm_fixture = export_packed_status_evm_fixture_with_key(&proving_key)
+            .expect("packed-status fixture exports in EIP-197 order");
+        assert!(evm_fixture.proof_verified);
+        assert_eq!(evm_fixture.public_input_count, 5);
+        assert_eq!(evm_fixture.gamma_abc_g1.len(), 6);
+        let serialized = serde_json::to_vec(&evm_fixture).expect("EVM fixture serializes");
+        let fingerprint = serialized
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!(
+            fingerprint, PACKED_STATUS_EVM_FIXTURE_FNV64,
+            "fixture drift requires regenerating and reviewing the Solidity verifier"
+        );
     }
 }

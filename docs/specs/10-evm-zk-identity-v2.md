@@ -231,8 +231,8 @@ The country root above is a deliberately small parity fixture, not a production 
   revocation/stale/refreshed-witness tests. A transport-neutral sparse-registry prototype now emits canonical,
   unkeyed public deltas for local witness refresh and checks the result against an independently accepted
   checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mid-range mobile and
-  production browser integration, alternate hash/proof-system, EVM gas, root governance, durable
-  transport/retention and privacy hardening remain. Depth 32
+  production browser integration, alternate hash/proof-system, final-adapter EVM gas, production root governance,
+  durable transport/retention and privacy hardening remain. Depth 32
   is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
   registrations, and this prototype rejects such collisions rather than overwriting an existing credential.
 - **Registry depth sensitivity implemented:** the same relation now generates and verifies real Groth16 proofs at
@@ -255,7 +255,14 @@ The country root above is a deliberately small parity fixture, not a production 
   workloads by 88.83%–95.93% versus depth-96 sparse batches. Dense updates switch to the smaller snapshot. This
   makes signature + packed status the candidate to beat, not a protocol selection: status-slot allocation,
   uniqueness/duplicate prevention, update authorization, checkpoint governance, availability/fork recovery,
-  mobile proving, EVM gas and privacy review remain open.
+  mobile proving, final-adapter EVM gas and privacy review remain open.
+- **Research EVM verifier and governance prototype implemented:** the harness deterministically exports the packed
+  fixture proof/VK in EIP-197 order and a 2,211-byte Solidity runtime verifies the real arkworks proof through the
+  BN254 precompiles. The pinned five-input target call costs 230,657 gas under the repository's Cancun profile;
+  malformed curve input has bounded precompile gas. This is not the final 18-input adapter or a deployable setup.
+  A separate registry prototype pins additive circuit IDs to verifier codehashes, scopes monotonically versioned
+  roots by issuer key, permits explicit overlapping root windows, and makes root/circuit/issuer retirement
+  fail-closed. Freshness remains an adapter policy and production ownership must be a timelocked multisig.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
@@ -332,7 +339,8 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 
 ### Stage 4 — EVM verifier and developer SDK
 
-- Generated verifier + `IPredicateProver` adapter + active-root/version registry.
+- Production-ceremony verifier + `IPredicateProver` adapter, integrating the measured precompile path and the
+  pre-deployment active-root/version registry design.
 - SDK policy builders and public-signal encoding for age, country sets, issuer sets, validity and uniqueness.
 - Integration examples for read-only apps, stateful contracts, EOAs and ERC-1271 smart accounts.
 - Exit: proof accepted on all target testnets; wrong chain/consumer/context/policy/root and replay all fail.
