@@ -100,3 +100,6 @@ reviewed shared encrypted store. That is an application release gate, not a cont
   proxy and require a shared, reviewed limiter before horizontal scaling.
 - v1 predicates are issuer-attested. The holder-side ZK prover is not implemented or deployed;
   `PredicateVerifier.prover()` must remain visibly zero until that separate release is audited.
+- The currently recorded Phase 2 PredicateVerifier addresses predate the v2 consumer-forwarding and
+  wallet-independent replay correction. They remain valid for v1 only and must not be configured with a prover;
+  the v2 rehearsal requires a new versioned testnet host/registry/adapter/verifier stack.

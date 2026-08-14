@@ -17,6 +17,14 @@ contract ZkIdentityEncodingHarness {
         return ZkIdentityEncoding.nullifierScopeHash(scope);
     }
 
+    function presentationBindingHash(ZkIdentityEncoding.PresentationBinding memory binding)
+        external
+        pure
+        returns (bytes32)
+    {
+        return ZkIdentityEncoding.presentationBindingHash(binding);
+    }
+
     function scopedNullifierPreimage(uint256 holderSecret, ZkIdentityEncoding.NullifierScope memory scope)
         external
         pure
@@ -114,6 +122,37 @@ contract ZkIdentityEncodingTest is Test {
         for (uint256 i = 0; i < expected.length; ++i) {
             assertEq(preimage[i], expected[i]);
         }
+    }
+
+    function test_PresentationBindingHash_Parity() public view {
+        bytes32 binding = harness.presentationBindingHash(
+            ZkIdentityEncoding.PresentationBinding({
+                policyHash: POLICY_HASH,
+                chainId: 84532,
+                verifier: 0x1111111111111111111111111111111111111111,
+                consumer: 0x2222222222222222222222222222222222222222,
+                subject: 0x3333333333333333333333333333333333333333,
+                context: keccak256("membership:season-1"),
+                challenge: keccak256("challenge-1"),
+                epoch: 230
+            })
+        );
+        assertEq(binding, 0xfcbaa318d3aba026a8827d332ec45ae24e9dbdd9ca6029b6fd3741b4e670e7a0);
+    }
+
+    function test_PresentationBinding_RejectsZeroTrustDomains() public {
+        ZkIdentityEncoding.PresentationBinding memory binding = ZkIdentityEncoding.PresentationBinding({
+            policyHash: POLICY_HASH,
+            chainId: 84532,
+            verifier: address(0),
+            consumer: 0x2222222222222222222222222222222222222222,
+            subject: 0x3333333333333333333333333333333333333333,
+            context: keccak256("membership:season-1"),
+            challenge: keccak256("challenge-1"),
+            epoch: 230
+        });
+        vm.expectRevert(ZkIdentityEncoding.InvalidPresentationBinding.selector);
+        harness.presentationBindingHash(binding);
     }
 
     function test_NullifierPreimage_RejectsNonCanonicalHolderSecret() public {

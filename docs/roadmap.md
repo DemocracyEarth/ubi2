@@ -220,12 +220,18 @@ and v2 proof generation are not enabled yet.
   depth 96 to 836 B and reduces
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection; issuer slot allocation, uniqueness separation, mobile proving, alternate
-  hash/proof-system, final-adapter gas, durable transport/privacy hardening, and the final ADR remain. The raw
+  hash/proof-system, production 18-input verifier gas, durable transport/privacy hardening, and the final ADR
+  remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
   2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. Both remain
-  research/pre-deployment inputs: the public fixture setup is not deployable, the product's 18-input adapter is
-  not implemented, freshness stays an adapter policy, and production ownership still requires a timelocked multisig.
+  research/pre-deployment inputs: the public fixture setup is not deployable and production ownership still
+  requires a timelocked multisig. A strict 18-signal adapter now binds the actual consumer plus chain, permanent
+  host, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode; resolves the
+  codehash-pinned circuit/issuer/root; and closes wallet-change replay through a prover-authenticated identifier.
+  Host + adapter + registry + replay storage measures 86,210 gas with a stub raw verifier. Dynamic status rejects
+  non-zero epochs until freshness semantics are ratified; the production circuit, end-to-end target-chain gas,
+  corrected-host testnet redeploy and audits remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.

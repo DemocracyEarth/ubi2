@@ -76,7 +76,8 @@ struct PredicateAttestation {
 interface IPredicateProver {
     /// @param proof         The opaque ZK proof bytes (e.g. a Groth16 proof).
     /// @param publicSignals The proof's public inputs.
-    /// @param context       Consumer-scoped presentation context.
+    /// @param context       Host-created `abi.encode(consumer, applicationContext)`
+    ///                      envelope. The presenter never supplies the consumer.
     /// @return subject   The address the proof is bound to.
     /// @return predicate The `keccak256(descriptor)` proven.
     /// @return result    The boolean the predicate evaluates to.
@@ -85,6 +86,18 @@ interface IPredicateProver {
         external
         view
         returns (address subject, bytes32 predicate, bool result, uint32 epoch);
+}
+
+/// @title Replay identifier extension for stateful predicate consumption
+/// @notice Returns the proof-system-specific, consumer-scoped identifier that
+///         must be spent after a proof verifies. For v2 this is the scoped
+///         nullifier public signal, so changing the presenting wallet cannot
+///         create a second slot for the same human and scope.
+/// @dev Kept separate from {IPredicateProver} so the forever verification
+///      interface remains proof-system agnostic. Every prover configured for
+///      stateful {PredicateVerifier.consumeWithProof} MUST implement it.
+interface IPredicateProverReplay {
+    function proofReplayIdentifier(uint256[] calldata publicSignals) external view returns (bytes32);
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -117,6 +130,13 @@ interface IPredicateProver {
 contract PredicateVerifier is Ownable, EIP712 {
     using ECDSA for bytes32;
 
+    struct ProofClaims {
+        address subject;
+        bytes32 predicate;
+        bool result;
+        uint32 epoch;
+    }
+
     /*//////////////////////////////////////////////////////////////
                               CONSTANTS
     //////////////////////////////////////////////////////////////*/
@@ -128,6 +148,9 @@ contract PredicateVerifier is Ownable, EIP712 {
     bytes32 public constant PREDICATE_TYPEHASH = keccak256(
         "PredicateAttestation(address consumer,bytes32 context,bytes32 predicate,bool result,address subject,uint32 epoch,uint256 nonce)"
     );
+
+    /// @notice Domain separator for proof-system replay identifiers.
+    bytes32 public constant PROOF_REPLAY_DOMAIN = keccak256("org.proofofhumanity.predicate-proof-replay");
 
     /// @notice Length of a validity epoch. `currentEpoch() = block.timestamp / EPOCH`.
     ///         Mirrors {ProofOfHumanity.EPOCH} so credential + attestation epochs align.
@@ -202,8 +225,10 @@ contract PredicateVerifier is Ownable, EIP712 {
     error PredicateProverUnset();
     /// @dev The proven predicate does not match the `requiredPredicate` the consumer asked for.
     error WrongPredicate();
-    /// @dev This `(subject, consumer, context)` proof was already consumed.
+    /// @dev This prover-authenticated scoped identifier was already consumed for the consumer.
     error ProofReplayed();
+    /// @dev The active prover does not expose a non-zero, authenticated replay identifier.
+    error InvalidProofReplayIdentifier();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -309,10 +334,11 @@ contract PredicateVerifier is Ownable, EIP712 {
     ///         cryptographically attests `(subject, predicate, result, epoch)` from a
     ///         proof the human generated on their own device. Reverts fail-closed on any
     ///         predicate / binding / freshness / replay violation.
-    /// @dev The presentation `context` (opaque to this contract) MUST encode this
-    ///      consumer and be unique per presentation; the prover binds the proof to it,
-    ///      which is what gives per-consumer unlinkability. Anti-replay is single-use per
-    ///      `(subject, msg.sender, keccak256(context))`. Reveals ONLY the boolean.
+    /// @dev The host wraps the opaque application `context` with `msg.sender`
+    ///      before calling the prover, so the proof is bound to the actual consumer.
+    ///      Anti-replay spends the prover-authenticated scoped identifier; in v2
+    ///      that nullifier stays stable across wallet/challenge changes and varies
+    ///      across consumer/context/policy scopes. Reveals ONLY the boolean.
     /// @param proof             Opaque proof bytes (e.g. a Groth16 proof).
     /// @param publicSignals     The proof's public inputs.
     /// @param context           Consumer-scoped presentation context.
@@ -327,9 +353,17 @@ contract PredicateVerifier is Ownable, EIP712 {
         address presenter
     ) external returns (bool result) {
         address subject;
-        (subject, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter);
+        (subject, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter, msg.sender);
 
-        bytes32 key = _proofReplayKey(subject, msg.sender, context);
+        bytes32 replayIdentifier;
+        try IPredicateProverReplay(address(prover)).proofReplayIdentifier(publicSignals) returns (bytes32 value) {
+            replayIdentifier = value;
+        } catch {
+            revert InvalidProofReplayIdentifier();
+        }
+        if (replayIdentifier == bytes32(0)) revert InvalidProofReplayIdentifier();
+
+        bytes32 key = _proofReplayKey(msg.sender, replayIdentifier);
         if (consumed[key]) revert ProofReplayed();
         consumed[key] = true;
 
@@ -347,7 +381,23 @@ contract PredicateVerifier is Ownable, EIP712 {
         bytes32 requiredPredicate,
         address presenter
     ) external view returns (bool result) {
-        (, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter);
+        (, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter, msg.sender);
+    }
+
+    /// @notice Explicit-consumer view twin for off-chain calls and integrations
+    ///         that cannot make the intended consumer the `eth_call` sender.
+    /// @dev Performs no replay-state read or write. The consumer is still
+    ///      cryptographically forwarded to the prover and bound by its proof.
+    function checkProofFor(
+        bytes calldata proof,
+        uint256[] calldata publicSignals,
+        bytes calldata context,
+        bytes32 requiredPredicate,
+        address presenter,
+        address consumer
+    ) external view returns (bool result) {
+        if (consumer == address(0)) revert ConsumerMismatch();
+        (, result) = _validateProof(proof, publicSignals, context, requiredPredicate, presenter, consumer);
     }
 
     /// @dev Shared proof-path verification: run the {prover}, then enforce the SAME
@@ -358,23 +408,39 @@ contract PredicateVerifier is Ownable, EIP712 {
         uint256[] calldata publicSignals,
         bytes calldata context,
         bytes32 requiredPredicate,
-        address presenter
+        address presenter,
+        address consumer
     ) private view returns (address subject, bool result) {
+        ProofClaims memory claims = _proofClaims(proof, publicSignals, context, consumer);
+
+        if (claims.predicate != requiredPredicate) revert WrongPredicate();
+        if (claims.subject != presenter) revert SubjectMismatch();
+        if (!_isFresh(claims.epoch)) revert StaleEpoch();
+        return (claims.subject, claims.result);
+    }
+
+    function _proofClaims(
+        bytes calldata proof,
+        uint256[] calldata publicSignals,
+        bytes calldata context,
+        address consumer
+    ) private view returns (ProofClaims memory claims) {
         IPredicateProver p = prover;
         if (address(p) == address(0)) revert PredicateProverUnset();
 
-        bytes32 predicate;
-        uint32 epoch;
-        (subject, predicate, result, epoch) = p.verifyPredicate(proof, publicSignals, context);
-
-        if (predicate != requiredPredicate) revert WrongPredicate();
-        if (subject != presenter) revert SubjectMismatch();
-        if (!_isFresh(epoch)) revert StaleEpoch();
+        // The host, not the presenter, creates this envelope. A prover can now
+        // bind the proof to the actual consuming contract without changing the
+        // forever `verifyPredicate` ABI.
+        bytes memory proverContext = abi.encode(consumer, context);
+        (claims.subject, claims.predicate, claims.result, claims.epoch) =
+            p.verifyPredicate(proof, publicSignals, proverContext);
     }
 
-    /// @dev Anti-replay key for the proof path: single-use per (subject, consumer, context).
-    function _proofReplayKey(address subject, address consumer, bytes calldata context) private pure returns (bytes32) {
-        return keccak256(abi.encode(subject, consumer, keccak256(context)));
+    /// @dev Anti-replay key for the proof path. The prover authenticates the
+    ///      identifier; v2 returns a scoped nullifier that deliberately remains
+    ///      stable when the holder changes wallets or refreshes a challenge.
+    function _proofReplayKey(address consumer, bytes32 replayIdentifier) private pure returns (bytes32) {
+        return keccak256(abi.encode(PROOF_REPLAY_DOMAIN, consumer, replayIdentifier));
     }
 
     /// @dev Shared verification: recover the issuer over the EIP-712 digest and
@@ -436,6 +502,11 @@ contract PredicateVerifier is Ownable, EIP712 {
     /// @notice The anti-replay key for `att` (helper for tooling / tests).
     function replayKey(PredicateAttestation calldata att) external pure returns (bytes32) {
         return _replayKey(att);
+    }
+
+    /// @notice The state key consumed for an authenticated proof replay identifier.
+    function proofReplayKey(address consumer, bytes32 replayIdentifier) external pure returns (bytes32) {
+        return _proofReplayKey(consumer, replayIdentifier);
     }
 
     /// @notice The EIP-712 domain separator for this contract/chain.

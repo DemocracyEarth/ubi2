@@ -37,6 +37,8 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => mapping(uint32 epoch => StatusRoot))) public
         statusRoots;
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => mapping(bytes32 root => bool))) public publishedRoots;
+    mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => mapping(bytes32 root => uint32 epoch))) public
+        statusRootEpoch;
 
     error InvalidCircuitId();
     error InvalidVerifier();
@@ -110,6 +112,7 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
 
         latestStatusEpoch[circuitId][issuerKeyId] = epoch;
         publishedRoots[circuitId][issuerKeyId][root] = true;
+        statusRootEpoch[circuitId][issuerKeyId][root] = epoch;
         statusRoots[circuitId][issuerKeyId][epoch] = StatusRoot({root: root, revoked: false});
         emit StatusRootPublished(circuitId, issuerKeyId, epoch, root);
     }
@@ -147,6 +150,31 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
         view
     {
         if (!isAccepted(circuitId, verifier, issuerKeyId, root, epoch)) revert UnacceptedIdentityState();
+    }
+
+    /// @notice Whether an exact root remains accepted without requiring the
+    ///         presentation circuit to expose the governance publication epoch.
+    /// @dev The product public-signal layout uses its final slot for optional
+    ///      dynamic-status freshness, so root-version lookup belongs here.
+    function isRootAccepted(bytes32 circuitId, address verifier, bytes32 issuerKeyId, bytes32 root)
+        public
+        view
+        returns (bool)
+    {
+        uint32 epoch = statusRootEpoch[circuitId][issuerKeyId][root];
+        return epoch != 0 && isAccepted(circuitId, verifier, issuerKeyId, root, epoch);
+    }
+
+    /// @notice Resolve the verifier for an accepted circuit/issuer/root tuple.
+    /// @dev Reverts fail-closed on retired circuits or issuers, revoked/unknown
+    ///      roots, and verifier bytecode drift.
+    function requireRootAccepted(bytes32 circuitId, bytes32 issuerKeyId, bytes32 root)
+        external
+        view
+        returns (address verifier)
+    {
+        verifier = circuits[circuitId].verifier;
+        if (!isRootAccepted(circuitId, verifier, issuerKeyId, root)) revert UnacceptedIdentityState();
     }
 
     function _activeCircuit(bytes32 circuitId) private view returns (CircuitVersion storage circuit) {

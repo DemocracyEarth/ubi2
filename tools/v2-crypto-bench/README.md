@@ -188,9 +188,8 @@ caller-provided gas. CI pins a drift fingerprint over the complete exported key,
 requires regenerating and reviewing the Solidity fixture in the same change.
 
 This closes only the raw pairing-verifier measurement for the five-input research relation. It does **not** measure
-the final 18-input presentation circuit, `IPredicateProver` decoding/binding, registry reads, consumer replay writes
-or target-chain transaction overhead. The fixture setup seed and toxic waste are public, so neither the verifier,
-its key nor its proof is deployable.
+the final 18-input presentation circuit or target-chain transaction overhead. The fixture setup seed and toxic
+waste are public, so neither the verifier, its key nor its proof is deployable.
 
 [`ZkIdentityVersionRegistry.sol`](../../contracts/src/ZkIdentityVersionRegistry.sol) separately prototypes the
 minimum fail-closed governance tuple: additive circuit IDs pin a verifier address and runtime codehash; issuer keys
@@ -199,6 +198,14 @@ overlap until explicit revocation. Circuit and issuer retirement is irreversible
 not invent proof freshness—an adapter or consumer must apply its documented age/window policy. Its owner must be a
 timelock-controlled multisig before any production deployment. This is a governance design input, not a production
 ratification or a migration of the operational depth-32 registry.
+
+The separate [`ZkIdentityPredicateProver.sol`](../../contracts/src/ZkIdentityPredicateProver.sol) prototype now
+exercises the complete 18-signal decoding and EVM binding path with a stub raw verifier. It authenticates the
+host-forwarded consumer, recomputes presentation and nullifier scopes, resolves the codehash-pinned
+circuit/issuer/root, and lets `PredicateVerifier` spend signal 13 as a wallet-independent replay identifier. The
+stateful host + adapter + registry + replay-write snapshot is 86,210 gas. That number isolates integration overhead;
+it is not an end-to-end proof estimate and must not be added mechanically to the five-input 230,657-gas result.
+Signal 17 fails closed when non-zero until short-lived dynamic-status freshness is ratified.
 
 ## Reproduce
 
@@ -218,7 +225,8 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --status-distribution
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --packed-evm-fixture
-(cd contracts && forge snapshot --check --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest')
+(cd contracts && forge snapshot --check \
+  --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest|V2AdapterGasBenchmarkTest')
 ```
 
 Use `-- --constraints-only` on the baseline or registry-depth suite for deterministic relation metadata without

@@ -1,5 +1,6 @@
-GasBenchmarksTest:test_Gas_Consume() (gas: 39833)
-GasBenchmarksTest:test_Gas_ConsumeWithProof() (gas: 34385)
+GasBenchmarksTest:test_Gas_Consume() (gas: 39855)
+GasBenchmarksTest:test_Gas_ConsumeWithProof() (gas: 36159)
 GasBenchmarksTest:test_Gas_Mint() (gas: 134448)
 GasBenchmarksTest:test_Gas_Refresh() (gas: 13813)
+V2AdapterGasBenchmarkTest:test_Gas_V2AdapterConsumeWithStubVerifier() (gas: 86210)
 V2VerifierGasBenchmarkTest:test_Gas_V2PackedStatusGroth16Verify() (gas: 230657)

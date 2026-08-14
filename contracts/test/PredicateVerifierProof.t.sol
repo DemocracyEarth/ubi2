@@ -2,13 +2,13 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {PredicateVerifier, IPredicateProver} from "../src/PredicateVerifier.sol";
+import {PredicateVerifier, IPredicateProver, IPredicateProverReplay} from "../src/PredicateVerifier.sol";
 
 /// @dev A stand-in prover for the ADR-0009 proof path. Returns a settable
 ///      `(subject, predicate, result, epoch)` tuple so the verifier's shared checks
 ///      (predicate match, subject binding, freshness, anti-replay) can be tested
 ///      independently of any real ZK circuit. `setRevert(true)` simulates a bad proof.
-contract MockPredicateProver is IPredicateProver {
+contract MockPredicateProver is IPredicateProver, IPredicateProverReplay {
     address public sSubject;
     bytes32 public sPredicate;
     bool public sResult;
@@ -34,6 +34,20 @@ contract MockPredicateProver is IPredicateProver {
         require(!sRevert, "bad proof");
         return (sSubject, sPredicate, sResult, sEpoch);
     }
+
+    function proofReplayIdentifier(uint256[] calldata publicSignals) external pure returns (bytes32) {
+        return publicSignals.length == 0 ? bytes32(0) : bytes32(publicSignals[0]);
+    }
+}
+
+contract LegacyPredicateProver is IPredicateProver {
+    function verifyPredicate(bytes calldata, uint256[] calldata, bytes calldata)
+        external
+        pure
+        returns (address, bytes32, bool, uint32)
+    {
+        return (address(1), bytes32(uint256(1)), true, 22);
+    }
 }
 
 contract PredicateVerifierProofTest is Test {
@@ -50,7 +64,7 @@ contract PredicateVerifierProofTest is Test {
     bytes32 internal constant AGE21 = keccak256("age>=21");
 
     bytes internal proof = hex"c0ffee";
-    uint256[] internal signals; // empty; the mock ignores it
+    uint256[] internal signals;
     bytes internal ctx = abi.encode(uint256(0xABCD));
 
     event PredicateProverUpdated(address indexed previousProver, address indexed newProver);
@@ -62,6 +76,7 @@ contract PredicateVerifierProofTest is Test {
         vm.warp(2000 days); // deterministic epoch math (currentEpoch ~= 22, room to go stale)
         pv = new PredicateVerifier(owner, issuer);
         mock = new MockPredicateProver();
+        signals.push(1);
     }
 
     function _wireFreshTrueAge18() internal {
@@ -101,6 +116,25 @@ contract PredicateVerifierProofTest is Test {
         vm.prank(consumerA);
         vm.expectRevert(PredicateVerifier.PredicateProverUnset.selector);
         pv.consumeWithProof(proof, signals, ctx, AGE18, human);
+    }
+
+    function test_ConsumeWithProof_RevertsWhenProverLacksReplayExtension() public {
+        LegacyPredicateProver legacy = new LegacyPredicateProver();
+        vm.prank(owner);
+        pv.setPredicateProver(legacy);
+
+        vm.prank(consumerA);
+        vm.expectRevert(PredicateVerifier.InvalidProofReplayIdentifier.selector);
+        pv.consumeWithProof(proof, signals, ctx, bytes32(uint256(1)), address(1));
+    }
+
+    function test_ConsumeWithProof_RevertsOnZeroReplayIdentifier() public {
+        _wireFreshTrueAge18();
+        uint256[] memory emptySignals = new uint256[](0);
+
+        vm.prank(consumerA);
+        vm.expectRevert(PredicateVerifier.InvalidProofReplayIdentifier.selector);
+        pv.consumeWithProof(proof, emptySignals, ctx, AGE18, human);
     }
 
     function test_ConsumeWithProof_HappyPath_ReturnsResult_Emits_Spends() public {
@@ -168,6 +202,7 @@ contract PredicateVerifierProofTest is Test {
         pv.consumeWithProof(proof, signals, ctx, AGE18, human);
 
         bytes memory ctx2 = abi.encode(uint256(0xBEEF));
+        signals[0] = 2; // a real scoped nullifier changes with application context
         vm.prank(consumerA);
         bool r = pv.consumeWithProof(proof, signals, ctx2, AGE18, human);
         assertTrue(r); // same human+consumer, different context => allowed
@@ -178,10 +213,24 @@ contract PredicateVerifierProofTest is Test {
         vm.prank(consumerA);
         pv.consumeWithProof(proof, signals, ctx, AGE18, human);
 
-        // same (subject, context) but a different consumer keeps its own replay slot
+        // A real scoped nullifier changes with consumer. The host also domains the
+        // replay key by consumer as a fail-closed second boundary.
+        signals[0] = 2;
         vm.prank(consumerB);
         bool r = pv.consumeWithProof(proof, signals, ctx, AGE18, human);
         assertTrue(r);
+    }
+
+    function test_ConsumeWithProof_ChangedSubjectCannotBypassScopedNullifierReplay() public {
+        _wireFreshTrueAge18();
+        vm.prank(consumerA);
+        pv.consumeWithProof(proof, signals, ctx, AGE18, human);
+
+        address nextWallet = makeAddr("nextWallet");
+        mock.set(nextWallet, AGE18, true, pv.currentEpoch());
+        vm.prank(consumerA);
+        vm.expectRevert(PredicateVerifier.ProofReplayed.selector);
+        pv.consumeWithProof(proof, signals, ctx, AGE18, nextWallet);
     }
 
     /*//////////////////////////////////////////////////////////////  checkProof (stateless)  */
@@ -189,9 +238,10 @@ contract PredicateVerifierProofTest is Test {
     function test_CheckProof_ReturnsResult_NoStateWrite() public {
         _wireFreshTrueAge18();
 
+        vm.prank(consumerA);
         bool r = pv.checkProof(proof, signals, ctx, AGE18, human);
         assertTrue(r);
-        assertTrue(pv.checkProof(proof, signals, ctx, AGE18, human));
+        assertTrue(pv.checkProofFor(proof, signals, ctx, AGE18, human, consumerA));
 
         // it did NOT spend — a subsequent consume for the same key still succeeds
         vm.prank(consumerA);
@@ -202,21 +252,27 @@ contract PredicateVerifierProofTest is Test {
     function test_CheckProof_RevertsIdentically() public {
         // unset
         vm.expectRevert(PredicateVerifier.PredicateProverUnset.selector);
-        pv.checkProof(proof, signals, ctx, AGE18, human);
+        pv.checkProofFor(proof, signals, ctx, AGE18, human, consumerA);
 
         _wireFreshTrueAge18();
         vm.expectRevert(PredicateVerifier.WrongPredicate.selector);
-        pv.checkProof(proof, signals, ctx, AGE21, human);
+        pv.checkProofFor(proof, signals, ctx, AGE21, human, consumerA);
         vm.expectRevert(PredicateVerifier.SubjectMismatch.selector);
-        pv.checkProof(proof, signals, ctx, AGE18, makeAddr("notHuman"));
+        pv.checkProofFor(proof, signals, ctx, AGE18, makeAddr("notHuman"), consumerA);
 
         mock.set(human, AGE18, true, pv.currentEpoch() - 5);
         vm.expectRevert(PredicateVerifier.StaleEpoch.selector);
-        pv.checkProof(proof, signals, ctx, AGE18, human);
+        pv.checkProofFor(proof, signals, ctx, AGE18, human, consumerA);
 
         mock.set(human, AGE18, true, pv.currentEpoch());
         mock.setRevert(true);
         vm.expectRevert(bytes("bad proof"));
-        pv.checkProof(proof, signals, ctx, AGE18, human);
+        pv.checkProofFor(proof, signals, ctx, AGE18, human, consumerA);
+    }
+
+    function test_CheckProofFor_RejectsZeroConsumer() public {
+        _wireFreshTrueAge18();
+        vm.expectRevert(PredicateVerifier.ConsumerMismatch.selector);
+        pv.checkProofFor(proof, signals, ctx, AGE18, human, address(0));
     }
 }

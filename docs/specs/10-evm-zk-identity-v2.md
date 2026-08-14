@@ -161,9 +161,32 @@ IPredicateProver.verifyPredicate(proof, publicSignals, context)
     -> (subject, predicate, result, epoch)
 ```
 
-`PredicateVerifier` continues to own freshness, consumer/subject binding and replay checks. Circuit versions
-are additive prover contracts; an audited registry/multisig with a timelock controls which versions consumers
-may accept. No proof-system upgrade may mutate the SBT or its holders.
+`PredicateVerifier` continues to own freshness, consumer/subject binding and replay checks. Before calling the
+prover it creates `abi.encode(actualConsumer, applicationContext)` itself; relying on presenter-supplied bytes
+would not authenticate the original caller across the nested call. Stateful provers additionally implement
+`IPredicateProverReplay.proofReplayIdentifier(publicSignals)`. V2 returns signal 13, the authenticated scoped
+nullifier, and the host spends it independently of `subject`; changing wallets or challenges therefore cannot
+create a second one-per-scope slot. The external verification return tuple remains unchanged.
+
+The pre-deployment [`ZkIdentityPredicateProver`](../../contracts/src/ZkIdentityPredicateProver.sol) adapter now:
+
+- accepts only calls from its immutable `PredicateVerifier` host;
+- strictly decodes exactly 18 canonical field elements and an exact eight-word proof;
+- recomputes the SDK-pinned presentation binding from chain, host, actual consumer, subject, action context,
+  challenge, policy and credential epoch;
+- recomputes the nullifier scope from chain, host, consumer, action context, policy and nullifier mode;
+- resolves an active codehash-pinned circuit/issuer/root tuple from the registry before calling the raw verifier;
+- returns only `(subject, policyHash, result, credentialEpoch)` and exposes only the scoped nullifier to the
+  host replay extension.
+
+The application context is the canonical ABI tuple `(bytes32 actionContext, bytes32 challenge,
+uint8 nullifierMode)`, emitted by the SDK helper `encodeZkPredicateProofContext`. Signal 17 remains reserved for
+short-lived dynamic status. Because its time unit, policy-specific maximum age and root-publication relationship
+are not yet ratified, the current adapter rejects every non-zero value rather than inventing a sanctions
+freshness policy.
+
+Circuit versions are additive raw verifier contracts; an audited registry/multisig with a timelock controls which
+versions consumers may accept. No proof-system upgrade may mutate the SBT or its holders.
 
 ### 5. Wallet and account binding
 
@@ -231,7 +254,8 @@ The country root above is a deliberately small parity fixture, not a production 
   revocation/stale/refreshed-witness tests. A transport-neutral sparse-registry prototype now emits canonical,
   unkeyed public deltas for local witness refresh and checks the result against an independently accepted
   checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mid-range mobile and
-  production browser integration, alternate hash/proof-system, final-adapter EVM gas, production root governance,
+  production browser integration, alternate hash/proof-system, production 18-input verifier and target-chain gas,
+  production root governance,
   durable transport/retention and privacy hardening remain. Depth 32
   is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
   registrations, and this prototype rejects such collisions rather than overwriting an existing credential.
@@ -255,14 +279,23 @@ The country root above is a deliberately small parity fixture, not a production 
   workloads by 88.83%–95.93% versus depth-96 sparse batches. Dense updates switch to the smaller snapshot. This
   makes signature + packed status the candidate to beat, not a protocol selection: status-slot allocation,
   uniqueness/duplicate prevention, update authorization, checkpoint governance, availability/fork recovery,
-  mobile proving, final-adapter EVM gas and privacy review remain open.
+  mobile proving, production 18-input end-to-end EVM gas and privacy review remain open.
 - **Research EVM verifier and governance prototype implemented:** the harness deterministically exports the packed
   fixture proof/VK in EIP-197 order and a 2,211-byte Solidity runtime verifies the real arkworks proof through the
   BN254 precompiles. The pinned five-input target call costs 230,657 gas under the repository's Cancun profile;
-  malformed curve input has bounded precompile gas. This is not the final 18-input adapter or a deployable setup.
+  malformed curve input has bounded precompile gas. This is not the final 18-input raw verifier or a deployable
+  setup.
   A separate registry prototype pins additive circuit IDs to verifier codehashes, scopes monotonically versioned
   roots by issuer key, permits explicit overlapping root windows, and makes root/circuit/issuer retirement
   fail-closed. Freshness remains an adapter policy and production ownership must be a timelocked multisig.
+- **Governed 18-signal adapter prototype implemented:** the adapter strictly binds chain, permanent host,
+  actual consumer, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode before
+  resolving an accepted circuit/issuer/root and calling an exact eight-word/18-input raw verifier. The host now
+  forwards the actual consumer and spends a prover-authenticated replay identifier, closing wallet-change replay.
+  The pinned stateful host + adapter + registry + replay-write call is 86,210 gas with a stub raw verifier; it is
+  not an end-to-end proof estimate and must not be added mechanically to the five-input research result. Dynamic
+  status fails closed until its freshness semantics are ratified. Existing Phase 2 hosts remain v1-only and no
+  production prover is configured.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
@@ -339,8 +372,8 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 
 ### Stage 4 — EVM verifier and developer SDK
 
-- Production-ceremony verifier + `IPredicateProver` adapter, integrating the measured precompile path and the
-  pre-deployment active-root/version registry design.
+- Production-ceremony 18-input verifier integrated with the pre-deployment `IPredicateProver` adapter and
+  active-root/version registry design; ratify and implement dynamic-status freshness before enabling sanctions.
 - SDK policy builders and public-signal encoding for age, country sets, issuer sets, validity and uniqueness.
 - Integration examples for read-only apps, stateful contracts, EOAs and ERC-1271 smart accounts.
 - Exit: proof accepted on all target testnets; wrong chain/consumer/context/policy/root and replay all fail.

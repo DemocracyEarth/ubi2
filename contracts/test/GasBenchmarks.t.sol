@@ -3,11 +3,19 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ProofOfHumanity, HumanityVoucher} from "../src/ProofOfHumanity.sol";
-import {PredicateVerifier, PredicateAttestation, IPredicateProver} from "../src/PredicateVerifier.sol";
+import {
+    PredicateVerifier,
+    PredicateAttestation,
+    IPredicateProver,
+    IPredicateProverReplay
+} from "../src/PredicateVerifier.sol";
 import {V2PackedStatusGroth16Verifier} from "../src/research/V2PackedStatusGroth16Verifier.sol";
+import {IZkIdentityGroth16Verifier, ZkIdentityPredicateProver} from "../src/ZkIdentityPredicateProver.sol";
+import {ZkIdentityEncoding} from "../src/ZkIdentityEncoding.sol";
+import {ZkIdentityVersionRegistry} from "../src/ZkIdentityVersionRegistry.sol";
 import {V2PackedStatusFixture} from "./fixtures/V2PackedStatusFixture.sol";
 
-contract GasPredicateProver is IPredicateProver {
+contract GasPredicateProver is IPredicateProver, IPredicateProverReplay {
     address internal _subject;
     bytes32 internal _predicate;
     uint32 internal _epoch;
@@ -24,6 +32,10 @@ contract GasPredicateProver is IPredicateProver {
         returns (address, bytes32, bool, uint32)
     {
         return (_subject, _predicate, true, _epoch);
+    }
+
+    function proofReplayIdentifier(uint256[] calldata) external pure returns (bytes32) {
+        return bytes32(uint256(1));
     }
 }
 
@@ -132,5 +144,97 @@ contract V2VerifierGasBenchmarkTest is Test {
         bool verified = verifier.verifyProof(proof, publicInputs);
         vm.pauseGasMetering();
         assertTrue(verified);
+    }
+}
+
+contract GasZkIdentityGroth16Verifier is IZkIdentityGroth16Verifier {
+    function verifyProof(uint256[8] calldata proof, uint256[18] calldata publicSignals) external pure returns (bool) {
+        return proof[0] == 1 && publicSignals[0] == 1;
+    }
+}
+
+/// @notice Measures host + 18-signal adapter + registry + replay storage with a
+///         stub raw verifier. Add the final 18-input pairing cost only when the
+///         reviewed circuit and ceremony artifact exist.
+contract V2AdapterGasBenchmarkTest is Test {
+    bytes32 internal constant CIRCUIT_ID = keccak256("ubi2.zk-identity.v2.adapter-gas-fixture-1");
+    bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-gas");
+    bytes32 internal constant ACTIVE_ROOT = keccak256("active-root-gas");
+    bytes32 internal constant POLICY_HASH = keccak256("age-range-policy-gas");
+    bytes32 internal constant ACTION_CONTEXT = keccak256("membership:gas");
+    bytes32 internal constant CHALLENGE = keccak256("challenge:gas");
+
+    PredicateVerifier internal predicateVerifier;
+    ZkIdentityVersionRegistry internal registry;
+    GasZkIdentityGroth16Verifier internal rawVerifier;
+    ZkIdentityPredicateProver internal adapter;
+    address internal subject;
+
+    function setUp() public {
+        vm.warp(1_700_000_000);
+        subject = makeAddr("v2-adapter-gas-subject");
+        predicateVerifier = new PredicateVerifier(address(this), makeAddr("v2-adapter-gas-issuer"));
+        registry = new ZkIdentityVersionRegistry(address(this));
+        rawVerifier = new GasZkIdentityGroth16Verifier();
+        registry.registerCircuit(CIRCUIT_ID, address(rawVerifier));
+        registry.authorizeIssuer(CIRCUIT_ID, ISSUER_KEY_ID);
+        registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 1, ACTIVE_ROOT);
+        adapter = new ZkIdentityPredicateProver(address(predicateVerifier), registry);
+        predicateVerifier.setPredicateProver(adapter);
+    }
+
+    function test_Gas_V2AdapterConsumeWithStubVerifier() public {
+        vm.pauseGasMetering();
+        uint256[] memory publicSignals = _signals();
+        uint256[8] memory proofWords;
+        proofWords[0] = 1;
+        bytes memory proof = abi.encode(proofWords);
+        bytes memory context = abi.encode(ACTION_CONTEXT, CHALLENGE, uint8(1));
+        vm.resumeGasMetering();
+        bool verified = predicateVerifier.consumeWithProof(proof, publicSignals, context, POLICY_HASH, subject);
+        vm.pauseGasMetering();
+        assertTrue(verified);
+    }
+
+    function _signals() private view returns (uint256[] memory signals) {
+        signals = new uint256[](18);
+        signals[0] = 1;
+        _writeIdentifier(signals, 1, CIRCUIT_ID);
+        _writeIdentifier(signals, 3, ISSUER_KEY_ID);
+        _writeIdentifier(signals, 5, ACTIVE_ROOT);
+        _writeIdentifier(signals, 7, POLICY_HASH);
+
+        bytes32 binding = ZkIdentityEncoding.presentationBindingHash(
+            ZkIdentityEncoding.PresentationBinding({
+                policyHash: POLICY_HASH,
+                chainId: block.chainid,
+                verifier: address(predicateVerifier),
+                consumer: address(this),
+                subject: subject,
+                context: ACTION_CONTEXT,
+                challenge: CHALLENGE,
+                epoch: predicateVerifier.currentEpoch()
+            })
+        );
+        _writeIdentifier(signals, 9, binding);
+        bytes32 scope = ZkIdentityEncoding.nullifierScopeHash(
+            ZkIdentityEncoding.NullifierScope({
+                mode: 1,
+                chainId: block.chainid,
+                verifier: address(predicateVerifier),
+                consumer: address(this),
+                context: ACTION_CONTEXT,
+                policyHash: POLICY_HASH
+            })
+        );
+        _writeIdentifier(signals, 11, scope);
+        signals[13] = 1;
+        signals[14] = uint160(subject);
+        signals[15] = 1;
+        signals[16] = predicateVerifier.currentEpoch();
+    }
+
+    function _writeIdentifier(uint256[] memory signals, uint256 highIndex, bytes32 value) private pure {
+        (signals[highIndex], signals[highIndex + 1]) = ZkIdentityEncoding.splitBytes32(value);
     }
 }

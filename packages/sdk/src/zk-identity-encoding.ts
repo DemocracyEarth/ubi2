@@ -78,6 +78,15 @@ export interface ZkIdentityPublicSignalValues {
   statusEpoch: number;
 }
 
+/** Application context consumed by the governed EVM predicate-prover adapter. */
+export interface ZkPredicateProofContextInput {
+  /** Stable consumer action/scope identifier; challenge is kept separate. */
+  context: Hex;
+  /** Fresh non-zero challenge selected by the consumer. */
+  challenge: Hex;
+  nullifierMode: ZkNullifierMode;
+}
+
 /** Fixed v1 public-signal layout. A changed order is a new layout version. */
 export const ZK_PUBLIC_SIGNAL_INDEX = {
   layoutVersion: 0,
@@ -268,6 +277,23 @@ export function zkNullifierScopeHash(input: ZkNullifierScopeInput): Hex {
         nonZeroBytes32(input.policyHash, "policy hash"),
       ],
     ),
+  );
+}
+
+/**
+ * Encode the application context accepted by ZkIdentityPredicateProver.
+ *
+ * PredicateVerifier itself wraps these bytes with the actual consuming address
+ * before calling the prover, so clients must not add a consumer envelope.
+ */
+export function encodeZkPredicateProofContext(input: ZkPredicateProofContextInput): Hex {
+  return encodeAbiParameters(
+    [{ type: "bytes32" }, { type: "bytes32" }, { type: "uint8" }],
+    [
+      bytes32(input.context, "predicate proof context"),
+      nonZeroBytes32(input.challenge, "predicate proof challenge"),
+      nullifierModeCode(input.nullifierMode),
+    ],
   );
 }
 

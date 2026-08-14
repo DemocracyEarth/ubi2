@@ -14,12 +14,14 @@ library ZkIdentityEncoding {
 
     uint16 internal constant PRIVATE_CREDENTIAL_VERSION = 1;
     uint16 internal constant NULLIFIER_SCOPE_VERSION = 1;
+    uint16 internal constant PRESENTATION_VERSION = 1;
     uint16 internal constant PUBLIC_SIGNALS_VERSION = 1;
     uint256 internal constant PUBLIC_SIGNAL_COUNT = 18;
 
     bytes32 internal constant PRIVATE_CREDENTIAL_DOMAIN = keccak256("org.proofofhumanity.zk-private-credential");
     bytes32 internal constant NULLIFIER_SCOPE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope");
     bytes32 internal constant NULLIFIER_PREIMAGE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope:derive");
+    bytes32 internal constant PRESENTATION_DOMAIN = keccak256("org.proofofhumanity.zk-presentation");
 
     uint256 internal constant IDX_LAYOUT_VERSION = 0;
     uint256 internal constant IDX_CIRCUIT_ID_HI = 1;
@@ -71,6 +73,17 @@ library ZkIdentityEncoding {
         uint32 statusEpoch;
     }
 
+    struct PresentationBinding {
+        bytes32 policyHash;
+        uint256 chainId;
+        address verifier;
+        address consumer;
+        address subject;
+        bytes32 context;
+        bytes32 challenge;
+        uint32 epoch;
+    }
+
     error NonCanonicalField(uint256 index);
     error UnsupportedPublicSignalLayout();
     error InvalidPublicSignalLength();
@@ -80,6 +93,7 @@ library ZkIdentityEncoding {
     error InvalidSubject();
     error InvalidResult();
     error InvalidEpoch(uint256 index);
+    error InvalidPresentationBinding();
 
     /// @notice Diagnostic parity fingerprint of the private credential ABI.
     /// @dev Never publish or use this stable value as a presentation identifier.
@@ -109,6 +123,30 @@ library ZkIdentityEncoding {
                 scope.consumer,
                 scope.context,
                 scope.policyHash
+            )
+        );
+    }
+
+    /// @notice Hash every EVM presentation binding using the SDK-pinned ABI.
+    /// @dev The adapter recomputes this from host-authenticated consumer data;
+    ///      the presenter cannot substitute another chain, verifier or consumer.
+    function presentationBindingHash(PresentationBinding memory binding) internal pure returns (bytes32) {
+        if (
+            binding.policyHash == bytes32(0) || binding.chainId == 0 || binding.verifier == address(0)
+                || binding.consumer == address(0) || binding.subject == address(0)
+        ) revert InvalidPresentationBinding();
+        return keccak256(
+            abi.encode(
+                PRESENTATION_DOMAIN,
+                PRESENTATION_VERSION,
+                binding.policyHash,
+                binding.chainId,
+                binding.verifier,
+                binding.consumer,
+                binding.subject,
+                binding.context,
+                binding.challenge,
+                binding.epoch
             )
         );
     }
