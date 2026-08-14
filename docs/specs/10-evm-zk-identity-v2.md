@@ -230,17 +230,20 @@ The country root above is a deliberately small parity fixture, not a production 
   public `issuerKeyId` limbs, and binds `statusId`, active leaf, status-derived path, and two-limb active root with
   revocation/stale/refreshed-witness tests. A transport-neutral sparse-registry prototype now emits canonical,
   unkeyed public deltas for local witness refresh and checks the result against an independently accepted
-  checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mobile/browser, alternate
-  hash/proof-system, EVM gas, root governance, durable transport/retention and privacy hardening remain. Depth 32
+  checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mid-range mobile and
+  production browser integration, alternate hash/proof-system, EVM gas, root governance, durable
+  transport/retention and privacy hardening remain. Depth 32
   is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
   registrations, and this prototype rejects such collisions rather than overwriting an existing credential.
 - **Registry depth sensitivity implemented:** the same relation now generates and verifies real Groth16 proofs at
   depths 32/64/96/128 with CI-pinned budgets of 21,723/37,147/52,571/67,995 constraints. Proof size, verifier key
-  size and five public inputs remain constant. Depth 96 is the current scale/cost candidate to beat, not a protocol
-  selection; browser/mobile memory, delta bandwidth, adversarial index allocation and alternate accumulators remain.
-- **Browser/WASM feasibility implemented:** fresh Chromium workers now generate fixture keys and separately
-  deserialize/prove/verify depth-96 and depth-128 relations. The measured holder paths were 15.33 s / 214,368,256 B
-  retained WASM memory and 21.04 s / 291,897,344 B respectively; both proofs verified. These desktop-class runs do
+  size and five public inputs remain constant. Depth 96 is the current sparse scale/cost baseline, not a protocol
+  selection; mid-range mobile memory, delta bandwidth, adversarial index allocation and alternate accumulators remain.
+- **Browser/WASM feasibility implemented:** fresh Chromium workers now generate fingerprint-pinned fixture keys and
+  separately deserialize/prove/verify packed-status and depth-96/128 sparse relations. The representative packed
+  holder path was 7.54 s / 90,308,608 B retained WASM memory, versus 15.11 s / 214,368,256 B at sparse depth 96 and
+  20.76 s / 291,897,344 B at sparse depth 128; all proofs verified across three consecutive runs. The packed key is
+  5,250,320 B, 49.8% smaller than depth 96, and retained prover memory is 57.9% lower. These desktop-class runs do
   not satisfy the mobile gate. Binary delta lower bounds are 3,220 B at depth 96 and 4,248 B at depth 128, making
   the prototype's unbatched public full-delta feed non-viable at global mutation volumes. Batched/multiproof updates
   plus authenticated snapshots, or a different accumulator, are now a production selection requirement.

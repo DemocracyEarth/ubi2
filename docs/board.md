@@ -121,9 +121,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. A transport-neutral
   sparse-registry prototype now exercises activation/revocation, canonical unkeyed deltas, local batched witness
   refresh, trusted-checkpoint matching, and exact-circuit compatibility. Depths 32/64/96/128 are now measured with
-  pinned constraints and verified proofs. Fresh-worker Chromium/WASM depth-96 and depth-128 holder paths verify in
-  15.33 s / 214 MB and 21.04 s / 292 MB retained memory; depth 96 remains provisional and mobile is unmeasured.
-  The depth-24 packed-status relation is pinned at 27,157 constraints and its deterministic public
+  pinned constraints and verified proofs. Fresh-worker Chromium/WASM packed-status, depth-96 and depth-128 proofs
+  all verify. Packed status measures 7.54 s / 90,308,608 B retained memory versus 15.11 s / 214,368,256 B at sparse
+  depth 96; mobile remains unmeasured. The depth-24 packed-status relation is pinned at 27,157 constraints and its
+  deterministic public
   multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
   88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. Remaining: issuer
   slot/uniqueness design, mobile, alternate hash/proof-system, EVM gas, root governance, transport/privacy

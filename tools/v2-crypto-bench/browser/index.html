@@ -196,14 +196,15 @@
   <body>
     <main>
       <div class="eyebrow">Research harness · deterministic fixture only</div>
-      <h1>Can the deeper v2 registry prove in a browser?</h1>
+      <h1>Which v2 status proof belongs in the browser?</h1>
       <p class="lede">
-        Depths 96 and 128 run in fresh Web Workers. Setup creates a fixture proving key; a separate worker
-        deserializes that key, generates a Groth16 proof and verifies it before reporting success.
+        Signature + packed status runs beside the depth-96 and depth-128 sparse-registry baselines in fresh Web
+        Workers. Setup creates a fixture proving key; a separate worker deserializes that key, generates a
+        Groth16 proof and verifies it before reporting success.
       </p>
 
       <div class="actions">
-        <button id="run" type="button">Run both profiles</button>
+        <button id="run" type="button">Run all profiles</button>
         <button id="download" class="secondary" type="button" disabled>Download JSON</button>
         <span id="status" role="status" data-state="ready"
           >Ready. Expect the tab to work hard while each worker proves.</span
@@ -220,7 +221,7 @@
         <table>
           <thead>
             <tr>
-              <th>Depth</th>
+              <th>Candidate</th>
               <th>Setup</th>
               <th>Proving key</th>
               <th>Setup memory</th>
@@ -232,13 +233,18 @@
             </tr>
           </thead>
           <tbody>
-            <tr data-depth="96">
-              <td>96</td>
+            <tr data-profile="packed-status">
+              <td>Packed status · depth 24</td>
               <td colspan="7" class="pending">Not run</td>
               <td class="pending">—</td>
             </tr>
-            <tr data-depth="128">
-              <td>128</td>
+            <tr data-profile="registry-96">
+              <td>Sparse registry · depth 96</td>
+              <td colspan="7" class="pending">Not run</td>
+              <td class="pending">—</td>
+            </tr>
+            <tr data-profile="registry-128">
+              <td>Sparse registry · depth 128</td>
               <td colspan="7" class="pending">Not run</td>
               <td class="pending">—</td>
             </tr>
@@ -249,7 +255,7 @@
       <section class="method" aria-label="Benchmark method">
         <article>
           <strong>Fresh workers</strong>
-          <p>Each setup and proof starts with a new WASM instance, preventing cross-depth allocator reuse.</p>
+          <p>Each setup and proof starts with a new WASM instance, preventing cross-profile allocator reuse.</p>
         </article>
         <article>
           <strong>Real artifact boundary</strong>
