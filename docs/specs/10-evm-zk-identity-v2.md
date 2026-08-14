@@ -199,7 +199,8 @@ designer are implemented. The first Stage 1 compatibility slice also pins the pr
 nullifier scope/preimage, and lossless public-signal layout across TypeScript, Solidity, and Rust. Ratification,
 security review, and the final Stage 1 cryptographic decision remain open. A first isolated, reproducible
 [desktop authentication spike](../../tools/v2-crypto-bench/README.md) now compares issuer signature, depth-32
-active-registry membership, and both together; it is explicitly preliminary and does not ratify a circuit.
+active-registry membership, both together, and signature plus packed revocation status; it is explicitly
+preliminary and does not ratify a circuit.
 
 Pinned TypeScript vectors (`packages/sdk/src/zk-identity-policy.test.ts`):
 
@@ -243,6 +244,15 @@ The country root above is a deliberately small parity fixture, not a production 
   not satisfy the mobile gate. Binary delta lower bounds are 3,220 B at depth 96 and 4,248 B at depth 128, making
   the prototype's unbatched public full-delta feed non-viable at global mutation volumes. Batched/multiproof updates
   plus authenticated snapshots, or a different accumulator, are now a production selection requirement.
+- **Status-distribution bakeoff implemented:** a fourth circuit candidate authenticates the credential with the
+  issuer signature and proves that its canonical signed 32-bit status slot is not revoked in a 256-bit chunk under
+  a depth-24 Poseidon root. It verifies at 27,157 constraints with five public inputs, compared with 31,843 for
+  signature + depth-32 per-credential registry. A deterministic public, unkeyed multiproof/snapshot model reduces
+  the holder witness floor from 3,140 B at sparse depth 96 to 836 B and reduces the modeled 100M/1B-population
+  workloads by 88.83%–95.93% versus depth-96 sparse batches. Dense updates switch to the smaller snapshot. This
+  makes signature + packed status the candidate to beat, not a protocol selection: status-slot allocation,
+  uniqueness/duplicate prevention, update authorization, checkpoint governance, availability/fork recovery,
+  mobile proving, EVM gas and privacy review remain open.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
@@ -348,8 +358,9 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 
 - Exact issuance privacy: temporary Self disclosure bridge versus a commitment-output/passport-native circuit.
 - Credential authenticity: SNARK-native issuer signature, accumulator membership, or both.
-- Revocation accumulator selection and production witness transport/checkpoint governance. The current sparse
-  Merkle prototype validates local updates but does not ratify the accumulator or authorize a network service.
+- Revocation accumulator selection and production witness transport/checkpoint governance. The packed-status
+  bakeoff is the current candidate to beat, while the operational sparse Merkle prototype still validates local
+  updates; neither ratifies an accumulator, slot-allocation authority or network service.
 - Proving stack after measurement; trusted-setup and verifier-version governance.
 - Whether the public subject is an EOA, ERC-1271 account, or a scoped account key for each product flow.
 - Recovery design when neither a synced passkey nor WebAuthn PRF is available.

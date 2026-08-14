@@ -114,16 +114,20 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   hashes; chain/consumer/context/subject/challenge bindings are pinned; invalid ranges/roots/consent fail closed;
   the UI labels previews as non-proofs and preserves the separately live v1 verification flow. Compatibility
   slice complete: private-credential ABI, scoped-nullifier preimage, strict lossless 18-field public-signal layout,
-  and TypeScript/Solidity/Rust parity vectors. The first isolated desktop circuit baseline now compares direct
-  issuer signature, depth-32 active-registry membership, and their hybrid with pinned CI constraints and valid
-  Groth16 round trips. Issuer coordinates are now privately/losslessly bound to `issuerKeyId`, and the active
+  and TypeScript/Solidity/Rust parity vectors. The isolated desktop circuit baseline now compares direct issuer
+  signature, depth-32 active-registry membership, their hybrid, and signature + packed status with pinned CI
+  constraints and valid Groth16 round trips. Issuer coordinates are now privately/losslessly bound to
+  `issuerKeyId`, and the active
   leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. A transport-neutral
   sparse-registry prototype now exercises activation/revocation, canonical unkeyed deltas, local batched witness
   refresh, trusted-checkpoint matching, and exact-circuit compatibility. Depths 32/64/96/128 are now measured with
   pinned constraints and verified proofs. Fresh-worker Chromium/WASM depth-96 and depth-128 holder paths verify in
-  15.33 s / 214 MB and 21.04 s / 292 MB retained memory; depth 96 remains provisional and mobile is unmeasured. Its
-  3,220-byte per-delta binary floor makes batching/snapshots or another accumulator mandatory at scale. Remaining:
-  mobile, alternate hash/proof-system, EVM gas, root governance, transport/privacy hardening, and the measured ADR.
+  15.33 s / 214 MB and 21.04 s / 292 MB retained memory; depth 96 remains provisional and mobile is unmeasured.
+  The depth-24 packed-status relation is pinned at 27,157 constraints and its deterministic public
+  multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
+  88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. Remaining: issuer
+  slot/uniqueness design, mobile, alternate hash/proof-system, EVM gas, root governance, transport/privacy
+  hardening, and the measured ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_

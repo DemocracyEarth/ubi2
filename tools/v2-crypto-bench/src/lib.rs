@@ -33,8 +33,14 @@ use std::{error::Error, fmt};
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 use wasm_bindgen::{prelude::*, JsCast};
 
+mod status_distribution;
 mod status_registry;
 
+pub use status_distribution::{
+    run_status_distribution_bakeoff, DeliveryMode, PackedStatusBatchEstimate,
+    SparseMerkleBatchEstimate, StatusDistributionReport, StatusDistributionWorkloadReport,
+    PACKED_STATUS_BITS_PER_CHUNK, PACKED_STATUS_DEPTH, SPARSE_STATUS_DEPTH,
+};
 pub use status_registry::{
     refresh_status_witness, StatusActivation, StatusCheckpoint, StatusRegistry,
     StatusRegistryDelta, StatusRegistryError, StatusWitness, STATUS_REGISTRY_DELTA_MAX_JSON_BYTES,
@@ -67,6 +73,7 @@ const BYTES32_LIMB_BITS: usize = 128;
 pub const ISSUER_SIGNATURE_CONSTRAINTS: usize = 13_528;
 pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 21_723;
 pub const HYBRID_CONSTRAINTS: usize = 31_843;
+pub const SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS: usize = 27_157;
 
 const CREDENTIAL_DOMAIN: u64 = 1;
 const NULLIFIER_DOMAIN: u64 = 2;
@@ -75,6 +82,7 @@ const SIGNATURE_CHALLENGE_DOMAIN: u64 = 4;
 const ISSUER_KEY_DOMAIN: u64 = 5;
 const STATUS_LEAF_DOMAIN: u64 = 6;
 const STATUS_INDEX_DOMAIN: u64 = 7;
+const PACKED_STATUS_LEAF_DOMAIN: u64 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -82,15 +90,27 @@ pub enum Authentication {
     IssuerSignature,
     ActiveRegistry,
     SignatureAndRegistry,
+    SignatureAndPackedStatus,
 }
 
 impl Authentication {
     fn includes_signature(self) -> bool {
-        matches!(self, Self::IssuerSignature | Self::SignatureAndRegistry)
+        matches!(
+            self,
+            Self::IssuerSignature | Self::SignatureAndRegistry | Self::SignatureAndPackedStatus
+        )
     }
 
     fn includes_registry(self) -> bool {
         matches!(self, Self::ActiveRegistry | Self::SignatureAndRegistry)
+    }
+
+    fn includes_packed_status(self) -> bool {
+        matches!(self, Self::SignatureAndPackedStatus)
+    }
+
+    fn includes_status_root(self) -> bool {
+        self.includes_registry() || self.includes_packed_status()
     }
 }
 
@@ -104,6 +124,9 @@ pub struct SpikeCircuit {
     issuer_key_id: [CircuitField; 2],
     signature_commitment: EdwardsProjective,
     signature_response: JubjubScalar,
+    // Two little-endian u128 limbs encode the 256 revocation bits in a
+    // packed-status chunk. Zero means active; one means revoked.
+    packed_status_chunk: [CircuitField; 2],
     registry_siblings: Vec<CircuitField>,
     expected_registry_root: [CircuitField; 2],
 }
@@ -115,6 +138,8 @@ pub struct SuiteReport {
     pub curve: &'static str,
     pub poseidon_profile: &'static str,
     pub registry_depth: usize,
+    pub packed_status_depth: usize,
+    pub packed_statuses_per_chunk: usize,
     pub proof_measurements_enabled: bool,
     pub build_profile: &'static str,
     pub target_os: &'static str,
@@ -278,7 +303,12 @@ struct SignatureWitness {
 
 impl SpikeCircuit {
     pub fn fixture(authentication: Authentication) -> Self {
-        Self::fixture_with_registry_depth(authentication, REGISTRY_DEPTH)
+        let depth = if authentication.includes_packed_status() {
+            PACKED_STATUS_DEPTH
+        } else {
+            REGISTRY_DEPTH
+        };
+        Self::fixture_with_registry_depth(authentication, depth)
     }
 
     pub fn fixture_with_registry_depth(
@@ -290,6 +320,12 @@ impl SpikeCircuit {
             registry_depth <= CircuitField::MODULUS_BIT_SIZE as usize,
             "registry depth exceeds the status-index field"
         );
+        if authentication.includes_packed_status() {
+            assert_eq!(
+                registry_depth, PACKED_STATUS_DEPTH,
+                "packed status uses the pinned 24-bit chunk index"
+            );
+        }
         let poseidon = poseidon_config();
         let mut credential_elements =
             std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 1_000_003));
@@ -306,6 +342,13 @@ impl SpikeCircuit {
         let issuer_key_id = split_field_to_u128_limbs(issuer_key_digest);
         credential_elements[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX] = issuer_key_id[0];
         credential_elements[CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX] = issuer_key_id[1];
+        if authentication.includes_packed_status() {
+            // Research convention: the signed bytes32 statusId is a canonical
+            // uint32 slot. Its low eight bits select a bit within a chunk and
+            // the next 24 bits select the chunk's Merkle path.
+            credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX] = CircuitField::from(0u64);
+            credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX] = CircuitField::from(7_000_021u64);
+        }
         let credential_commitment =
             poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
         let signature_nonce = JubjubScalar::from(8_181_818u64);
@@ -326,12 +369,21 @@ impl SpikeCircuit {
             credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
-        let registry_directions =
-            status_path_directions_native(&poseidon, status_id, registry_depth);
+        let packed_status_chunk = [CircuitField::from(0u64); 2];
+        let (status_leaf, registry_directions) = if authentication.includes_packed_status() {
+            (
+                packed_status_leaf_native(&poseidon, packed_status_chunk),
+                packed_status_path_directions_native(status_id[1]),
+            )
+        } else {
+            (
+                active_status_leaf_native(&poseidon, status_id, credential_commitment),
+                status_path_directions_native(&poseidon, status_id, registry_depth),
+            )
+        };
         let expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
-            active_leaf,
+            status_leaf,
             &registry_siblings,
             &registry_directions,
         ));
@@ -345,6 +397,7 @@ impl SpikeCircuit {
             issuer_key_id,
             signature_commitment,
             signature_response,
+            packed_status_chunk,
             registry_siblings,
             expected_registry_root,
         }
@@ -353,21 +406,29 @@ impl SpikeCircuit {
     #[cfg(test)]
     fn recompute_registry_root(&mut self) {
         let poseidon = poseidon_config();
-        let credential_commitment = poseidon_native(
-            &poseidon,
-            CREDENTIAL_DOMAIN,
-            self.credential_elements.as_slice(),
-        );
         let status_id = [
             self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
-        let directions =
-            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len());
+        let (status_leaf, directions) = if self.authentication.includes_packed_status() {
+            (
+                packed_status_leaf_native(&poseidon, self.packed_status_chunk),
+                packed_status_path_directions_native(status_id[1]),
+            )
+        } else {
+            let credential_commitment = poseidon_native(
+                &poseidon,
+                CREDENTIAL_DOMAIN,
+                self.credential_elements.as_slice(),
+            );
+            (
+                active_status_leaf_native(&poseidon, status_id, credential_commitment),
+                status_path_directions_native(&poseidon, status_id, self.registry_siblings.len()),
+            )
+        };
         self.expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
-            active_leaf,
+            status_leaf,
             &self.registry_siblings,
             &directions,
         ));
@@ -384,7 +445,7 @@ impl SpikeCircuit {
     pub fn public_inputs(&self) -> Vec<CircuitField> {
         let mut inputs = vec![self.expected_nullifier];
         inputs.extend_from_slice(&self.issuer_key_id);
-        if self.authentication.includes_registry() {
+        if self.authentication.includes_status_root() {
             inputs.extend_from_slice(&self.expected_registry_root);
         }
         inputs
@@ -435,13 +496,50 @@ impl SpikeCircuit {
             self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let directions =
-            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len());
+        let directions = if self.authentication.includes_packed_status() {
+            packed_status_path_directions_native(status_id[1])
+        } else {
+            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len())
+        };
         let changed_index = directions
             .iter()
             .position(|current_is_right| !current_is_right)
             .expect("fixture path has a sibling leaf to rotate");
         self.registry_siblings[changed_index] += CircuitField::from(1u64);
+        self.recompute_registry_root();
+    }
+
+    #[cfg(test)]
+    fn revoke_packed_status(&mut self) {
+        let status_low = self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX].into_bigint();
+        let selected_bit = (0..8).fold(0usize, |index, bit| {
+            index | (usize::from(status_low.get_bit(bit)) << bit)
+        });
+        self.set_packed_status_bit(selected_bit);
+    }
+
+    #[cfg(test)]
+    fn set_unrelated_packed_status_bit(&mut self) {
+        let status_low = self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX].into_bigint();
+        let selected_bit = (0..8).fold(0usize, |index, bit| {
+            index | (usize::from(status_low.get_bit(bit)) << bit)
+        });
+        self.set_packed_status_bit((selected_bit + 1) % PACKED_STATUS_BITS_PER_CHUNK);
+    }
+
+    #[cfg(test)]
+    fn set_packed_status_bit(&mut self, selected_bit: usize) {
+        let limb_index = selected_bit / BYTES32_LIMB_BITS;
+        let limb_bit = selected_bit % BYTES32_LIMB_BITS;
+        self.packed_status_chunk[limb_index] += CircuitField::from(1u128 << limb_bit);
+        self.recompute_registry_root();
+    }
+
+    #[cfg(test)]
+    fn make_packed_status_chunk_limb_wide(&mut self) {
+        self.packed_status_chunk[0] = CircuitField::from_be_bytes_mod_order(&[
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         self.recompute_registry_root();
     }
 
@@ -571,11 +669,23 @@ impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
 
         if self.authentication.includes_registry() {
             enforce_registry_membership(
-                cs,
+                cs.clone(),
                 &poseidon,
                 credential_commitment,
                 credential_vars[CREDENTIAL_STATUS_ID_HIGH_INDEX].clone(),
                 credential_vars[CREDENTIAL_STATUS_ID_LOW_INDEX].clone(),
+                &self.registry_siblings,
+                self.expected_registry_root,
+            )?;
+        }
+
+        if self.authentication.includes_packed_status() {
+            enforce_packed_status_nonrevocation(
+                cs,
+                &poseidon,
+                credential_vars[CREDENTIAL_STATUS_ID_HIGH_INDEX].clone(),
+                credential_vars[CREDENTIAL_STATUS_ID_LOW_INDEX].clone(),
+                self.packed_status_chunk,
                 &self.registry_siblings,
                 self.expected_registry_root,
             )?;
@@ -591,6 +701,7 @@ pub fn run_suite(with_proofs: bool) -> Result<SuiteReport, SynthesisError> {
         Authentication::IssuerSignature,
         Authentication::ActiveRegistry,
         Authentication::SignatureAndRegistry,
+        Authentication::SignatureAndPackedStatus,
     ] {
         results.push(measure_candidate(
             SpikeCircuit::fixture(authentication),
@@ -599,11 +710,13 @@ pub fn run_suite(with_proofs: bool) -> Result<SuiteReport, SynthesisError> {
     }
 
     Ok(SuiteReport {
-        schema: "org.proofofhumanity.v2-crypto-benchmark/1",
+        schema: "org.proofofhumanity.v2-crypto-benchmark/2",
         warning: "research harness only; not a production circuit or cryptographic ratification",
         curve: "Groth16/BN254 with Baby-Jubjub authentication model",
         poseidon_profile: "width=3 rate=2 capacity=1 alpha=5 full=8 partial=57 skip_matrices=0",
         registry_depth: REGISTRY_DEPTH,
+        packed_status_depth: PACKED_STATUS_DEPTH,
+        packed_statuses_per_chunk: PACKED_STATUS_BITS_PER_CHUNK,
         proof_measurements_enabled: with_proofs,
         build_profile: if cfg!(debug_assertions) {
             "debug"
@@ -833,6 +946,7 @@ fn measure_candidate(
             Authentication::IssuerSignature => 0x51_47_4e,
             Authentication::ActiveRegistry => 0x52_45_47,
             Authentication::SignatureAndRegistry => 0x48_59_42,
+            Authentication::SignatureAndPackedStatus => 0x50_41_43,
         };
         let mut setup_rng = StdRng::seed_from_u64(seed);
         let setup_started = BenchmarkTimer::start();
@@ -1091,6 +1205,55 @@ fn enforce_registry_membership(
     enforce_lossless_bytes32_limbs(&current, &public_root_high, &public_root_low)
 }
 
+fn enforce_packed_status_nonrevocation(
+    cs: ConstraintSystemRef<CircuitField>,
+    config: &PoseidonConfig<CircuitField>,
+    status_id_high: FpVar<CircuitField>,
+    status_id_low: FpVar<CircuitField>,
+    packed_status_chunk: [CircuitField; 2],
+    siblings: &[CircuitField],
+    expected_root: [CircuitField; 2],
+) -> Result<(), SynthesisError> {
+    status_id_high.enforce_equal(&FpVar::Constant(CircuitField::from(0u64)))?;
+    let (status_id_low_bits, _) = status_id_low.to_bits_le_with_top_bits_zero(32)?;
+    let chunk_vars = [
+        FpVar::new_witness(cs.clone(), || Ok(packed_status_chunk[0]))?,
+        FpVar::new_witness(cs.clone(), || Ok(packed_status_chunk[1]))?,
+    ];
+    let (chunk_low_bits, _) = chunk_vars[0].to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let (chunk_high_bits, _) = chunk_vars[1].to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
+    let mut selected_bits = chunk_low_bits;
+    selected_bits.extend(chunk_high_bits);
+
+    // The low eight status-slot bits select one of the 256 revocation bits.
+    // Collapse the table one selector bit at a time, rather than allocating a
+    // 256-way equality test. Zero is active; one is revoked.
+    for selector in status_id_low_bits.iter().take(8) {
+        selected_bits = selected_bits
+            .chunks_exact(2)
+            .map(|pair| selector.select(&pair[1], &pair[0]))
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    selected_bits[0].enforce_equal(&Boolean::FALSE)?;
+
+    let mut current = poseidon_gadget(cs.clone(), config, PACKED_STATUS_LEAF_DOMAIN, &chunk_vars)?;
+    if siblings.len() != PACKED_STATUS_DEPTH {
+        return Err(SynthesisError::Unsatisfiable);
+    }
+    for (sibling, current_is_right) in siblings
+        .iter()
+        .zip(status_id_low_bits.iter().skip(8).take(PACKED_STATUS_DEPTH))
+    {
+        let sibling = FpVar::new_witness(cs.clone(), || Ok(*sibling))?;
+        let left = current_is_right.select(&sibling, &current)?;
+        let right = current_is_right.select(&current, &sibling)?;
+        current = poseidon_gadget(cs.clone(), config, REGISTRY_NODE_DOMAIN, &[left, right])?;
+    }
+    let public_root_high = FpVar::new_input(cs.clone(), || Ok(expected_root[0]))?;
+    let public_root_low = FpVar::new_input(cs, || Ok(expected_root[1]))?;
+    enforce_lossless_bytes32_limbs(&current, &public_root_high, &public_root_low)
+}
+
 fn active_status_leaf_native(
     config: &PoseidonConfig<CircuitField>,
     status_id: [CircuitField; 2],
@@ -1101,6 +1264,20 @@ fn active_status_leaf_native(
         STATUS_LEAF_DOMAIN,
         &[status_id[0], status_id[1], credential_commitment],
     )
+}
+
+fn packed_status_leaf_native(
+    config: &PoseidonConfig<CircuitField>,
+    packed_status_chunk: [CircuitField; 2],
+) -> CircuitField {
+    poseidon_native(config, PACKED_STATUS_LEAF_DOMAIN, &packed_status_chunk)
+}
+
+fn packed_status_path_directions_native(status_id_low: CircuitField) -> Vec<bool> {
+    let status_bits = status_id_low.into_bigint();
+    (8..8 + PACKED_STATUS_DEPTH)
+        .map(|bit| status_bits.get_bit(bit))
+        .collect()
 }
 
 fn status_path_directions_native(
@@ -1130,7 +1307,7 @@ mod tests {
     #[test]
     fn all_candidate_relations_are_satisfied() {
         let report = run_suite(false).expect("all benchmark fixtures synthesize");
-        assert_eq!(report.results.len(), 3);
+        assert_eq!(report.results.len(), 4);
         assert_eq!(
             report
                 .results
@@ -1141,6 +1318,7 @@ mod tests {
                 ISSUER_SIGNATURE_CONSTRAINTS,
                 ACTIVE_REGISTRY_CONSTRAINTS,
                 HYBRID_CONSTRAINTS,
+                SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS,
             ],
             "constraint drift requires an explicit benchmark-report review"
         );
@@ -1160,6 +1338,7 @@ mod tests {
         for authentication in [
             Authentication::IssuerSignature,
             Authentication::SignatureAndRegistry,
+            Authentication::SignatureAndPackedStatus,
         ] {
             let mut wrong_id = SpikeCircuit::fixture(authentication);
             wrong_id.tamper_issuer_key_id();
@@ -1235,6 +1414,79 @@ mod tests {
     }
 
     #[test]
+    fn packed_status_rejects_the_selected_revocation_bit() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        circuit.revoke_packed_status();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn packed_status_allows_an_unrelated_revocation_bit() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        circuit.set_unrelated_packed_status_bit();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn packed_status_rejects_non_canonical_slot_high_bits() {
+        let circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        let valid_slot = circuit.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX];
+        for (status_high, status_low) in [
+            (CircuitField::from(1u64), valid_slot),
+            (
+                CircuitField::from(0u64),
+                valid_slot + CircuitField::from(1u64 << 32),
+            ),
+        ] {
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            let status_id_high = FpVar::new_witness(cs.clone(), || Ok(status_high)).unwrap();
+            let status_id_low = FpVar::new_witness(cs.clone(), || Ok(status_low)).unwrap();
+            enforce_packed_status_nonrevocation(
+                cs.clone(),
+                &poseidon_config(),
+                status_id_high,
+                status_id_low,
+                circuit.packed_status_chunk,
+                &circuit.registry_siblings,
+                circuit.expected_registry_root,
+            )
+            .unwrap();
+            assert!(!cs.is_satisfied().unwrap());
+        }
+    }
+
+    #[test]
+    fn packed_status_rejects_a_modified_path() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        circuit.tamper_registry();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn packed_status_rejects_a_non_canonical_chunk_limb() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        circuit.make_packed_status_chunk_limb_wide();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn packed_status_root_rejects_a_modular_alias() {
+        let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        circuit.alias_registry_root_by_field_modulus();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
     fn unrelated_leaf_update_rejects_a_stale_witness_and_accepts_a_refreshed_one() {
         let stale = SpikeCircuit::fixture(Authentication::ActiveRegistry);
         let previous_root = stale.expected_registry_root;
@@ -1295,11 +1547,12 @@ mod tests {
     }
 
     #[test]
-    fn a_modified_credential_fails_both_authentication_relations() {
+    fn a_modified_credential_fails_all_authentication_relations() {
         for authentication in [
             Authentication::IssuerSignature,
             Authentication::ActiveRegistry,
             Authentication::SignatureAndRegistry,
+            Authentication::SignatureAndPackedStatus,
         ] {
             let mut circuit = SpikeCircuit::fixture(authentication);
             circuit.tamper_credential();
@@ -1336,11 +1589,14 @@ mod tests {
         let signature = &report.results[0];
         let registry = &report.results[1];
         let hybrid = &report.results[2];
+        let packed_status = &report.results[3];
         assert!(hybrid.constraints > signature.constraints);
         assert!(hybrid.constraints > registry.constraints);
         assert_eq!(signature.public_inputs, 3);
         assert_eq!(registry.public_inputs, 5);
         assert_eq!(hybrid.public_inputs, 5);
+        assert!(packed_status.constraints > signature.constraints);
+        assert_eq!(packed_status.public_inputs, 5);
     }
 
     #[test]
