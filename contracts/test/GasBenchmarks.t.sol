@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ProofOfHumanity, HumanityVoucher} from "../src/ProofOfHumanity.sol";
 import {PredicateVerifier, PredicateAttestation, IPredicateProver} from "../src/PredicateVerifier.sol";
+import {V2PackedStatusGroth16Verifier} from "../src/research/V2PackedStatusGroth16Verifier.sol";
+import {V2PackedStatusFixture} from "./fixtures/V2PackedStatusFixture.sol";
 
 contract GasPredicateProver is IPredicateProver {
     address internal _subject;
@@ -110,5 +112,25 @@ contract GasBenchmarksTest is Test {
     function _signAttestation(PredicateAttestation memory att) private view returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(ISSUER_PK, pv.hashAttestation(att));
         return abi.encodePacked(r, s, v);
+    }
+}
+
+/// @notice Kept separate so adding the v2 selector does not perturb the v1
+///         benchmark contract's dispatcher gas.
+contract V2VerifierGasBenchmarkTest is Test {
+    V2PackedStatusGroth16Verifier internal verifier;
+
+    function setUp() public {
+        verifier = new V2PackedStatusGroth16Verifier();
+    }
+
+    function test_Gas_V2PackedStatusGroth16Verify() public {
+        vm.pauseGasMetering();
+        uint256[8] memory proof = V2PackedStatusFixture.proof();
+        uint256[5] memory publicInputs = V2PackedStatusFixture.publicInputs();
+        vm.resumeGasMetering();
+        bool verified = verifier.verifyProof(proof, publicInputs);
+        vm.pauseGasMetering();
+        assertTrue(verified);
     }
 }

@@ -220,7 +220,12 @@ and v2 proof generation are not enabled yet.
   depth 96 to 836 B and reduces
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection; issuer slot allocation, uniqueness separation, mobile proving, alternate
-  hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the final ADR remain.
+  hash/proof-system, final-adapter gas, durable transport/privacy hardening, and the final ADR remain. The raw
+  five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
+  2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
+  issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. Both remain
+  research/pre-deployment inputs: the public fixture setup is not deployable, the product's 18-input adapter is
+  not implemented, freshness stays an adapter policy, and production ownership still requires a timelocked multisig.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.

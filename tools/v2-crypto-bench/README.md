@@ -176,6 +176,30 @@ uses a 24-level path. The result makes signature + packed status the candidate t
 revocation, not a selection: issuer slot allocation, duplicate prevention, authorization, checkpoint availability,
 privacy metadata, mobile proving and EVM verification still need production design and measurement.
 
+## EVM verifier and root-governance prototype
+
+The harness now exports the packed-status verifying key, one deterministic verified proof and its five public
+inputs in the exact EIP-197 word order consumed by the BN254 precompiles. The committed
+[`V2PackedStatusGroth16Verifier.sol`](../../contracts/src/research/V2PackedStatusGroth16Verifier.sol) verifies that
+arkworks proof on the EVM. With the repository's optimized Solidity 0.8.28/Cancun profile and Foundry v1.5.1, the
+runtime bytecode is 2,211 bytes and the deterministic target-call snapshot is 230,657 gas. The benchmark also caps
+gas forwarded to each precompile, so malformed curve input fails within a bounded call rather than consuming all
+caller-provided gas. CI pins a drift fingerprint over the complete exported key, proof and input JSON; changing it
+requires regenerating and reviewing the Solidity fixture in the same change.
+
+This closes only the raw pairing-verifier measurement for the five-input research relation. It does **not** measure
+the final 18-input presentation circuit, `IPredicateProver` decoding/binding, registry reads, consumer replay writes
+or target-chain transaction overhead. The fixture setup seed and toxic waste are public, so neither the verifier,
+its key nor its proof is deployable.
+
+[`ZkIdentityVersionRegistry.sol`](../../contracts/src/ZkIdentityVersionRegistry.sol) separately prototypes the
+minimum fail-closed governance tuple: additive circuit IDs pin a verifier address and runtime codehash; issuer keys
+are authorized per circuit; status epochs increase monotonically; a root cannot be reused; and exact roots can
+overlap until explicit revocation. Circuit and issuer retirement is irreversible. The registry intentionally does
+not invent proof freshness—an adapter or consumer must apply its documented age/window policy. Its owner must be a
+timelock-controlled multisig before any production deployment. This is a governance design input, not a production
+ratification or a migration of the operational depth-32 registry.
+
 ## Reproduce
 
 Requires the Rust toolchain pinned at the repository root.
@@ -192,6 +216,9 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --transport-estimates
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --status-distribution
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --packed-evm-fixture
+(cd contracts && forge snapshot --check --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest')
 ```
 
 Use `-- --constraints-only` on the baseline or registry-depth suite for deterministic relation metadata without
@@ -238,6 +265,6 @@ still requires:
 
 - a reviewed alternate SNARK-native hash and at least one universal-setup proof-system comparison;
 - repeated browser/WASM and mid-range mobile time and peak-memory measurements;
-- EVM verifier bytecode/gas measurements on the target L1/L2s;
-- active-root governance, revocation latency, transport/retention and production witness-distribution hardening; and
+- final 18-input adapter gas and full transaction measurements on the target L1/L2s;
+- production ownership/timelock validation, revocation latency, transport/retention and witness-distribution hardening; and
 - a circuit threat model, constraint audit, setup/ceremony plan, and independent review.
