@@ -233,6 +233,10 @@ The country root above is a deliberately small parity fixture, not a production 
   hash/proof-system, EVM gas, root governance, durable transport/retention and privacy hardening remain. Depth 32
   is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
   registrations, and this prototype rejects such collisions rather than overwriting an existing credential.
+- **Registry depth sensitivity implemented:** the same relation now generates and verifies real Groth16 proofs at
+  depths 32/64/96/128 with CI-pinned budgets of 21,723/37,147/52,571/67,995 constraints. Proof size, verifier key
+  size and five public inputs remain constant. Depth 96 is the current scale/cost candidate to beat, not a protocol
+  selection; browser/mobile memory, delta bandwidth, adversarial index allocation and alternate accumulators remain.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 

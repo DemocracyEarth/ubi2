@@ -208,8 +208,10 @@ and v2 proof generation are not enabled yet.
   Groth16 proof round trips. Issuer coordinates are privately and losslessly bound to `issuerKeyId`; the active
   leaf/path/root is bound to the private `statusId`, with revocation and stale/refreshed witness tests. A
   transport-neutral sparse-registry prototype now emits canonical unkeyed deltas, refreshes witnesses locally,
-  verifies an independently accepted checkpoint, and feeds the exact circuit relation. Mobile/browser, alternate
-  hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the final ADR remain.
+  verifies an independently accepted checkpoint, and feeds the exact circuit relation. Registry depths
+  32/64/96/128 are now CI-pinned at 21,723/37,147/52,571/67,995 constraints with verified proofs; depth 96 is the
+  current candidate to beat, not a selection. Mobile/browser, alternate hash/proof-system, EVM gas, root governance,
+  durable transport/privacy hardening, and the final ADR remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
