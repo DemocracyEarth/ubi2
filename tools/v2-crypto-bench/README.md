@@ -70,6 +70,29 @@ Depth 32 is retained only to match the measured circuit. A 32-bit hashed index r
 probability near 77,000 registrations, so the prototype rejects collisions instead of overwriting a credential.
 That is fail-closed behavior, not production scale: the final ADR must measure a deeper tree or another accumulator.
 
+## Registry-depth sensitivity
+
+The relation is now parameterized and CI pins 32/64/96/128-depth profiles. These measurements isolate depth only;
+the active leaf, status-derived index, canonical public root and five public inputs are otherwise identical. The
+50% column is the approximate number of uniformly hashed registrations at which at least one index collision becomes
+more likely than not; collision rejection/resampling does not make a shallow index cryptographically stronger.
+
+Measured 2026-08-13 using the same release toolchain and desktop class as the baseline. Timings are one warm-binary
+sample and are not portable budgets.
+
+| Depth | Constraints | Witness vars | 50% collision registrations | Setup | Prove | Verify | Proof | VK |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 21,723 | 21,301 | 77,163 | 707 ms | 692 ms | 0.74 ms | 128 B | 424 B |
+| 64 | 37,147 | 36,757 | 5.06 billion | 1,204 ms | 1,201 ms | 0.74 ms | 128 B | 424 B |
+| 96 | 52,571 | 52,213 | 331 trillion | 1,545 ms | 1,562 ms | 0.74 ms | 128 B | 424 B |
+| 128 | 67,995 | 67,669 | 21.7 quintillion | 2,199 ms | 2,252 ms | 0.74 ms | 128 B | 424 B |
+
+Each extra level costs approximately 482 constraints; every additional 32 levels add exactly 15,424 constraints in
+this relation. Depth 96 is the current scale/cost candidate to beat: it removes the immediate global-population
+collision ceiling at 52,571 constraints, while depth 128 adds another 15,424 constraints for a larger targeted-index
+security margin. This is not a selection. Browser/mobile time and peak memory, public-delta bandwidth, adversarial
+index allocation, EVM gas and alternate accumulators still decide the ADR.
+
 ## Reproduce
 
 Requires the Rust toolchain pinned at the repository root.
@@ -80,6 +103,8 @@ cargo test --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked
 cargo test --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked \
   all_candidates_generate_verified_groth16_proofs -- --ignored
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --registry-depths --constraints-only
 ```
 
 Use `-- --constraints-only` on the final command for deterministic relation metadata without Groth16 setup or

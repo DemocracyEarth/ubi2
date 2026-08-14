@@ -45,6 +45,8 @@ pub type StatusField = CircuitField;
 pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
 pub const NULLIFIER_FIELD_COUNT: usize = 6;
 pub const REGISTRY_DEPTH: usize = 32;
+pub const REGISTRY_DEPTH_PROFILES: [usize; 4] = [32, 64, 96, 128];
+pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_995];
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
 const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
@@ -95,7 +97,7 @@ pub struct SpikeCircuit {
     issuer_key_id: [CircuitField; 2],
     signature_commitment: EdwardsProjective,
     signature_response: JubjubScalar,
-    registry_siblings: [CircuitField; REGISTRY_DEPTH],
+    registry_siblings: Vec<CircuitField>,
     expected_registry_root: [CircuitField; 2],
 }
 
@@ -133,6 +135,26 @@ pub struct CandidateReport {
     pub proof_verified: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RegistryDepthSuiteReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub curve: &'static str,
+    pub poseidon_profile: &'static str,
+    pub proof_measurements_enabled: bool,
+    pub build_profile: &'static str,
+    pub target_os: &'static str,
+    pub target_arch: &'static str,
+    pub results: Vec<RegistryDepthCandidateReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegistryDepthCandidateReport {
+    pub depth: usize,
+    #[serde(flatten)]
+    pub measurement: CandidateReport,
+}
+
 struct SignatureWitness {
     issuer_public_key: EdwardsProjective,
     issuer_key_id: [FpVar<CircuitField>; 2],
@@ -142,6 +164,18 @@ struct SignatureWitness {
 
 impl SpikeCircuit {
     pub fn fixture(authentication: Authentication) -> Self {
+        Self::fixture_with_registry_depth(authentication, REGISTRY_DEPTH)
+    }
+
+    pub fn fixture_with_registry_depth(
+        authentication: Authentication,
+        registry_depth: usize,
+    ) -> Self {
+        assert!(registry_depth > 0, "registry depth must be non-zero");
+        assert!(
+            registry_depth <= CircuitField::MODULUS_BIT_SIZE as usize,
+            "registry depth exceeds the status-index field"
+        );
         let poseidon = poseidon_config();
         let mut credential_elements =
             std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 1_000_003));
@@ -171,14 +205,16 @@ impl SpikeCircuit {
         let challenge_scalar = jubjub_scalar_from_circuit_field(challenge);
         let signature_response = signature_nonce - challenge_scalar * issuer_secret;
 
-        let registry_siblings =
-            std::array::from_fn(|index| CircuitField::from((index as u64 + 1) * 7_000_001));
+        let registry_siblings = (0..registry_depth)
+            .map(|index| CircuitField::from((index as u64 + 1) * 7_000_001))
+            .collect::<Vec<_>>();
         let status_id = [
             credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
         let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
-        let registry_directions = status_path_directions_native(&poseidon, status_id);
+        let registry_directions =
+            status_path_directions_native(&poseidon, status_id, registry_depth);
         let expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
             active_leaf,
@@ -213,7 +249,8 @@ impl SpikeCircuit {
             self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
         let active_leaf = active_status_leaf_native(&poseidon, status_id, credential_commitment);
-        let directions = status_path_directions_native(&poseidon, status_id);
+        let directions =
+            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len());
         self.expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
             active_leaf,
@@ -224,6 +261,10 @@ impl SpikeCircuit {
 
     pub fn authentication(&self) -> Authentication {
         self.authentication
+    }
+
+    pub fn registry_depth(&self) -> usize {
+        self.registry_siblings.len()
     }
 
     pub fn public_inputs(&self) -> Vec<CircuitField> {
@@ -269,7 +310,8 @@ impl SpikeCircuit {
 
     #[cfg(test)]
     fn tamper_registry(&mut self) {
-        self.registry_siblings[REGISTRY_DEPTH / 2] += CircuitField::from(1u64);
+        let middle = self.registry_siblings.len() / 2;
+        self.registry_siblings[middle] += CircuitField::from(1u64);
     }
 
     #[cfg(test)]
@@ -279,7 +321,8 @@ impl SpikeCircuit {
             self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let directions = status_path_directions_native(&poseidon, status_id);
+        let directions =
+            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len());
         let changed_index = directions
             .iter()
             .position(|current_is_right| !current_is_right)
@@ -295,7 +338,8 @@ impl SpikeCircuit {
             self.credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let directions = status_path_directions_native(&poseidon, status_id);
+        let directions =
+            status_path_directions_native(&poseidon, status_id, self.registry_siblings.len());
         self.expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
             &poseidon,
             CircuitField::from(0u64),
@@ -446,6 +490,36 @@ pub fn run_suite(with_proofs: bool) -> Result<SuiteReport, SynthesisError> {
         curve: "Groth16/BN254 with Baby-Jubjub authentication model",
         poseidon_profile: "width=3 rate=2 capacity=1 alpha=5 full=8 partial=57 skip_matrices=0",
         registry_depth: REGISTRY_DEPTH,
+        proof_measurements_enabled: with_proofs,
+        build_profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        target_os: std::env::consts::OS,
+        target_arch: std::env::consts::ARCH,
+        results,
+    })
+}
+
+pub fn run_registry_depth_suite(
+    with_proofs: bool,
+) -> Result<RegistryDepthSuiteReport, SynthesisError> {
+    let mut results = Vec::new();
+    for depth in REGISTRY_DEPTH_PROFILES {
+        let circuit =
+            SpikeCircuit::fixture_with_registry_depth(Authentication::ActiveRegistry, depth);
+        results.push(RegistryDepthCandidateReport {
+            depth,
+            measurement: measure_candidate(circuit, with_proofs)?,
+        });
+    }
+
+    Ok(RegistryDepthSuiteReport {
+        schema: "org.proofofhumanity.v2-registry-depth-benchmark/1",
+        warning: "research harness only; depth profiles do not ratify a production accumulator",
+        curve: "Groth16/BN254",
+        poseidon_profile: "width=3 rate=2 capacity=1 alpha=5 full=8 partial=57 skip_matrices=0",
         proof_measurements_enabled: with_proofs,
         build_profile: if cfg!(debug_assertions) {
             "debug"
@@ -693,9 +767,10 @@ fn enforce_u128_limb(value: &FpVar<CircuitField>) -> Result<(), SynthesisError> 
 fn merkle_root_native(
     config: &PoseidonConfig<CircuitField>,
     leaf: CircuitField,
-    siblings: &[CircuitField; REGISTRY_DEPTH],
-    directions: &[bool; REGISTRY_DEPTH],
+    siblings: &[CircuitField],
+    directions: &[bool],
 ) -> CircuitField {
+    assert_eq!(siblings.len(), directions.len());
     siblings
         .iter()
         .zip(directions)
@@ -715,7 +790,7 @@ fn enforce_registry_membership(
     credential_commitment: FpVar<CircuitField>,
     status_id_high: FpVar<CircuitField>,
     status_id_low: FpVar<CircuitField>,
-    siblings: &[CircuitField; REGISTRY_DEPTH],
+    siblings: &[CircuitField],
     expected_root: [CircuitField; 2],
 ) -> Result<(), SynthesisError> {
     let _ = status_id_high.to_bits_le_with_top_bits_zero(BYTES32_LIMB_BITS)?;
@@ -763,18 +838,20 @@ fn active_status_leaf_native(
 fn status_path_directions_native(
     config: &PoseidonConfig<CircuitField>,
     status_id: [CircuitField; 2],
-) -> [bool; REGISTRY_DEPTH] {
-    let index = status_path_index_native(config, status_id);
-    std::array::from_fn(|bit| index & (1u32 << bit) != 0)
+    depth: usize,
+) -> Vec<bool> {
+    assert!(depth <= CircuitField::MODULUS_BIT_SIZE as usize);
+    let digest = poseidon_native(config, STATUS_INDEX_DOMAIN, &status_id).into_bigint();
+    (0..depth).map(|bit| digest.get_bit(bit)).collect()
 }
 
 fn status_path_index_native(
     config: &PoseidonConfig<CircuitField>,
     status_id: [CircuitField; 2],
 ) -> u32 {
-    let digest = poseidon_native(config, STATUS_INDEX_DOMAIN, &status_id);
+    let digest = poseidon_native(config, STATUS_INDEX_DOMAIN, &status_id).into_bigint();
     (0..REGISTRY_DEPTH).fold(0u32, |index, bit| {
-        index | (u32::from(digest.into_bigint().get_bit(bit)) << bit)
+        index | (u32::from(digest.get_bit(bit)) << bit)
     })
 }
 
@@ -924,7 +1001,7 @@ mod tests {
         let mut registry = StatusRegistry::new();
         let activation = registry.activate(status_id, credential_commitment).unwrap();
 
-        circuit.registry_siblings = activation.witness.siblings;
+        circuit.registry_siblings = activation.witness.siblings.to_vec();
         circuit.expected_registry_root = split_field_to_u128_limbs(activation.witness.root);
         let cs = ConstraintSystem::<CircuitField>::new_ref();
         circuit.clone().generate_constraints(cs.clone()).unwrap();
@@ -942,7 +1019,7 @@ mod tests {
             registry.checkpoint(),
         )
         .unwrap();
-        circuit.registry_siblings = refreshed.siblings;
+        circuit.registry_siblings = refreshed.siblings.to_vec();
         circuit.expected_registry_root = split_field_to_u128_limbs(refreshed.root);
         let cs = ConstraintSystem::<CircuitField>::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
@@ -999,11 +1076,65 @@ mod tests {
     }
 
     #[test]
+    fn registry_depth_profile_constraints_are_pinned() {
+        let report = run_registry_depth_suite(false).expect("all depth profiles synthesize");
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.depth)
+                .collect::<Vec<_>>(),
+            REGISTRY_DEPTH_PROFILES
+        );
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.measurement.constraints)
+                .collect::<Vec<_>>(),
+            REGISTRY_DEPTH_CONSTRAINTS,
+            "depth-profile constraint drift requires an explicit benchmark review"
+        );
+        assert!(report
+            .results
+            .iter()
+            .all(|result| result.measurement.public_inputs == 5));
+        assert!(report.results.windows(2).all(|pair| {
+            pair[1].measurement.constraints - pair[0].measurement.constraints == 15_424
+        }));
+    }
+
+    #[test]
+    fn every_registry_depth_profile_rejects_a_tampered_upper_path() {
+        for depth in REGISTRY_DEPTH_PROFILES {
+            let mut circuit =
+                SpikeCircuit::fixture_with_registry_depth(Authentication::ActiveRegistry, depth);
+            *circuit
+                .registry_siblings
+                .last_mut()
+                .expect("depth profiles are non-zero") += CircuitField::from(1u64);
+
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            circuit.generate_constraints(cs.clone()).unwrap();
+            assert!(
+                !cs.is_satisfied().unwrap(),
+                "depth {depth} must bind the highest registry sibling"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "CI runs the release-mode Groth16 round trip explicitly"]
     fn all_candidates_generate_verified_groth16_proofs() {
         let report = run_suite(true).expect("all candidates prove and verify");
         assert!(report.results.iter().all(|result| {
             result.proof_verified == Some(true) && result.proof_bytes == Some(128)
+        }));
+        let depth_report =
+            run_registry_depth_suite(true).expect("all registry depth profiles prove and verify");
+        assert!(depth_report.results.iter().all(|result| {
+            result.measurement.proof_verified == Some(true)
+                && result.measurement.proof_bytes == Some(128)
         }));
     }
 }

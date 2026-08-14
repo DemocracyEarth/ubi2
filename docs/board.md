@@ -119,8 +119,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   Groth16 round trips. Issuer coordinates are now privately/losslessly bound to `issuerKeyId`, and the active
   leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. A transport-neutral
   sparse-registry prototype now exercises activation/revocation, canonical unkeyed deltas, local batched witness
-  refresh, trusted-checkpoint matching, and exact-circuit compatibility. Remaining: mobile/browser, alternate
-  hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the measured ADR.
+  refresh, trusted-checkpoint matching, and exact-circuit compatibility. Depths 32/64/96/128 are now measured with
+  pinned constraints and verified proofs; depth 96 is the provisional candidate to beat. Remaining: mobile/browser,
+  alternate hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the measured ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_
