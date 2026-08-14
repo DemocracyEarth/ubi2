@@ -93,6 +93,50 @@ collision ceiling at 52,571 constraints, while depth 128 adds another 15,424 con
 security margin. This is not a selection. Browser/mobile time and peak memory, public-delta bandwidth, adversarial
 index allocation, EVM gas and alternate accumulators still decide the ADR.
 
+## Browser/WASM feasibility
+
+The `browser/` harness is a real Web Worker/WASM proving path for depths 96 and 128. Setup runs in a disposable
+worker only to create a deterministic fixture proving key. The holder path starts a fresh worker, validates and
+deserializes that compressed key, generates a Groth16 proof and verifies it before reporting success. Fresh workers
+prevent the second depth from reusing the first run's already-grown allocator.
+
+Measured 2026-08-13 in Chromium 150 on the same aarch64 macOS workstation as the desktop baseline. Three consecutive
+runs per profile verified; the table records the middle machine-readable capture (holder-path totals spanned
+15.12–15.34 s at depth 96 and 20.87–21.15 s at depth 128). These are feasibility observations, not portable budgets
+or mobile results. “Memory” is retained WASM linear memory after the call: because WebAssembly memory grows in pages
+and does not shrink, it is a useful high-water signal for this worker, but it is not total browser-process or device
+memory.
+
+| Depth | Setup | Proving key | Setup memory | Key validate/load | Prove | Verify | Holder-path total | Prover memory |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 96 | 4.42 s | 10,452,496 B | 177,143,808 B | 11.08 s | 4.23 s | 2 ms | 15.33 s | 214,368,256 B |
+| 128 | 6.24 s | 15,022,608 B | 232,980,480 B | 14.94 s | 6.07 s | 2 ms | 21.04 s | 291,897,344 B |
+
+Both proofs verified and remained 128 bytes with a 424-byte verifier key. Depth 128 used 43.7% more proving-key
+bandwidth, 36.2% more retained prover memory and 37.2% more holder-path time than depth 96 in this run. Both are under
+the roadmap's 60-second modern-device ceiling on this desktop-class browser, but depth 96's roughly 204 MiB retained
+memory is not evidence that mid-range mobile devices are safe. Depth 96 therefore remains the candidate to beat, not
+a selected production parameter.
+
+### Registry transport lower bounds
+
+The deterministic transport report projects only fixed-width binary content: epochs, roots, old/new leaves, the
+delta's depth-sized index and Merkle siblings. The operational prototype remains depth 32 with a `u32` index; deeper
+rows do not migrate that wire schema. The report deliberately excludes schema/framing, authenticated checkpoints,
+signatures, compression and request overhead. Its delta values are uncompressed lower bounds for this one-path-per-
+mutation model; pseudorandom field elements should not be assumed compressible.
+
+| Depth | Holder witness floor | One delta floor | 1,000 updates | 100,000 updates per holder |
+|---:|---:|---:|---:|---:|
+| 32 | 1,092 B | 1,164 B | 1.164 MB | 116.4 MB |
+| 64 | 2,116 B | 2,192 B | 2.192 MB | 219.2 MB |
+| 96 | 3,140 B | 3,220 B | 3.220 MB | 322.0 MB |
+| 128 | 4,164 B | 4,248 B | 4.248 MB | 424.8 MB |
+
+This rules out treating the prototype's full unkeyed, one-path-per-mutation feed as the production distribution
+strategy at global update volumes. The privacy goal remains—holders must not query by private `statusId`—but the ADR
+must measure batched/multiproof deltas plus authenticated snapshots, or select a different accumulator.
+
 ## Reproduce
 
 Requires the Rust toolchain pinned at the repository root.
@@ -105,10 +149,28 @@ cargo test --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked \
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --registry-depths --constraints-only
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --transport-estimates
 ```
 
-Use `-- --constraints-only` on the final command for deterministic relation metadata without Groth16 setup or
-proof timing. CI pins the exact constraint counts and performs a proof round trip for every candidate.
+Use `-- --constraints-only` on the baseline or registry-depth suite for deterministic relation metadata without
+Groth16 setup or proof timing. Transport estimates are deterministic by construction. CI pins the exact constraint
+counts and performs a proof round trip for every candidate.
+
+To reproduce the actual browser flow, generate the ignored web bindings and serve the static runner from the
+repository root:
+
+```bash
+wasm-pack build tools/v2-crypto-bench --target web --out-dir browser/pkg --release -- \
+  --features browser --locked
+python3 -m http.server 4173 --bind 127.0.0.1 --directory tools/v2-crypto-bench/browser
+```
+
+Open `http://127.0.0.1:4173/`, run both profiles and download the machine-readable report if needed. The generated
+`browser/pkg/` directory is git-ignored; CI independently compiles the bridge for `wasm32-unknown-unknown`. The runner
+pins each deterministic fixture key's exact byte length and SHA-256 digest, checks the digest again after worker
+transfer, and then uses validated arkworks deserialization. Production must independently pin the ceremony artifact
+digest and deployed verifier key; these fixture fingerprints are not deployable trust anchors.
 
 ## Preliminary desktop baseline
 

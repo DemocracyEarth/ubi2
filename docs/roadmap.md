@@ -210,8 +210,11 @@ and v2 proof generation are not enabled yet.
   transport-neutral sparse-registry prototype now emits canonical unkeyed deltas, refreshes witnesses locally,
   verifies an independently accepted checkpoint, and feeds the exact circuit relation. Registry depths
   32/64/96/128 are now CI-pinned at 21,723/37,147/52,571/67,995 constraints with verified proofs; depth 96 is the
-  current candidate to beat, not a selection. Mobile/browser, alternate hash/proof-system, EVM gas, root governance,
-  durable transport/privacy hardening, and the final ADR remain.
+  current candidate to beat, not a selection. A real fresh-worker Chromium/WASM path verifies depth-96 and
+  depth-128 proofs in 15.33 s / 214 MB and 21.04 s / 292 MB retained linear memory; mid-range mobile is still
+  unmeasured. The depth-96 binary delta floor is 3,220 B per mutation (322 MB per holder per 100,000 updates), so
+  batching/snapshots or another accumulator is required. Mobile, alternate hash/proof-system, EVM gas, root
+  governance, durable transport/privacy hardening, and the final ADR remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.

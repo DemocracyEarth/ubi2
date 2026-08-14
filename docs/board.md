@@ -120,8 +120,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. A transport-neutral
   sparse-registry prototype now exercises activation/revocation, canonical unkeyed deltas, local batched witness
   refresh, trusted-checkpoint matching, and exact-circuit compatibility. Depths 32/64/96/128 are now measured with
-  pinned constraints and verified proofs; depth 96 is the provisional candidate to beat. Remaining: mobile/browser,
-  alternate hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the measured ADR.
+  pinned constraints and verified proofs. Fresh-worker Chromium/WASM depth-96 and depth-128 holder paths verify in
+  15.33 s / 214 MB and 21.04 s / 292 MB retained memory; depth 96 remains provisional and mobile is unmeasured. Its
+  3,220-byte per-delta binary floor makes batching/snapshots or another accumulator mandatory at scale. Remaining:
+  mobile, alternate hash/proof-system, EVM gas, root governance, transport/privacy hardening, and the measured ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_

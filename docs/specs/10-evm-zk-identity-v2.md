@@ -237,6 +237,12 @@ The country root above is a deliberately small parity fixture, not a production 
   depths 32/64/96/128 with CI-pinned budgets of 21,723/37,147/52,571/67,995 constraints. Proof size, verifier key
   size and five public inputs remain constant. Depth 96 is the current scale/cost candidate to beat, not a protocol
   selection; browser/mobile memory, delta bandwidth, adversarial index allocation and alternate accumulators remain.
+- **Browser/WASM feasibility implemented:** fresh Chromium workers now generate fixture keys and separately
+  deserialize/prove/verify depth-96 and depth-128 relations. The measured holder paths were 15.33 s / 214,368,256 B
+  retained WASM memory and 21.04 s / 291,897,344 B respectively; both proofs verified. These desktop-class runs do
+  not satisfy the mobile gate. Binary delta lower bounds are 3,220 B at depth 96 and 4,248 B at depth 128, making
+  the prototype's unbatched public full-delta feed non-viable at global mutation volumes. Batched/multiproof updates
+  plus authenticated snapshots, or a different accumulator, are now a production selection requirement.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 

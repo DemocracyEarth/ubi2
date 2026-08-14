@@ -30,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (pinned via rust-toolchain.toml)
-        run: rustup show && rustc --version
+        run: |
+          rustup show
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Format + lint
         run: |
@@ -53,7 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (pinned via rust-toolchain.toml)
-        run: rustup show && rustc --version
+        run: |
+          rustup show
+          rustc --version
+          rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/v2-crypto-bench -> target
@@ -61,6 +66,8 @@ jobs:
         run: cargo fmt -- --check
       - name: Lint
         run: cargo clippy --release --locked --all-targets -- -D warnings
+      - name: Compile browser prover bridge
+        run: cargo build --release --locked --target wasm32-unknown-unknown --lib --features browser
       - name: Relation tests and pinned constraint budgets
         run: cargo test --release --locked
       - name: Generate and verify every Groth16 candidate proof
@@ -71,6 +78,7 @@ jobs:
         run: |
           cargo run --release --locked -- --constraints-only
           cargo run --release --locked -- --registry-depths --constraints-only
+          cargo run --release --locked -- --transport-estimates
 
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)
