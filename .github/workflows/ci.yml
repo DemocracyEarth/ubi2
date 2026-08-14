@@ -79,6 +79,7 @@ jobs:
           cargo run --release --locked -- --constraints-only
           cargo run --release --locked -- --registry-depths --constraints-only
           cargo run --release --locked -- --transport-estimates
+          cargo run --release --locked -- --status-distribution
 
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)

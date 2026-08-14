@@ -24,6 +24,7 @@ The authentication delta is then:
 | Issuer signature | Baby-Jubjub Schnorr/EdDSA-style equation with a Poseidon challenge | Authenticates issuance without a membership witness; revocation/status still needs a separate mechanism. |
 | Active registry | Depth-32 Poseidon Merkle membership of the credential commitment | Combines issuance authorization and active status, but requires root governance and holder witness updates. |
 | Signature + registry | Both relations | Defense in depth and explicit separation of authenticity/status at the highest circuit cost. |
+| Signature + packed status | Issuer signature plus a non-revoked bit in a 256-status chunk under a depth-24 Poseidon root | Separates authenticity from status, avoids hashed-leaf collisions for a canonical 32-bit assigned slot, and amortizes public updates across a chunk. Uniqueness remains a separate registry concern. |
 
 The signature model keeps issuer public-key coordinates private, enforces prime-subgroup membership, derives a
 domain-separated Poseidon key digest, and binds that digest losslessly to the two public 128-bit `issuerKeyId`
@@ -32,6 +33,15 @@ commitment. Wrong keys, identifiers, signatures, and non-128-bit limbs fail clos
 encoding, nonce derivation, domain constants, and Poseidon parameters still require cryptographic review. The
 bytes32 reconstruction also rejects values at or above the BN254 field modulus before equality, preventing modular
 aliases.
+
+The packed-status candidate treats the signed `statusId` as one canonical issuer-assigned `uint32` slot. The low
+eight bits select one of 256 revocation bits and the next 24 bits select that chunk's Merkle path, covering up to
+2^32 slots. Each chunk is encoded losslessly as two little-endian 128-bit field limbs; zero means active and one
+means revoked. The circuit authenticates the complete credential with the issuer signature, proves the selected
+bit is zero, binds the depth-24 path to the slot, and binds the public root losslessly. Tests reject a set target
+bit, changed path/root, non-canonical slot or chunk limbs, and root modular aliases. This assigned-slot convention,
+status authority, checkpoint governance and wire encoding are research inputs, not a migration of the operational
+depth-32 registry or a ratified ABI.
 
 The active-registry model binds the credential commitment and private two-limb `statusId` into the active leaf.
 It derives the depth-32 path from `Poseidon(statusId)` inside the circuit and binds the root losslessly to the two
@@ -137,6 +147,31 @@ This rules out treating the prototype's full unkeyed, one-path-per-mutation feed
 strategy at global update volumes. The privacy goal remains—holders must not query by private `statusId`—but the ADR
 must measure batched/multiproof deltas plus authenticated snapshots, or select a different accumulator.
 
+### Status-distribution bakeoff
+
+The follow-up deterministic model compares a depth-96 one-credential-per-leaf sparse tree against the depth-24
+packed-status candidate. Both use a public, unkeyed update stream. A batch includes two epochs/roots, every changed
+index and old/new leaf material, plus the exact number of sibling nodes in a Merkle multiproof. The packed strategy
+also computes a full 256-bit-per-chunk snapshot and selects the smaller delivery; a pinned dense-change fixture
+exercises the snapshot branch. These are uncompressed fixed-width binary lower bounds. They exclude framing,
+authentication/signatures, checkpoint distribution, compression, fork recovery and request overhead.
+The snapshot rows assume dense zero-based slot allocation, so snapshot size follows the allocated high-water mark;
+sparse or adversarial slot assignment would invalidate that projection and must be rejected by the final design.
+
+| Workload | Depth-96 sparse batch | Packed changed chunks | Packed batch/snapshot | Reduction vs sparse |
+|---|---:|---:|---:|---:|
+| 100M credentials / 1,000 changes | 2,800,008 B | 1,000 | 312,640 B batch | 88.83% |
+| 100M credentials / 100,000 changes | 258,800,968 B | 88,279 | 10,510,477 B batch | 95.93% |
+| 1B credentials / 100,000 changes | 258,802,024 B | 98,756 | 20,823,540 B batch | 91.95% |
+
+The packed holder-witness floor is 836 B (epoch, root, 32-byte chunk and 24 siblings), versus 3,140 B for the
+depth-96 sparse model. Full packed snapshots are 12,500,036 B for 100M slots and 125,000,036 B for 1B slots.
+Batching alone only reduces the modeled sparse stream by 13.04%–19.62%; most leaves do not share enough of a
+96-level pseudorandom path. Packing changes that scaling because many status changes share a chunk and every proof
+uses a 24-level path. The result makes signature + packed status the candidate to beat for authenticity plus
+revocation, not a selection: issuer slot allocation, duplicate prevention, authorization, checkpoint availability,
+privacy metadata, mobile proving and EVM verification still need production design and measurement.
+
 ## Reproduce
 
 Requires the Rust toolchain pinned at the repository root.
@@ -151,6 +186,8 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --registry-depths --constraints-only
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --transport-estimates
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --status-distribution
 ```
 
 Use `-- --constraints-only` on the baseline or registry-depth suite for deterministic relation metadata without
@@ -183,6 +220,11 @@ budget and must not be compared across machines as if deterministic.
 | Issuer signature | 13,528 | 12,916 | 3 | 1,003 ms | 809 ms | 1.42 ms | 128 B | 360 B |
 | Active registry | 21,723 | 21,301 | 5 | 1,708 ms | 1,431 ms | 1.24 ms | 128 B | 424 B |
 | Signature + registry | 31,843 | 30,793 | 5 | 3,177 ms | 2,372 ms | 1.82 ms | 128 B | 424 B |
+| Signature + packed status | 27,157 | 26,253 | 5 | 897 ms | 835 ms | 0.94 ms | 128 B | 424 B |
+
+The packed-status row was measured 2026-08-14 on the same workstation after the original rows and is not a timing
+comparison with those earlier warm-binary samples. Its proof verified. At 27,157 constraints it is 4,686 constraints
+(14.7%) smaller than signature + depth-32 per-credential registry while providing a separate revocation relation.
 
 The deterministic result is that direct signature authentication is 8,195 constraints (37.7%) smaller than the
 depth-32 registry relation in this harness. That makes the signature relation the current candidate to beat for
