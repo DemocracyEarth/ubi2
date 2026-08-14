@@ -44,8 +44,39 @@ call `checkProof` from the intended consumer or use `checkProofFor(..., consumer
 v2 canonical policy hash, not a raw private attribute. The proof is ABI-encoded `uint256[8]`; public signals are
 the exact 18 entries documented in [`docs/specs/10-evm-zk-identity-v2.md`](../docs/specs/10-evm-zk-identity-v2.md).
 
-This preview intentionally rejects a non-zero dynamic-status epoch because sanctions freshness semantics are not
-ratified. The measured 86,210-gas path uses a stub raw verifier and is not a production proof-cost estimate.
+For a sanctions policy, use SDK `dynamicStatusPolicyRegistration` to derive the exact governance inputs. Proposed
+ADR-0011 defines signal 17 as the snapshot publication Unix time; the registry recomputes the policy hash and the
+adapter rejects unknown, retired, future, mismatched or stale snapshots. This remains a pre-deployment seam: the
+production circuit must prove the dynamic-policy/status relation, and stub-verifier gas is not a production
+proof-cost estimate.
+
+```ts
+import { dynamicStatusPolicyRegistration } from "@ubi2/sdk";
+
+const registration = dynamicStatusPolicyRegistration({
+  policy: {
+    kind: "dynamic-status",
+    status: "sanctions-clear",
+    providerId: "self:ofac",
+    listVersion: "2026-08-14",
+    statusRoot,
+    maximumAgeSeconds: 86_400,
+  },
+  publishedAt, // uint32 Unix seconds assigned to this exact public snapshot
+});
+
+// registerDynamicStatusPolicy(...)
+const args = [
+  registration.providerIdHash,
+  registration.listVersionHash,
+  registration.statusRoot,
+  registration.publishedAt,
+  registration.maximumAgeSeconds,
+] as const;
+```
+
+The transaction return/event policy hash must equal `registration.policyHash`. Applications request that exact
+hash; they must not request an ambiguous “latest sanctions status.”
 
 ## Setup (dependencies are not vendored)
 `lib/` is git-ignored; restore the pinned deps with:

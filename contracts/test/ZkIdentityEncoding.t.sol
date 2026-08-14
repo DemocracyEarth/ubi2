@@ -25,6 +25,14 @@ contract ZkIdentityEncodingHarness {
         return ZkIdentityEncoding.presentationBindingHash(binding);
     }
 
+    function dynamicStatusPolicyHash(ZkIdentityEncoding.DynamicStatusPolicy memory policy)
+        external
+        pure
+        returns (bytes32)
+    {
+        return ZkIdentityEncoding.dynamicStatusPolicyHash(policy);
+    }
+
     function scopedNullifierPreimage(uint256 holderSecret, ZkIdentityEncoding.NullifierScope memory scope)
         external
         pure
@@ -153,6 +161,34 @@ contract ZkIdentityEncodingTest is Test {
         });
         vm.expectRevert(ZkIdentityEncoding.InvalidPresentationBinding.selector);
         harness.presentationBindingHash(binding);
+    }
+
+    function test_DynamicStatusPolicyHash_Parity() public view {
+        bytes32 policyHash = harness.dynamicStatusPolicyHash(
+            ZkIdentityEncoding.DynamicStatusPolicy({
+                providerIdHash: 0x116175bf9d7293d67f2e7b7309631a6b8c1cb2eef79f38ef33e45ab0968a8a55,
+                listVersionHash: 0xe8261aa0634bc9f1544375a820c195025e7a45b6e29f0ba57769964d92205726,
+                statusRoot: 0x217f00d353043696f123b4919b74ba57900770ce0f80414db45d0e52cbbf2ccf,
+                maximumAgeSeconds: 86_400
+            })
+        );
+        assertEq(policyHash, 0x554b29b8540ffafa1fa4bc6e54847f887d03b4b9b29449ba2418cbc7f9fa3381);
+    }
+
+    function test_DynamicStatusPolicyHash_RejectsInvalidMetadata() public {
+        ZkIdentityEncoding.DynamicStatusPolicy memory policy = ZkIdentityEncoding.DynamicStatusPolicy({
+            providerIdHash: bytes32(0),
+            listVersionHash: bytes32(uint256(2)),
+            statusRoot: bytes32(uint256(3)),
+            maximumAgeSeconds: 86_400
+        });
+        vm.expectRevert(ZkIdentityEncoding.InvalidDynamicStatusPolicy.selector);
+        harness.dynamicStatusPolicyHash(policy);
+
+        policy.providerIdHash = bytes32(uint256(1));
+        policy.maximumAgeSeconds = 59;
+        vm.expectRevert(ZkIdentityEncoding.InvalidDynamicStatusPolicy.selector);
+        harness.dynamicStatusPolicyHash(policy);
     }
 
     function test_NullifierPreimage_RejectsNonCanonicalHolderSecret() public {

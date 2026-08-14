@@ -229,9 +229,12 @@ and v2 proof generation are not enabled yet.
   requires a timelocked multisig. A strict 18-signal adapter now binds the actual consumer plus chain, permanent
   host, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode; resolves the
   codehash-pinned circuit/issuer/root; and closes wallet-change replay through a prover-authenticated identifier.
-  Host + adapter + registry + replay storage measures 86,210 gas with a stub raw verifier. Dynamic status rejects
-  non-zero epochs until freshness semantics are ratified; the production circuit, end-to-end target-chain gas,
-  corrected-host testnet redeploy and audits remain.
+  Host + adapter + registry + replay storage measures 89,885 gas for static policy and 90,173 gas for fresh dynamic
+  status with a stub raw verifier. Proposed ADR-0011 now pins the status signal to the exact governed snapshot
+  publication Unix time and maximum age; SDK/Solidity
+  hashes match, and unknown, retired, future, mismatched or stale policies fail closed. Security ratification and
+  production-circuit enforcement of that relation, end-to-end target-chain gas, corrected-host testnet redeploy
+  and audits remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.

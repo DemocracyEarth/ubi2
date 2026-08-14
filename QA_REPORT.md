@@ -18,13 +18,13 @@ No testnet or mainnet transaction was submitted during this phase.
 | --- | --- | --- |
 | Optimized build and size limit | PASS | `forge build --sizes`; every runtime is below 24,576 bytes |
 | Solidity formatting | PASS | `forge fmt --check` |
-| Solidity tests | PASS | 147 passed, 0 failed, 0 skipped |
+| Solidity tests | PASS | 154 passed, 0 failed, 0 skipped |
 | Fuzz | PASS | 256 cases for nullifier uniqueness / second-mint resistance |
 | Stateful invariants | PASS | 3 invariants × 64 runs × 64 calls; 12,288 calls, 0 reverts |
 | Target contract coverage | PASS | ProofOfHumanity and PredicateVerifier each at 100% lines and branches |
 | Voucher cross-stack parity | PASS | 21 assertions, 0 failures, production ProofOfHumanity artifact |
 | Predicate cross-stack parity | PASS | 29 assertions, 0 failures, production verifier and vote artifacts |
-| Isolated gas snapshot | PASS | `.gas-snapshot` generated and committed with six target calls |
+| Isolated gas snapshot | PASS | `.gas-snapshot` generated and committed with seven target calls |
 | Static/manual security review | PASS with documented trust assumptions | Slither unavailable; manual review below |
 
 ## Coverage
@@ -55,7 +55,8 @@ every line and branch covered.
   replay identifiers, and wallet changes that must not bypass one-per-scope replay.
 - The governed v2 adapter covers exact 18-signal/eight-word decoding, host-only calls, chain/host/consumer/subject/
   context/challenge/policy/nullifier-mode binding, verifier-codehash/issuer/root governance, invalid proofs,
-  revoked roots, and fail-closed dynamic status pending freshness ratification.
+  revoked roots, and governed dynamic-status registration, exact publication-time binding, inclusive freshness,
+  stale-by-one-second rejection, unknown/zero/mismatch/future rejection and irreversible retirement.
 - SybilResistantVote covers valid yes/no votes, one-human-one-vote, invalid or absent SBTs, expired SBTs,
   predicate/context/consumer/subject mismatch, false predicates, bad signatures, replay, and double vote.
 - Privacy tests use `vm.record`, `vm.recordLogs`, `vm.accesses`, and `vm.load` to assert representative
@@ -85,11 +86,12 @@ chain-specific fee estimates.
 | In-place newer-epoch refresh | 13,813 |
 | Issuer path `consume` | 39,855 |
 | Mock proof path `consumeWithProof` | 36,159 |
-| V2 host + adapter + registry + replay write (stub raw verifier) | 86,210 |
+| V2 static policy host + adapter + registry + replay write (stub raw verifier) | 89,885 |
+| V2 fresh dynamic status host + adapter + registry + replay write (stub raw verifier) | 90,173 |
 | Research five-input BN254 raw verifier | 230,657 |
 
-The adapter number isolates integration overhead with a stub raw verifier. The five-input verifier uses public
-deterministic setup material. Neither number estimates the final production 18-input end-to-end call, and they
+The adapter numbers isolate integration overhead with a stub raw verifier. The five-input verifier uses public
+deterministic setup material. None estimates the final production 18-input end-to-end call, and the measurements
 must not be added mechanically.
 
 ## Runtime sizes
@@ -100,8 +102,8 @@ must not be added mechanically.
 | `ProofOfHumanity` | 9,048 | 15,528 |
 | `PredicateVerifier` | 6,236 | 18,340 |
 | `SybilResistantVote` (demo only) | 1,879 | 22,697 |
-| `ZkIdentityPredicateProver` (pre-deployment) | 4,451 | 20,125 |
-| `ZkIdentityVersionRegistry` (pre-deployment) | 3,902 | 20,674 |
+| `ZkIdentityPredicateProver` (pre-deployment) | 4,957 | 19,619 |
+| `ZkIdentityVersionRegistry` (pre-deployment) | 5,497 | 19,079 |
 | `V2PackedStatusGroth16Verifier` (research only) | 2,211 | 22,365 |
 
 `SybilResistantVote` remains demo-only and must not be deployed to production.
@@ -134,6 +136,15 @@ the same scoped nullifier after changing wallets. The host now constructs the co
 prover-authenticated replay identifier independent of subject. The five existing testnet hosts predate this change,
 remain v1-only with prover unset, and require a versioned redeploy before v2 testing. No mainnet host exists.
 
+### V2-SEC-02 — Dynamic-status time and root relationship was undefined (resolved in proposed ADR-0011)
+
+Signal 17 had no pinned unit or authority, so accepting it could let an old sanctions root be relabeled with a
+fresh holder/issuer timestamp. The canonical policy hash now commits to provider, list version, root and maximum
+age; governance registers that exact hash with the snapshot's Unix publication time; and the adapter requires exact
+timestamp equality before applying the inclusive age window. Unknown, retired, future, mismatched and stale
+snapshots fail closed. Production activation still requires the final circuit to prove the policy-kind zero/non-zero
+rule and status-root relation, plus independent review.
+
 No open High or Critical finding remains from this phase.
 
 ## Manual security review
@@ -149,7 +160,7 @@ No open High or Critical finding remains from this phase.
 | Privacy | SBT state is nullifier + epoch. Predicate tests assert exact private attribute values are absent from calldata, logs, and storage. `tokenURI` tests assert no PII fields. |
 | Issuer blast radius | The v1 issuer can authorize SBTs and arbitrary predicate booleans, including future epochs. This is an explicit v1 trust assumption. Protect it as a production signing secret, monitor it, and retain rapid owner/multisig rotation. |
 | Owner/prover blast radius | The owner can rotate issuer, renderer, and predicate prover. A malicious prover can mislead consumers that opt into the proof path, but cannot alter SBT/nullifier state or UBI eligibility. Launch with prover unset and use a multisig owner. |
-| Prover context binding | The host constructs `abi.encode(actualConsumer, applicationContext)` before the nested call. The v2 adapter recomputes every pinned presentation/nullifier binding and resolves codehash-pinned governance. Dynamic status rejects non-zero epochs until freshness is ratified; any real prover still requires circuit/Solidity review before activation. |
+| Prover context binding | The host constructs `abi.encode(actualConsumer, applicationContext)` before the nested call. The v2 adapter recomputes every pinned presentation/nullifier binding and resolves codehash-pinned governance. Proposed ADR-0011 additionally binds dynamic status to an exact registered snapshot publication time and maximum age. Any real prover still requires circuit/Solidity review before activation. |
 
 Foundry lint emitted only advisory items: deliberate narrowing for epoch/display values, hashing-efficiency
 suggestions, naming style, and test-only base64 arithmetic. None changes the release decision. The epoch

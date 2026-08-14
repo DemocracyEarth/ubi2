@@ -133,9 +133,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. The fixture setup is
   intentionally non-deployable. A strict 18-signal adapter now authenticates the host-forwarded consumer and every
   pinned presentation/nullifier binding, resolves the accepted circuit/issuer/root, and makes scoped-nullifier
-  replay survive wallet changes. Its stateful stub-verifier path is pinned at 86,210 gas. Dynamic status fails
-  closed pending a ratified freshness policy; the production 18-input circuit/verifier, corrected-host testnet
-  redeploy, timelocked ownership, target-chain gas and audits remain.
+  replay survive wallet changes. Its stateful stub-verifier paths are pinned at 89,885 gas for static policy and
+  90,173 gas for fresh dynamic status. Proposed ADR-0011 binds status to an exact governance-registered snapshot
+  publication Unix time and maximum age, with
+  SDK/Solidity hash parity plus unknown/retired/future/mismatch/staleness rejection. Security ratification and
+  production-circuit enforcement, the production 18-input verifier, corrected-host testnet redeploy, timelocked
+  ownership, target-chain gas and audits remain.
 
 ## 👀 Review (awaiting gates)
 _(none)_

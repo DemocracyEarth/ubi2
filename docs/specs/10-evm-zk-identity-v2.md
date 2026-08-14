@@ -2,7 +2,8 @@
 
 - **Status:** proposed; foundation implementation started
 - **Owner:** architect → cryptography engineer → protocol engineer → interface engineer → security auditor
-- **Decision:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md)
+- **Decisions:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md) and the proposed
+  [ADR-0011 dynamic-status freshness boundary](adr/0011-dynamic-status-freshness.md)
 - **Builds on:** [ADR-0009](adr/0009-predicate-v2-and-final-onchain-surface.md),
   [`PredicateVerifier.sol`](../../contracts/src/PredicateVerifier.sol), and the M6 passport verifier
 
@@ -176,14 +177,18 @@ The pre-deployment [`ZkIdentityPredicateProver`](../../contracts/src/ZkIdentityP
   challenge, policy and credential epoch;
 - recomputes the nullifier scope from chain, host, consumer, action context, policy and nullifier mode;
 - resolves an active codehash-pinned circuit/issuer/root tuple from the registry before calling the raw verifier;
+- enforces exact governance registration, publication time, maximum age and retirement for dynamic-status policies;
 - returns only `(subject, policyHash, result, credentialEpoch)` and exposes only the scoped nullifier to the
   host replay extension.
 
 The application context is the canonical ABI tuple `(bytes32 actionContext, bytes32 challenge,
-uint8 nullifierMode)`, emitted by the SDK helper `encodeZkPredicateProofContext`. Signal 17 remains reserved for
-short-lived dynamic status. Because its time unit, policy-specific maximum age and root-publication relationship
-are not yet ratified, the current adapter rejects every non-zero value rather than inventing a sanctions
-freshness policy.
+uint8 nullifierMode)`, emitted by the SDK helper `encodeZkPredicateProofContext`. Under proposed ADR-0011, signal
+17 is the Unix publication timestamp in seconds of the exact sanctions snapshot committed by `policyHash`.
+`dynamicStatusPolicyRegistration` emits the canonical governance arguments. The registry recomputes the policy
+hash from provider, list version, root and maximum age; the adapter requires a registered active policy, exact
+timestamp equality, no future time and `block.timestamp - publishedAt <= maximumAgeSeconds`. Non-dynamic policies
+use zero. This pre-deployment implementation does not enable sanctions without a production circuit that proves
+the policy-kind zero/non-zero rule and membership against the committed root.
 
 Circuit versions are additive raw verifier contracts; an audited registry/multisig with a timelock controls which
 versions consumers may accept. No proof-system upgrade may mutate the SBT or its holders.
@@ -292,10 +297,13 @@ The country root above is a deliberately small parity fixture, not a production 
   actual consumer, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode before
   resolving an accepted circuit/issuer/root and calling an exact eight-word/18-input raw verifier. The host now
   forwards the actual consumer and spends a prover-authenticated replay identifier, closing wallet-change replay.
-  The pinned stateful host + adapter + registry + replay-write call is 86,210 gas with a stub raw verifier; it is
-  not an end-to-end proof estimate and must not be added mechanically to the five-input research result. Dynamic
-  status fails closed until its freshness semantics are ratified. Existing Phase 2 hosts remain v1-only and no
-  production prover is configured.
+  The pinned stateful host + adapter + registry + replay-write calls are 89,885 gas for a static policy and 90,173
+  gas for fresh dynamic status with a stub raw verifier; they are not end-to-end proof estimates and must not be
+  added mechanically to the five-input research result. Proposed
+  ADR-0011 now pins signal 17 to the exact governed Unix publication time of the sanctions snapshot; canonical SDK
+  and Solidity policy hashes bind provider/list/root/maximum age, and the adapter rejects unknown, retired, future,
+  mismatched or stale snapshots. The production circuit must still enforce dynamic-policy semantics. Existing
+  Phase 2 hosts remain v1-only and no production prover is configured.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
@@ -350,7 +358,7 @@ Every entry is a strict canonical BN254 scalar and the vector has exactly 18 ent
 | 14 | EVM subject as a zero-extended `uint160` |
 | 15 | Boolean result (`0` or `1`) |
 | 16 | credential epoch (`uint32`) |
-| 17 | dynamic-status epoch (`uint32`; `0` when unused) |
+| 17 | dynamic-status snapshot publication Unix time in seconds (`uint32`; `0` for non-dynamic policies) |
 
 All `bytes32` values use two 128-bit limbs rather than modular reduction. This is lossless and prevents two
 different EVM hashes from aliasing to the same circuit field. SDK, Solidity, and Rust decoders reject wide
@@ -373,7 +381,8 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 ### Stage 4 — EVM verifier and developer SDK
 
 - Production-ceremony 18-input verifier integrated with the pre-deployment `IPredicateProver` adapter and
-  active-root/version registry design; ratify and implement dynamic-status freshness before enabling sanctions.
+  active-root/version registry design; security-ratify ADR-0011 and enforce its policy-kind/status relation in the
+  circuit before enabling sanctions.
 - SDK policy builders and public-signal encoding for age, country sets, issuer sets, validity and uniqueness.
 - Integration examples for read-only apps, stateful contracts, EOAs and ERC-1271 smart accounts.
 - Exit: proof accepted on all target testnets; wrong chain/consumer/context/policy/root and replay all fail.

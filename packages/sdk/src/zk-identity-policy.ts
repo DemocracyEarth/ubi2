@@ -77,6 +77,19 @@ export interface DynamicStatusPolicy extends PolicyBase {
   maximumAgeSeconds: number;
 }
 
+export type DynamicStatusPolicyInput = Omit<DynamicStatusPolicy, keyof PolicyBase>;
+
+/** Exact governance arguments for one versioned dynamic-status snapshot. */
+export interface DynamicStatusPolicyRegistration {
+  policyHash: Hex;
+  providerIdHash: Hex;
+  listVersionHash: Hex;
+  statusRoot: Hex;
+  /** Unix timestamp in seconds at which the committed snapshot was published. */
+  publishedAt: number;
+  maximumAgeSeconds: number;
+}
+
 export interface PrivateFieldMatchPolicy extends PolicyBase {
   kind: "private-field-match";
   field: "name";
@@ -100,7 +113,7 @@ export type ZkIdentityPolicyInput =
   | Omit<DocumentValidityPolicy, keyof PolicyBase>
   | Omit<DocumentAuthenticityPolicy, keyof PolicyBase>
   | Omit<UniqueHumanPolicy, keyof PolicyBase>
-  | Omit<DynamicStatusPolicy, keyof PolicyBase>
+  | DynamicStatusPolicyInput
   | Omit<PrivateFieldMatchPolicy, keyof PolicyBase>;
 
 export interface ZkPresentationBinding {
@@ -296,6 +309,30 @@ export function zkIdentityPolicyHash(input: ZkIdentityPolicy | ZkIdentityPolicyI
       [policyDomainHash, ZK_IDENTITY_POLICY_VERSION, kindHash, policyParametersHash(policy)],
     ),
   );
+}
+
+/**
+ * Produce the exact hashes and timestamp passed to
+ * `ZkIdentityVersionRegistry.registerDynamicStatusPolicy`.
+ *
+ * The registry recomputes `policyHash`, preventing governance metadata from
+ * drifting away from the canonical SDK policy committed by the circuit.
+ */
+export function dynamicStatusPolicyRegistration(input: {
+  policy: DynamicStatusPolicy | DynamicStatusPolicyInput;
+  publishedAt: number;
+}): DynamicStatusPolicyRegistration {
+  const policy = normalizeZkIdentityPolicy(input.policy);
+  if (policy.kind !== "dynamic-status") throw new Error("dynamic status policy required");
+  assertInteger(input.publishedAt, "dynamic status publication time", 1, 0xffffffff);
+  return {
+    policyHash: zkIdentityPolicyHash(policy),
+    providerIdHash: keccak256(stringToBytes(policy.providerId)),
+    listVersionHash: keccak256(stringToBytes(policy.listVersion)),
+    statusRoot: policy.statusRoot,
+    publishedAt: input.publishedAt,
+    maximumAgeSeconds: policy.maximumAgeSeconds,
+  };
 }
 
 /** JSON with schema-defined key order, useful for fixtures, developer tools and copy/paste. */

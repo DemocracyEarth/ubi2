@@ -74,7 +74,7 @@ export interface ZkIdentityPublicSignalValues {
   subject: Address;
   result: boolean;
   credentialEpoch: number;
-  /** Zero means that the selected policy has no dynamic-status credential. */
+  /** Unix snapshot-publication time in seconds; zero means no dynamic-status policy. */
   statusEpoch: number;
 }
 

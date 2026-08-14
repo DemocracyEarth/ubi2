@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { keccak256, stringToBytes } from "viem";
 import {
   countrySetCommitment,
+  dynamicStatusPolicyRegistration,
   normalizeZkIdentityPolicy,
   serializeZkIdentityPolicy,
   zkIdentityPolicyHash,
@@ -59,6 +60,16 @@ const status = normalizeZkIdentityPolicy({
   maximumAgeSeconds: 86_400,
 });
 assert.equal(status.maximumAgeSeconds, 86_400);
+const statusRegistration = dynamicStatusPolicyRegistration({ policy: status, publishedAt: 1_786_492_800 });
+assert.deepEqual(statusRegistration, {
+  policyHash: "0x554b29b8540ffafa1fa4bc6e54847f887d03b4b9b29449ba2418cbc7f9fa3381",
+  providerIdHash: "0x116175bf9d7293d67f2e7b7309631a6b8c1cb2eef79f38ef33e45ab0968a8a55",
+  listVersionHash: "0xe8261aa0634bc9f1544375a820c195025e7a45b6e29f0ba57769964d92205726",
+  statusRoot: "0x217f00d353043696f123b4919b74ba57900770ce0f80414db45d0e52cbbf2ccf",
+  publishedAt: 1_786_492_800,
+  maximumAgeSeconds: 86_400,
+});
+assert.equal(statusRegistration.policyHash, zkIdentityPolicyHash(status));
 
 const policyHash = zkIdentityPolicyHash(age);
 const bindingHash = zkPresentationBindingHash({
@@ -118,6 +129,10 @@ assert.throws(
 assert.throws(
   () => normalizeZkIdentityPolicy({ kind: "unknown" } as never),
   /unsupported ZK identity policy kind/,
+);
+assert.throws(
+  () => dynamicStatusPolicyRegistration({ policy: status, publishedAt: 0 }),
+  /publication time/u,
 );
 
 console.log("zk identity policy: normalization + policy hashes + EVM presentation binding PASS");

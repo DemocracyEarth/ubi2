@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ZkIdentityEncoding} from "./ZkIdentityEncoding.sol";
 
 /// @title ZK Identity verifier-version and status-root registry
 /// @notice Fail-closed governance surface for the tuple a v2 adapter must
@@ -31,6 +32,16 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
         bool revoked;
     }
 
+    struct DynamicStatusPolicy {
+        bytes32 providerIdHash;
+        bytes32 listVersionHash;
+        bytes32 statusRoot;
+        uint32 publishedAt;
+        uint32 maximumAgeSeconds;
+        bool registered;
+        bool active;
+    }
+
     mapping(bytes32 circuitId => CircuitVersion) public circuits;
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => IssuerAuthorization)) public issuers;
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => uint32)) public latestStatusEpoch;
@@ -39,6 +50,7 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => mapping(bytes32 root => bool))) public publishedRoots;
     mapping(bytes32 circuitId => mapping(bytes32 issuerKeyId => mapping(bytes32 root => uint32 epoch))) public
         statusRootEpoch;
+    mapping(bytes32 policyHash => DynamicStatusPolicy) public dynamicStatusPolicies;
 
     error InvalidCircuitId();
     error InvalidVerifier();
@@ -54,6 +66,10 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
     error StatusRootAlreadyPublished(bytes32 root);
     error UnknownStatusRoot(bytes32 circuitId, bytes32 issuerKeyId, uint32 epoch);
     error StatusRootAlreadyRevoked(bytes32 circuitId, bytes32 issuerKeyId, uint32 epoch);
+    error InvalidDynamicStatusPublicationTime();
+    error DynamicStatusPolicyAlreadyRegistered(bytes32 policyHash);
+    error UnknownDynamicStatusPolicy(bytes32 policyHash);
+    error DynamicStatusPolicyAlreadyRetired(bytes32 policyHash);
     error UnacceptedIdentityState();
 
     event CircuitRegistered(bytes32 indexed circuitId, address indexed verifier, bytes32 verifierCodehash);
@@ -64,6 +80,15 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
         bytes32 indexed circuitId, bytes32 indexed issuerKeyId, uint32 indexed epoch, bytes32 root
     );
     event StatusRootRevoked(bytes32 indexed circuitId, bytes32 indexed issuerKeyId, uint32 indexed epoch);
+    event DynamicStatusPolicyRegistered(
+        bytes32 indexed policyHash,
+        bytes32 indexed providerIdHash,
+        bytes32 indexed listVersionHash,
+        bytes32 statusRoot,
+        uint32 publishedAt,
+        uint32 maximumAgeSeconds
+    );
+    event DynamicStatusPolicyRetired(bytes32 indexed policyHash);
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
@@ -126,6 +151,74 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
 
         status.revoked = true;
         emit StatusRootRevoked(circuitId, issuerKeyId, epoch);
+    }
+
+    /// @notice Register one exact sanctions-list snapshot and freshness policy.
+    /// @dev `publishedAt` is a Unix timestamp in seconds and may not be in the
+    ///      future. The canonical policy hash commits to provider, list version,
+    ///      root and maximum age, so none can be substituted after registration.
+    function registerDynamicStatusPolicy(
+        bytes32 providerIdHash,
+        bytes32 listVersionHash,
+        bytes32 statusRoot,
+        uint32 publishedAt,
+        uint32 maximumAgeSeconds
+    ) external onlyOwner returns (bytes32 policyHash) {
+        if (publishedAt == 0 || uint256(publishedAt) > block.timestamp) {
+            revert InvalidDynamicStatusPublicationTime();
+        }
+
+        policyHash = dynamicStatusPolicyHash(providerIdHash, listVersionHash, statusRoot, maximumAgeSeconds);
+        if (dynamicStatusPolicies[policyHash].registered) revert DynamicStatusPolicyAlreadyRegistered(policyHash);
+
+        dynamicStatusPolicies[policyHash] = DynamicStatusPolicy({
+            providerIdHash: providerIdHash,
+            listVersionHash: listVersionHash,
+            statusRoot: statusRoot,
+            publishedAt: publishedAt,
+            maximumAgeSeconds: maximumAgeSeconds,
+            registered: true,
+            active: true
+        });
+        emit DynamicStatusPolicyRegistered(
+            policyHash, providerIdHash, listVersionHash, statusRoot, publishedAt, maximumAgeSeconds
+        );
+    }
+
+    /// @notice Irreversibly retire an exact dynamic-status policy snapshot.
+    function retireDynamicStatusPolicy(bytes32 policyHash) external onlyOwner {
+        DynamicStatusPolicy storage policy = dynamicStatusPolicies[policyHash];
+        if (!policy.registered) revert UnknownDynamicStatusPolicy(policyHash);
+        if (!policy.active) revert DynamicStatusPolicyAlreadyRetired(policyHash);
+        policy.active = false;
+        emit DynamicStatusPolicyRetired(policyHash);
+    }
+
+    /// @notice Canonical SDK-compatible policy hash for a sanctions snapshot.
+    function dynamicStatusPolicyHash(
+        bytes32 providerIdHash,
+        bytes32 listVersionHash,
+        bytes32 statusRoot,
+        uint32 maximumAgeSeconds
+    ) public pure returns (bytes32) {
+        return ZkIdentityEncoding.dynamicStatusPolicyHash(
+            ZkIdentityEncoding.DynamicStatusPolicy({
+                providerIdHash: providerIdHash,
+                listVersionHash: listVersionHash,
+                statusRoot: statusRoot,
+                maximumAgeSeconds: maximumAgeSeconds
+            })
+        );
+    }
+
+    /// @notice Minimal policy state consumed by the verifier adapter.
+    function dynamicStatusPolicyState(bytes32 policyHash)
+        external
+        view
+        returns (uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active)
+    {
+        DynamicStatusPolicy storage policy = dynamicStatusPolicies[policyHash];
+        return (policy.publishedAt, policy.maximumAgeSeconds, policy.registered, policy.active);
     }
 
     function isAccepted(bytes32 circuitId, address verifier, bytes32 issuerKeyId, bytes32 root, uint32 epoch)

@@ -161,6 +161,9 @@ contract V2AdapterGasBenchmarkTest is Test {
     bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-gas");
     bytes32 internal constant ACTIVE_ROOT = keccak256("active-root-gas");
     bytes32 internal constant POLICY_HASH = keccak256("age-range-policy-gas");
+    bytes32 internal constant STATUS_PROVIDER_HASH = keccak256("self:ofac");
+    bytes32 internal constant STATUS_LIST_HASH = keccak256("2026-08-14");
+    bytes32 internal constant DYNAMIC_STATUS_ROOT = keccak256("dynamic-status-root-gas");
     bytes32 internal constant ACTION_CONTEXT = keccak256("membership:gas");
     bytes32 internal constant CHALLENGE = keccak256("challenge:gas");
 
@@ -169,6 +172,8 @@ contract V2AdapterGasBenchmarkTest is Test {
     GasZkIdentityGroth16Verifier internal rawVerifier;
     ZkIdentityPredicateProver internal adapter;
     address internal subject;
+    bytes32 internal dynamicPolicyHash;
+    uint32 internal dynamicStatusPublishedAt;
 
     function setUp() public {
         vm.warp(1_700_000_000);
@@ -179,13 +184,17 @@ contract V2AdapterGasBenchmarkTest is Test {
         registry.registerCircuit(CIRCUIT_ID, address(rawVerifier));
         registry.authorizeIssuer(CIRCUIT_ID, ISSUER_KEY_ID);
         registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 1, ACTIVE_ROOT);
+        dynamicStatusPublishedAt = uint32(block.timestamp - 60);
+        dynamicPolicyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, dynamicStatusPublishedAt, 3_600
+        );
         adapter = new ZkIdentityPredicateProver(address(predicateVerifier), registry);
         predicateVerifier.setPredicateProver(adapter);
     }
 
     function test_Gas_V2AdapterConsumeWithStubVerifier() public {
         vm.pauseGasMetering();
-        uint256[] memory publicSignals = _signals();
+        uint256[] memory publicSignals = _signals(POLICY_HASH, 0);
         uint256[8] memory proofWords;
         proofWords[0] = 1;
         bytes memory proof = abi.encode(proofWords);
@@ -196,17 +205,30 @@ contract V2AdapterGasBenchmarkTest is Test {
         assertTrue(verified);
     }
 
-    function _signals() private view returns (uint256[] memory signals) {
+    function test_Gas_V2AdapterConsumeDynamicStatusWithStubVerifier() public {
+        vm.pauseGasMetering();
+        uint256[] memory publicSignals = _signals(dynamicPolicyHash, dynamicStatusPublishedAt);
+        uint256[8] memory proofWords;
+        proofWords[0] = 1;
+        bytes memory proof = abi.encode(proofWords);
+        bytes memory context = abi.encode(ACTION_CONTEXT, CHALLENGE, uint8(1));
+        vm.resumeGasMetering();
+        bool verified = predicateVerifier.consumeWithProof(proof, publicSignals, context, dynamicPolicyHash, subject);
+        vm.pauseGasMetering();
+        assertTrue(verified);
+    }
+
+    function _signals(bytes32 signalPolicyHash, uint32 statusEpoch) private view returns (uint256[] memory signals) {
         signals = new uint256[](18);
         signals[0] = 1;
         _writeIdentifier(signals, 1, CIRCUIT_ID);
         _writeIdentifier(signals, 3, ISSUER_KEY_ID);
         _writeIdentifier(signals, 5, ACTIVE_ROOT);
-        _writeIdentifier(signals, 7, POLICY_HASH);
+        _writeIdentifier(signals, 7, signalPolicyHash);
 
         bytes32 binding = ZkIdentityEncoding.presentationBindingHash(
             ZkIdentityEncoding.PresentationBinding({
-                policyHash: POLICY_HASH,
+                policyHash: signalPolicyHash,
                 chainId: block.chainid,
                 verifier: address(predicateVerifier),
                 consumer: address(this),
@@ -224,7 +246,7 @@ contract V2AdapterGasBenchmarkTest is Test {
                 verifier: address(predicateVerifier),
                 consumer: address(this),
                 context: ACTION_CONTEXT,
-                policyHash: POLICY_HASH
+                policyHash: signalPolicyHash
             })
         );
         _writeIdentifier(signals, 11, scope);
@@ -232,6 +254,7 @@ contract V2AdapterGasBenchmarkTest is Test {
         signals[14] = uint160(subject);
         signals[15] = 1;
         signals[16] = predicateVerifier.currentEpoch();
+        signals[17] = statusEpoch;
     }
 
     function _writeIdentifier(uint256[] memory signals, uint256 highIndex, bytes32 value) private pure {
