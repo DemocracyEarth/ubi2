@@ -33,6 +33,9 @@ contract ZkIdentityVersionRegistryTest is Test {
         assertTrue(active);
         assertTrue(registry.isAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_10, 10));
         registry.requireAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_10, 10);
+        assertEq(registry.statusRootEpoch(CIRCUIT_ID, ISSUER_KEY_ID, ROOT_10), 10);
+        assertTrue(registry.isRootAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_10));
+        assertEq(registry.requireRootAccepted(CIRCUIT_ID, ISSUER_KEY_ID, ROOT_10), address(verifier));
 
         assertFalse(registry.isAccepted(CIRCUIT_ID, OTHER, ISSUER_KEY_ID, ROOT_10, 10));
         assertFalse(registry.isAccepted(bytes32(uint256(1)), address(verifier), ISSUER_KEY_ID, ROOT_10, 10));
@@ -50,6 +53,7 @@ contract ZkIdentityVersionRegistryTest is Test {
 
         registry.revokeStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 10);
         assertFalse(registry.isAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_10, 10));
+        assertFalse(registry.isRootAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_10));
         assertTrue(registry.isAccepted(CIRCUIT_ID, address(verifier), ISSUER_KEY_ID, ROOT_11, 11));
     }
 

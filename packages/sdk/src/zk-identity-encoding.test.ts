@@ -3,6 +3,7 @@ import { keccak256, stringToBytes, type Hex } from "viem";
 import {
   BN254_SCALAR_FIELD,
   decodeZkIdentityPublicSignals,
+  encodeZkPredicateProofContext,
   encodeZkIdentityPublicSignals,
   joinBytes32,
   serializeZkIdentityPublicSignals,
@@ -110,6 +111,25 @@ assert.deepEqual(
 );
 assert.deepEqual(decodeZkIdentityPublicSignals(signals), signalValues);
 assert.equal(serializeZkIdentityPublicSignals(signals).length, 2 + 64 * ZK_PUBLIC_SIGNAL_COUNT);
+
+assert.equal(
+  encodeZkPredicateProofContext({
+    context: keccak256(stringToBytes("membership:season-1")),
+    challenge: keccak256(stringToBytes("challenge-1")),
+    nullifierMode: "single-use",
+  }).length,
+  2 + 64 * 3,
+  "adapter context is one canonical three-word ABI tuple",
+);
+assert.throws(
+  () =>
+    encodeZkPredicateProofContext({
+      context: keccak256(stringToBytes("membership:season-1")),
+      challenge: `0x${"00".repeat(32)}`,
+      nullifierMode: "single-use",
+    }),
+  /challenge must not be zero/u,
+);
 
 const [policyHigh, policyLow] = splitBytes32(policyHash);
 assert.equal(joinBytes32(policyHigh, policyLow), policyHash, "bytes32 limb conversion is lossless");

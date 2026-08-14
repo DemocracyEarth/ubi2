@@ -1,12 +1,12 @@
 # Proof of Humanity Contract Release — Phase 1 QA Report
 
-**Date:** 2026-08-09
+**Date:** 2026-08-14
 
 **Scope:** `contracts/` and the `apps/proofofhumanity` Solidity/TypeScript boundary
 
-**Decision:** **PASS for Phase 2 testnet dry-runs**
+**Decision:** **PASS for the v1 Phase 2 stack; v2 adapter remains pre-deployment**
 
-**Mainnet status:** **BLOCKED** until Phase 2 is green and a human explicitly approves each chain
+**Mainnet status:** **BLOCKED** pending the applicable audits and explicit human approval for each chain
 
 This is an internal release-engineering review, not an independent third-party audit. Slither is not
 installed on the machine, so the required fallback manual review was performed and is recorded below.
@@ -18,13 +18,13 @@ No testnet or mainnet transaction was submitted during this phase.
 | --- | --- | --- |
 | Optimized build and size limit | PASS | `forge build --sizes`; every runtime is below 24,576 bytes |
 | Solidity formatting | PASS | `forge fmt --check` |
-| Solidity tests | PASS | 108 passed, 0 failed, 0 skipped |
+| Solidity tests | PASS | 147 passed, 0 failed, 0 skipped |
 | Fuzz | PASS | 256 cases for nullifier uniqueness / second-mint resistance |
 | Stateful invariants | PASS | 3 invariants × 64 runs × 64 calls; 12,288 calls, 0 reverts |
 | Target contract coverage | PASS | ProofOfHumanity and PredicateVerifier each at 100% lines and branches |
 | Voucher cross-stack parity | PASS | 21 assertions, 0 failures, production ProofOfHumanity artifact |
 | Predicate cross-stack parity | PASS | 29 assertions, 0 failures, production verifier and vote artifacts |
-| Isolated gas snapshot | PASS | `.gas-snapshot` generated and committed with four target calls |
+| Isolated gas snapshot | PASS | `.gas-snapshot` generated and committed with six target calls |
 | Static/manual security review | PASS with documented trust assumptions | Slither unavailable; manual review below |
 
 ## Coverage
@@ -34,7 +34,7 @@ Command: `forge coverage --report summary`
 | Contract | Lines | Statements | Branches | Functions |
 | --- | ---: | ---: | ---: | ---: |
 | `ProofOfHumanity.sol` | 100% (67/67) | 100% (76/76) | 100% (10/10) | 100% (17/17) |
-| `PredicateVerifier.sol` | 100% (66/66) | 100% (70/70) | 100% (12/12) | 100% (18/18) |
+| `PredicateVerifier.sol` | 100% (79/79) | 100% (84/84) | 100% (16/16) | 100% (21/21) |
 
 The whole-package line percentage is lower because `script/Deploy.s.sol` and the inlined
 `Countries.sol` source are outside this phase's target-contract threshold. Foundry emitted source-anchor
@@ -51,7 +51,11 @@ every line and branch covered.
   exercised explicitly.
 - The proof path covers owner-only prover configuration, set/swap/unset, happy paths, false results,
   unset prover, wrong predicate, subject mismatch, stale epoch, bad proof, replay, independent consumer
-  and context replay domains, and stateless repeated `checkProof` calls.
+  and context replay domains, stateless repeated `checkProof` calls, explicit-consumer read checks, missing/zero
+  replay identifiers, and wallet changes that must not bypass one-per-scope replay.
+- The governed v2 adapter covers exact 18-signal/eight-word decoding, host-only calls, chain/host/consumer/subject/
+  context/challenge/policy/nullifier-mode binding, verifier-codehash/issuer/root governance, invalid proofs,
+  revoked roots, and fail-closed dynamic status pending freshness ratification.
 - SybilResistantVote covers valid yes/no votes, one-human-one-vote, invalid or absent SBTs, expired SBTs,
   predicate/context/consumer/subject mismatch, false predicates, bad signatures, replay, and double vote.
 - Privacy tests use `vm.record`, `vm.recordLogs`, `vm.accesses`, and `vm.load` to assert representative
@@ -79,19 +83,26 @@ chain-specific fee estimates.
 | --- | ---: |
 | New `mintWithVoucher` | 134,448 |
 | In-place newer-epoch refresh | 13,813 |
-| Issuer path `consume` | 39,833 |
-| Mock proof path `consumeWithProof` | 34,385 |
+| Issuer path `consume` | 39,855 |
+| Mock proof path `consumeWithProof` | 36,159 |
+| V2 host + adapter + registry + replay write (stub raw verifier) | 86,210 |
+| Research five-input BN254 raw verifier | 230,657 |
 
-The proof-path number uses the deterministic mock prover and does not estimate a future Groth16 prover.
+The adapter number isolates integration overhead with a stub raw verifier. The five-input verifier uses public
+deterministic setup material. Neither number estimates the final production 18-input end-to-end call, and they
+must not be added mechanically.
 
 ## Runtime sizes
 
 | Production contract | Runtime bytes | Margin to 24,576 |
 | --- | ---: | ---: |
-| `PoHCardRenderer` | 10,569 | 14,007 |
+| `PoHCardRenderer` | 11,714 | 12,862 |
 | `ProofOfHumanity` | 9,048 | 15,528 |
-| `PredicateVerifier` | 5,368 | 19,208 |
+| `PredicateVerifier` | 6,236 | 18,340 |
 | `SybilResistantVote` (demo only) | 1,879 | 22,697 |
+| `ZkIdentityPredicateProver` (pre-deployment) | 4,451 | 20,125 |
+| `ZkIdentityVersionRegistry` (pre-deployment) | 3,902 | 20,674 |
+| `V2PackedStatusGroth16Verifier` (research only) | 2,211 | 22,365 |
 
 `SybilResistantVote` remains demo-only and must not be deployed to production.
 
@@ -115,6 +126,14 @@ only the consumer probe remains a fixture.
 The README claimed nationality, age flags, gender, and sanctions status were stored publicly. The deployed
 surface stores only nullifier and coarse epoch. Documentation now matches the no-PII implementation.
 
+### V2-SEC-01 — Nested consumer and wallet-change replay were not enforceable (resolved pre-mainnet)
+
+The original proof seam passed presenter-controlled context through a nested call, where the prover could see only
+`PredicateVerifier` as `msg.sender`. Its replay key also included `subject`, allowing a portable credential to reuse
+the same scoped nullifier after changing wallets. The host now constructs the consumer envelope itself and spends a
+prover-authenticated replay identifier independent of subject. The five existing testnet hosts predate this change,
+remain v1-only with prover unset, and require a versioned redeploy before v2 testing. No mainnet host exists.
+
 No open High or Critical finding remains from this phase.
 
 ## Manual security review
@@ -126,11 +145,11 @@ No open High or Critical finding remains from this phase.
 | Low-level/unchecked calls | No `delegatecall`, `selfdestruct`, `tx.origin`, unrestricted low-level call, unchecked block, or ignored boolean return exists in the production contracts. |
 | Signature malleability | OpenZeppelin 5.7 `ECDSA.recover` provides canonical signature checks. EIP-712 domains bind chain ID and verifying contract; wrong signer, field tampering, rotation, and wrong-chain tests fail closed. |
 | Voucher front-running | Anyone may relay a voucher, but `to` is signed and the token always mints to that address. A relayer cannot redirect it. Exact replay is rejected. |
-| Replay domains | Voucher epochs are strictly monotonic. Issuer attestations key `(subject, consumer, context, nonce)`. Proofs key `(subject, consumer, keccak256(context))`; different consumer/context values are independent. |
+| Replay domains | Voucher epochs are strictly monotonic. Issuer attestations key `(subject, consumer, context, nonce)`. Stateful proofs spend a prover-authenticated, domain-separated `(consumer, scoped identifier)` key; wallet/challenge changes cannot reset it, while different consumer/context/policy scopes remain independent. |
 | Privacy | SBT state is nullifier + epoch. Predicate tests assert exact private attribute values are absent from calldata, logs, and storage. `tokenURI` tests assert no PII fields. |
 | Issuer blast radius | The v1 issuer can authorize SBTs and arbitrary predicate booleans, including future epochs. This is an explicit v1 trust assumption. Protect it as a production signing secret, monitor it, and retain rapid owner/multisig rotation. |
 | Owner/prover blast radius | The owner can rotate issuer, renderer, and predicate prover. A malicious prover can mislead consumers that opt into the proof path, but cannot alter SBT/nullifier state or UBI eligibility. Launch with prover unset and use a multisig owner. |
-| Prover context binding | Privacy and consumer binding depend on the future prover cryptographically binding the opaque context. The prover is unset at launch; any real prover requires its own audit before activation. |
+| Prover context binding | The host constructs `abi.encode(actualConsumer, applicationContext)` before the nested call. The v2 adapter recomputes every pinned presentation/nullifier binding and resolves codehash-pinned governance. Dynamic status rejects non-zero epochs until freshness is ratified; any real prover still requires circuit/Solidity review before activation. |
 
 Foundry lint emitted only advisory items: deliberate narrowing for epoch/display values, hashing-efficiency
 suggestions, naming style, and test-only base64 arithmetic. None changes the release decision. The epoch

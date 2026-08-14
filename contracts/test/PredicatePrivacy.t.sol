@@ -3,9 +3,15 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {PredicateVerifier, PredicateAttestation, IPredicateProver} from "../src/PredicateVerifier.sol";
+import {
+    PredicateVerifier,
+    PredicateAttestation,
+    IPredicateProver,
+    IPredicateProverReplay
+} from "../src/PredicateVerifier.sol";
 
-contract PrivacyPredicateProver is IPredicateProver {
+contract PrivacyPredicateProver is IPredicateProver, IPredicateProverReplay {
+    bytes32 public constant REPLAY_IDENTIFIER = bytes32(uint256(1));
     address internal _subject;
     bytes32 internal _predicate;
     bool internal _result;
@@ -24,6 +30,10 @@ contract PrivacyPredicateProver is IPredicateProver {
         returns (address, bytes32, bool, uint32)
     {
         return (_subject, _predicate, _result, _epoch);
+    }
+
+    function proofReplayIdentifier(uint256[] calldata) external pure returns (bytes32) {
+        return REPLAY_IDENTIFIER;
     }
 }
 
@@ -96,7 +106,7 @@ contract PredicatePrivacyTest is Test {
         vm.prank(consumer);
         assertTrue(pv.consumeWithProof(proof, publicSignals, context, PREDICATE, human));
 
-        bytes32 replayKey = keccak256(abi.encode(human, consumer, keccak256(context)));
+        bytes32 replayKey = pv.proofReplayKey(consumer, prover.REPLAY_IDENTIFIER());
         assertTrue(pv.consumed(replayKey));
         _assertLogsContainNoPrivateValues(vm.getRecordedLogs());
         _assertRecordedStorageContainsNoPrivateValues(address(pv));

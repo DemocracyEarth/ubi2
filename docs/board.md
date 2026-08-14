@@ -127,11 +127,15 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   deterministic public
   multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
   88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. Remaining: issuer
-  slot/uniqueness design, mobile, alternate hash/proof-system, final-adapter/target-chain gas, transport/privacy
+  slot/uniqueness design, mobile, alternate hash/proof-system, production-verifier/target-chain gas, transport/privacy
   hardening, and the measured ADR. The raw five-input arkworks fixture now verifies through EIP-196/197 at a pinned
   230,657 gas with 2,211-byte runtime code, and a pre-deployment governance registry pins verifier codehashes plus
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. The fixture setup is
-  intentionally non-deployable; the 18-input adapter, freshness policy, timelocked ownership and audits remain.
+  intentionally non-deployable. A strict 18-signal adapter now authenticates the host-forwarded consumer and every
+  pinned presentation/nullifier binding, resolves the accepted circuit/issuer/root, and makes scoped-nullifier
+  replay survive wallet changes. Its stateful stub-verifier path is pinned at 86,210 gas. Dynamic status fails
+  closed pending a ratified freshness policy; the production 18-input circuit/verifier, corrected-host testnet
+  redeploy, timelocked ownership, target-chain gas and audits remain.
 
 ## 👀 Review (awaiting gates)
 _(none)_

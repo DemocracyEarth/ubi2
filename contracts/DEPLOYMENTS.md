@@ -19,6 +19,11 @@ owner multisig or production issuer.
 | Robinhood Chain Testnet (`46630`) | [`032ade9`](https://github.com/DemocracyEarth/ubi2/commit/032ade93f16aa63ab0bec3f686d5900f45fa407c) | [`0x7691…CE53`](https://explorer.testnet.chain.robinhood.com/address/0x7691e41cdd222ad5552a09ed3840433a16c5ce53?tab=contract) | [`0xb031…0E12`](https://explorer.testnet.chain.robinhood.com/address/0xb0317d3481a2a78959b51c4d5dce3f4991e50e12?tab=contract) | [`0x4A1a…307e`](https://explorer.testnet.chain.robinhood.com/address/0x4a1a892552b284eeda540ecf3e3e44797a9d307e?tab=contract) | verified source; mint/replay/soulbound/predicate PASS |
 | World Chain Sepolia (`4801`) | [`e95455d`](https://github.com/DemocracyEarth/ubi2/commit/e95455de5d077ad7aa3eb4c165d9141a38db6574) | [`0x7691…CE53`](https://sepolia.worldscan.org/address/0x7691e41cdd222ad5552a09ed3840433a16c5ce53#code) | [`0xb031…0E12`](https://sepolia.worldscan.org/address/0xb0317d3481a2A78959b51C4D5DCE3f4991e50E12#code) | [`0x4A1a…307e`](https://sepolia.worldscan.org/address/0x4A1a892552B284eeDa540ECF3E3e44797a9D307e#code) | verified source; mint/replay/soulbound/predicate PASS |
 
+> **Proof-path compatibility:** these five PredicateVerifier deployments predate the v2 consumer-forwarding and
+> scoped-nullifier replay correction. Their v1 issuer-attestation path remains valid and every `prover()` must stay
+> unset. A future v2 testnet rehearsal will publish a new corrected PredicateVerifier + registry + adapter +
+> production-artifact verifier stack; none of the addresses above is approved for v2 activation.
+
 ## Transactions
 
 ### Base Sepolia

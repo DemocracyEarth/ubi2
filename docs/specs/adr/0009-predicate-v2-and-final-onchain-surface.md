@@ -14,6 +14,15 @@
 > analysis in this ADR remain the chosen architecture; v1.5 is now reusable infrastructure rather than the
 > next standalone product release.
 
+> **Pre-mainnet correction (2026-08-14):** implementation review found that the nested prover call sees
+> `PredicateVerifier` as `msg.sender`, not the original consumer, and that replay keyed by `subject` lets the
+> same scoped nullifier obtain another slot after a wallet change. The external `IPredicateProver.verifyPredicate`
+> signature remains unchanged, but the host now passes `abi.encode(actualConsumer, applicationContext)` and
+> stateful provers implement the additive `IPredicateProverReplay` extension. The host spends the authenticated
+> scoped identifier independently of `subject`. Existing Phase 2 testnet PredicateVerifier deployments predate
+> this correction and remain v1-only; they must be replaced before any v2 testnet activation. No mainnet
+> PredicateVerifier has been deployed.
+
 ---
 
 ## Context
@@ -51,12 +60,13 @@ Extend it (purely additive to the v1 surface):
 - `IPredicateProver public prover;` + `setPredicateProver(IPredicateProver) onlyOwner` (+ event).
 - `consumeWithProof(bytes proof, uint256[] publicSignals, bytes context) returns (bool)` and a stateless
   `checkProof(...)` view that:
-  1. call `prover.verifyPredicate(proof, publicSignals, context)` → `(subject, predicate, result, epoch)`;
-  2. apply the **same shared checks** the issuer path already enforces — `consumer == msg.sender`,
-     `subject == presenter`, epoch freshness (`_isFresh`), and **anti-replay** on the `consumed` map with a
-     key derived from `(subject, consumer, context)` (the consumer supplies a fresh `context` per
-     presentation, e.g. a proposal id + nonce);
-  3. return `result`. Revert if `prover` is unset.
+  1. construct `abi.encode(actualConsumer, applicationContext)` inside the host and call
+     `prover.verifyPredicate(...)` → `(subject, predicate, result, epoch)`;
+  2. apply the **same shared checks** the issuer path already enforces — subject, predicate and epoch freshness;
+  3. ask the additive `IPredicateProverReplay` extension for an authenticated replay identifier and spend a
+     domain-separated key derived from `(consumer, replayIdentifier)`. V2 returns its scoped nullifier, which is
+     stable across subject/wallet and challenge changes but varies by chain/verifier/consumer/context/policy;
+  4. return `result`. Revert if the prover or its non-zero replay identifier is unavailable.
 - Keep v1 `consume(PredicateAttestation, sig)` untouched.
 
 Result: **one deployed verifier address serves the trusted-issuer path today and every ZK prover later.**
@@ -72,6 +82,17 @@ function verifyPredicate(bytes proof, uint256[] publicSignals, bytes context)
 Groth16 fits today; PLONK/STARK/BBS+ presentations are still "opaque bytes + public signals + context", so
 the interface survives a backend change. Variable, backend-specific data goes in `publicSignals`/`context`,
 never in the signature.
+
+Stateful consumption additionally requires:
+
+```solidity
+function proofReplayIdentifier(uint256[] publicSignals) external view returns (bytes32);
+```
+
+This is deliberately a separate extension: it does not change the forever verification return tuple, while
+letting each proof system expose its authenticated one-per-scope identifier. Stateless `checkProof` does not
+spend it. `checkProofFor` is the explicit-consumer view helper for off-chain calls that cannot use the intended
+consumer as the `eth_call` sender.
 
 **4. Ship the proving backends as a progression *behind the fixed seam*** — not as contract versions:
 
@@ -120,9 +141,11 @@ swap**. You get final contracts *and* a progressively hardening trust model.
 
 ## Migration
 
-None for the SBT. `PredicateVerifier` gains methods (additive; v1 callers unaffected). Consumers adopt
-`consumeWithProof` when they want the ZK path. The `consumed` anti-replay map is per `(subject, consumer,
-context)`, so the two paths don't collide.
+None for the SBT or v1 callers. Before mainnet, `PredicateVerifier` incorporates the consumer-forwarding and
+replay-extension correction above. The five already-published Phase 2 testnet PredicateVerifier addresses keep
+their valid v1 issuer path but must not have a prover configured; a later v2 testnet rehearsal deploys the
+corrected host, registry, adapter and production-artifact verifier as a new versioned stack. Issuer and proof
+replay keys remain domain-separated in the shared `consumed` mapping.
 
 ## Open questions / risks
 

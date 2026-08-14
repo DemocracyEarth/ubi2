@@ -6,6 +6,7 @@ soulbound** token carrying only a deterministic nullifier and coarse verificatio
 age, gender, sanctions result, or identity. One-human-one-token **per chain** via Self's nullifier.
 
 ## Contracts
+
 - `src/ProofOfHumanity.sol` — the soulbound SBT.
   - **MVP mint** `mintWithVoucher(HumanityVoucher, signature)`: proofofhumanity.org's backend verifies the
     Self proof off-chain and signs an EIP-712 `HumanityVoucher`; the human (or a relayer) redeems it. Works
@@ -13,6 +14,38 @@ age, gender, sanctions result, or identity. One-human-one-token **per chain** vi
     keyed on the nullifier; the issuer is rotatable by the owner (`setIssuer`, `Ownable`).
   - **Trustless upgrade seam** `IHumanityProofVerifier` — the future `mintWithProof(...)` verifies the
     Groth16 proof on-chain against a mirrored Self registry root (declared, intentionally unimplemented).
+- `src/PredicateVerifier.sol` — permanent v1 issuer-attestation host plus the proof-system-neutral
+  `IPredicateProver` seam. Before calling a prover it wraps the application context with the actual consuming
+  contract. Stateful proof consumption additionally requires `IPredicateProverReplay`; v2 spends the authenticated
+  scoped nullifier, not the presenting wallet, so wallet changes do not reset a one-per-scope gate.
+- `src/ZkIdentityPredicateProver.sol` — **pre-deployment** v2 adapter for the pinned 18-signal layout. It binds
+  chain, host, consumer, subject, policy, action context, challenge and nullifier mode, then resolves a governed
+  verifier/issuer/root and calls an exact eight-word/18-input raw verifier. Do not configure it until a reviewed
+  production circuit and ceremony artifact exist.
+- `src/ZkIdentityVersionRegistry.sol` — **pre-deployment** additive circuit/codehash, issuer and root governance
+  prototype. Production ownership requires a timelock-controlled multisig.
+
+## V2 adapter developer preview
+
+Clients encode only the application tuple; `PredicateVerifier` adds the actual consumer envelope internally:
+
+```ts
+import { encodeZkPredicateProofContext } from "@ubi2/sdk";
+
+const context = encodeZkPredicateProofContext({
+  context: actionContext,       // bytes32 stable action/scope
+  challenge,                   // fresh non-zero bytes32
+  nullifierMode: "single-use",
+});
+```
+
+The consumer calls `consumeWithProof(proof, publicSignals, context, policyHash, presenter)`. For read-only checks,
+call `checkProof` from the intended consumer or use `checkProofFor(..., consumer)` explicitly. `policyHash` is the
+v2 canonical policy hash, not a raw private attribute. The proof is ABI-encoded `uint256[8]`; public signals are
+the exact 18 entries documented in [`docs/specs/10-evm-zk-identity-v2.md`](../docs/specs/10-evm-zk-identity-v2.md).
+
+This preview intentionally rejects a non-zero dynamic-status epoch because sanctions freshness semantics are not
+ratified. The measured 86,210-gas path uses a stub raw verifier and is not a production proof-cost estimate.
 
 ## Setup (dependencies are not vendored)
 `lib/` is git-ignored; restore the pinned deps with:
@@ -33,6 +66,6 @@ forge test -vv
 forge fmt
 ```
 
-The complete secretless CI gate additionally enforces target-contract coverage, the four-call gas
+The complete secretless CI gate additionally enforces target-contract coverage, deterministic gas
 baseline, Solidity/TypeScript EIP-712 parity, and a local rehearsal of the Phase 2 deployment tooling.
 See [PHASE2.md](PHASE2.md) for testnet deployment instructions.
