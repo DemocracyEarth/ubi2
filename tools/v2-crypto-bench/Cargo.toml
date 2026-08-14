@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+browser = ["dep:js-sys", "dep:wasm-bindgen"]
+
 # Deliberately separate from the root workspace: these are circuit-design and
 # proving dependencies, not dependencies of the production ubi2 verifier.
 [workspace]
@@ -20,8 +27,10 @@ ark-relations = { version = "=0.5.1", default-features = false, features = ["std
 ark-serialize = { version = "=0.5.0", default-features = false, features = ["std"] }
 ark-snark = { version = "=0.5.1", default-features = false }
 ark-std = { version = "=0.5.0", default-features = false, features = ["std"] }
+js-sys = { version = "=0.3.102", optional = true }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+wasm-bindgen = { version = "=0.2.125", optional = true }
 
 [profile.release]
 codegen-units = 1

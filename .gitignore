@@ -13,6 +13,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Generated locally by the isolated v2 browser-prover benchmark.
+/tools/v2-crypto-bench/browser/pkg/
+
 # Env & secrets — NEVER commit
 .env
 .env.*

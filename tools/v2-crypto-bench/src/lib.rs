@@ -15,7 +15,7 @@ use ark_crypto_primitives::sponge::{
 use ark_ec::{AdditiveGroup, CurveGroup, PrimeGroup};
 use ark_ed_on_bn254::{constraints::EdwardsVar, EdwardsProjective, Fr as JubjubScalar};
 use ark_ff::{BigInteger, PrimeField};
-use ark_groth16::Groth16;
+use ark_groth16::{Groth16, ProvingKey};
 use ark_r1cs_std::{
     fields::{emulated_fp::EmulatedFpVar, fp::FpVar},
     prelude::*,
@@ -23,11 +23,15 @@ use ark_r1cs_std::{
 use ark_relations::r1cs::{
     ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, SynthesisError,
 };
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
 use serde::Serialize;
+#[cfg(not(all(target_arch = "wasm32", feature = "browser")))]
 use std::time::Instant;
+use std::{error::Error, fmt};
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+use wasm_bindgen::{prelude::*, JsCast};
 
 mod status_registry;
 
@@ -47,6 +51,9 @@ pub const NULLIFIER_FIELD_COUNT: usize = 6;
 pub const REGISTRY_DEPTH: usize = 32;
 pub const REGISTRY_DEPTH_PROFILES: [usize; 4] = [32, 64, 96, 128];
 pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_995];
+pub const REGISTRY_DEPTH_WITNESS_VARIABLES: [usize; 4] = [21_301, 36_757, 52_213, 67_669];
+pub const BROWSER_REGISTRY_DEPTHS: [usize; 2] = [96, 128];
+pub const BROWSER_REGISTRY_PROVING_KEY_BYTES: [usize; 2] = [10_452_496, 15_022_608];
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
 const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
@@ -153,6 +160,113 @@ pub struct RegistryDepthCandidateReport {
     pub depth: usize,
     #[serde(flatten)]
     pub measurement: CandidateReport,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BrowserRegistryProofReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub depth: usize,
+    pub authentication: Authentication,
+    pub constraints: usize,
+    pub public_inputs: usize,
+    pub witness_variables: usize,
+    pub proving_key_bytes: usize,
+    pub key_deserialize_ms: f64,
+    pub prove_ms: f64,
+    pub verify_ms: f64,
+    pub proof_bytes: usize,
+    pub verifying_key_bytes: usize,
+    pub proof_verified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegistryTransportEstimateReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub results: Vec<RegistryTransportEstimate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegistryTransportEstimate {
+    pub depth: usize,
+    pub index_bytes: usize,
+    pub merkle_path_bytes: usize,
+    pub holder_witness_floor_bytes: usize,
+    pub single_delta_floor_bytes: usize,
+    pub thousand_delta_floor_bytes: usize,
+    pub hundred_thousand_delta_floor_bytes: usize,
+}
+
+#[derive(Debug)]
+pub enum BrowserBenchmarkError {
+    UnsupportedDepth(usize),
+    ProvingKeySizeMismatch { expected: usize, actual: usize },
+    Synthesis(SynthesisError),
+    Serialization(SerializationError),
+    ProofRejected,
+}
+
+impl fmt::Display for BrowserBenchmarkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedDepth(depth) => write!(
+                formatter,
+                "registry depth {depth} is not a browser benchmark profile"
+            ),
+            Self::ProvingKeySizeMismatch { expected, actual } => write!(
+                formatter,
+                "proving key has {actual} bytes; depth profile requires exactly {expected}"
+            ),
+            Self::Synthesis(error) => write!(formatter, "circuit synthesis failed: {error}"),
+            Self::Serialization(error) => {
+                write!(formatter, "proving-key encoding failed: {error}")
+            }
+            Self::ProofRejected => formatter.write_str("generated proof did not verify"),
+        }
+    }
+}
+
+impl Error for BrowserBenchmarkError {}
+
+impl From<SynthesisError> for BrowserBenchmarkError {
+    fn from(error: SynthesisError) -> Self {
+        Self::Synthesis(error)
+    }
+}
+
+impl From<SerializationError> for BrowserBenchmarkError {
+    fn from(error: SerializationError) -> Self {
+        Self::Serialization(error)
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", feature = "browser")))]
+struct BenchmarkTimer(Instant);
+
+#[cfg(not(all(target_arch = "wasm32", feature = "browser")))]
+impl BenchmarkTimer {
+    fn start() -> Self {
+        Self(Instant::now())
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        self.0.elapsed().as_secs_f64() * 1_000.0
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+struct BenchmarkTimer(f64);
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+impl BenchmarkTimer {
+    fn start() -> Self {
+        Self(js_sys::Date::now())
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        js_sys::Date::now() - self.0
+    }
 }
 
 struct SignatureWitness {
@@ -532,6 +646,164 @@ pub fn run_registry_depth_suite(
     })
 }
 
+pub fn run_registry_transport_estimates() -> RegistryTransportEstimateReport {
+    const FIELD_BYTES: usize = 32;
+    const EPOCH_BYTES: usize = 4;
+    let results = REGISTRY_DEPTH_PROFILES
+        .into_iter()
+        .map(|depth| {
+            let index_bytes = depth.div_ceil(8);
+            let merkle_path_bytes = depth * FIELD_BYTES;
+            let holder_witness_floor_bytes =
+                EPOCH_BYTES + FIELD_BYTES + FIELD_BYTES + merkle_path_bytes;
+            let single_delta_floor_bytes =
+                EPOCH_BYTES * 2 + FIELD_BYTES * 4 + index_bytes + merkle_path_bytes;
+            RegistryTransportEstimate {
+                depth,
+                index_bytes,
+                merkle_path_bytes,
+                holder_witness_floor_bytes,
+                single_delta_floor_bytes,
+                thousand_delta_floor_bytes: single_delta_floor_bytes * 1_000,
+                hundred_thousand_delta_floor_bytes: single_delta_floor_bytes * 100_000,
+            }
+        })
+        .collect();
+
+    RegistryTransportEstimateReport {
+        schema: "org.proofofhumanity.v2-registry-transport-estimate/1",
+        warning: "research depth projection; binary lower bounds exclude framing, schema, authentication and compression",
+        results,
+    }
+}
+
+pub fn generate_registry_proving_key(depth: usize) -> Result<Vec<u8>, BrowserBenchmarkError> {
+    validate_browser_registry_depth(depth)?;
+    let circuit = SpikeCircuit::fixture_with_registry_depth(Authentication::ActiveRegistry, depth);
+    let mut setup_rng = StdRng::seed_from_u64(registry_benchmark_seed(depth));
+    let (proving_key, _) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut setup_rng)?;
+    let mut bytes = Vec::new();
+    proving_key.serialize_compressed(&mut bytes)?;
+    let expected = browser_proving_key_bytes(depth);
+    if bytes.len() != expected {
+        return Err(BrowserBenchmarkError::ProvingKeySizeMismatch {
+            expected,
+            actual: bytes.len(),
+        });
+    }
+    Ok(bytes)
+}
+
+pub fn prove_registry_depth_with_key(
+    depth: usize,
+    proving_key_bytes: &[u8],
+) -> Result<BrowserRegistryProofReport, BrowserBenchmarkError> {
+    let (constraints, witness_variables) = validate_browser_registry_depth(depth)?;
+    let expected_proving_key_bytes = browser_proving_key_bytes(depth);
+    if proving_key_bytes.len() != expected_proving_key_bytes {
+        return Err(BrowserBenchmarkError::ProvingKeySizeMismatch {
+            expected: expected_proving_key_bytes,
+            actual: proving_key_bytes.len(),
+        });
+    }
+    let key_started = BenchmarkTimer::start();
+    let proving_key = ProvingKey::<Bn254>::deserialize_compressed(proving_key_bytes)?;
+    let key_deserialize_ms = key_started.elapsed_ms();
+
+    let circuit = SpikeCircuit::fixture_with_registry_depth(Authentication::ActiveRegistry, depth);
+    let mut proof_rng =
+        StdRng::seed_from_u64(registry_benchmark_seed(depth) ^ 0xa5_a5_a5_a5_a5_a5_a5_a5);
+    let prove_started = BenchmarkTimer::start();
+    let proof = Groth16::<Bn254>::prove(&proving_key, circuit.clone(), &mut proof_rng)?;
+    let prove_ms = prove_started.elapsed_ms();
+
+    let processed = Groth16::<Bn254>::process_vk(&proving_key.vk)?;
+    let verify_started = BenchmarkTimer::start();
+    let proof_verified =
+        Groth16::<Bn254>::verify_with_processed_vk(&processed, &circuit.public_inputs(), &proof)?;
+    let verify_ms = verify_started.elapsed_ms();
+    if !proof_verified {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+
+    let mut proof_bytes = Vec::new();
+    proof.serialize_compressed(&mut proof_bytes)?;
+    let mut verifying_key_bytes = Vec::new();
+    proving_key
+        .vk
+        .serialize_compressed(&mut verifying_key_bytes)?;
+
+    Ok(BrowserRegistryProofReport {
+        schema: "org.proofofhumanity.v2-browser-registry-proof/1",
+        warning: "research harness only; deterministic fixture key and proof are not deployable",
+        depth,
+        authentication: Authentication::ActiveRegistry,
+        constraints,
+        public_inputs: 5,
+        witness_variables,
+        proving_key_bytes: proving_key_bytes.len(),
+        key_deserialize_ms,
+        prove_ms,
+        verify_ms,
+        proof_bytes: proof_bytes.len(),
+        verifying_key_bytes: verifying_key_bytes.len(),
+        proof_verified,
+    })
+}
+
+fn validate_browser_registry_depth(depth: usize) -> Result<(usize, usize), BrowserBenchmarkError> {
+    if !BROWSER_REGISTRY_DEPTHS.contains(&depth) {
+        return Err(BrowserBenchmarkError::UnsupportedDepth(depth));
+    }
+    let profile_index = REGISTRY_DEPTH_PROFILES
+        .iter()
+        .position(|candidate| *candidate == depth)
+        .expect("browser depth profiles are registry depth profiles");
+    Ok((
+        REGISTRY_DEPTH_CONSTRAINTS[profile_index],
+        REGISTRY_DEPTH_WITNESS_VARIABLES[profile_index],
+    ))
+}
+
+fn registry_benchmark_seed(depth: usize) -> u64 {
+    0x52_45_47_49_53_54_52_59 ^ depth as u64
+}
+
+fn browser_proving_key_bytes(depth: usize) -> usize {
+    let index = BROWSER_REGISTRY_DEPTHS
+        .iter()
+        .position(|candidate| *candidate == depth)
+        .expect("validated browser registry depth");
+    BROWSER_REGISTRY_PROVING_KEY_BYTES[index]
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = generateRegistryProvingKey)]
+pub fn browser_generate_registry_proving_key(depth: u32) -> Result<Vec<u8>, JsValue> {
+    generate_registry_proving_key(depth as usize).map_err(browser_benchmark_js_error)
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = proveRegistryDepth)]
+pub fn browser_prove_registry_depth(depth: u32, proving_key: &[u8]) -> Result<String, JsValue> {
+    let report = prove_registry_depth_with_key(depth as usize, proving_key)
+        .map_err(browser_benchmark_js_error)?;
+    serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = wasmLinearMemoryBytes)]
+pub fn browser_wasm_linear_memory_bytes() -> u32 {
+    let memory: js_sys::WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
+    let buffer: js_sys::ArrayBuffer = memory.buffer().unchecked_into();
+    buffer.byte_length()
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+fn browser_benchmark_js_error(error: BrowserBenchmarkError) -> JsValue {
+    JsValue::from_str(&error.to_string())
+}
+
 fn measure_candidate(
     circuit: SpikeCircuit,
     with_proofs: bool,
@@ -563,24 +835,24 @@ fn measure_candidate(
             Authentication::SignatureAndRegistry => 0x48_59_42,
         };
         let mut setup_rng = StdRng::seed_from_u64(seed);
-        let setup_started = Instant::now();
+        let setup_started = BenchmarkTimer::start();
         let (proving_key, verifying_key) =
             Groth16::<Bn254>::circuit_specific_setup(circuit.clone(), &mut setup_rng)?;
-        result.setup_ms = Some(milliseconds(setup_started));
+        result.setup_ms = Some(setup_started.elapsed_ms());
 
         let mut proof_rng = StdRng::seed_from_u64(seed ^ 0xa5_a5_a5);
-        let prove_started = Instant::now();
+        let prove_started = BenchmarkTimer::start();
         let proof = Groth16::<Bn254>::prove(&proving_key, circuit.clone(), &mut proof_rng)?;
-        result.prove_ms = Some(milliseconds(prove_started));
+        result.prove_ms = Some(prove_started.elapsed_ms());
 
         let processed = Groth16::<Bn254>::process_vk(&verifying_key)?;
-        let verify_started = Instant::now();
+        let verify_started = BenchmarkTimer::start();
         let verified = Groth16::<Bn254>::verify_with_processed_vk(
             &processed,
             &circuit.public_inputs(),
             &proof,
         )?;
-        result.verify_ms = Some(milliseconds(verify_started));
+        result.verify_ms = Some(verify_started.elapsed_ms());
 
         let mut proof_bytes = Vec::new();
         proof
@@ -596,10 +868,6 @@ fn measure_candidate(
     }
 
     Ok(result)
-}
-
-fn milliseconds(started: Instant) -> f64 {
-    started.elapsed().as_secs_f64() * 1_000.0
 }
 
 fn poseidon_config() -> PoseidonConfig<CircuitField> {
@@ -1095,6 +1363,15 @@ mod tests {
             REGISTRY_DEPTH_CONSTRAINTS,
             "depth-profile constraint drift requires an explicit benchmark review"
         );
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.measurement.witness_variables)
+                .collect::<Vec<_>>(),
+            REGISTRY_DEPTH_WITNESS_VARIABLES,
+            "depth-profile witness drift requires an explicit benchmark review"
+        );
         assert!(report
             .results
             .iter()
@@ -1124,6 +1401,47 @@ mod tests {
     }
 
     #[test]
+    fn registry_transport_lower_bounds_are_pinned() {
+        let report = run_registry_transport_estimates();
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.index_bytes)
+                .collect::<Vec<_>>(),
+            [4, 8, 12, 16]
+        );
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.single_delta_floor_bytes)
+                .collect::<Vec<_>>(),
+            [1_164, 2_192, 3_220, 4_248]
+        );
+        assert_eq!(
+            report
+                .results
+                .iter()
+                .map(|result| result.holder_witness_floor_bytes)
+                .collect::<Vec<_>>(),
+            [1_092, 2_116, 3_140, 4_164]
+        );
+    }
+
+    #[test]
+    fn browser_prover_rejects_unbenchmarked_depths_before_setup() {
+        assert!(matches!(
+            generate_registry_proving_key(64),
+            Err(BrowserBenchmarkError::UnsupportedDepth(64))
+        ));
+        assert!(matches!(
+            prove_registry_depth_with_key(32, &[]),
+            Err(BrowserBenchmarkError::UnsupportedDepth(32))
+        ));
+    }
+
+    #[test]
     #[ignore = "CI runs the release-mode Groth16 round trip explicitly"]
     fn all_candidates_generate_verified_groth16_proofs() {
         let report = run_suite(true).expect("all candidates prove and verify");
@@ -1136,5 +1454,15 @@ mod tests {
             result.measurement.proof_verified == Some(true)
                 && result.measurement.proof_bytes == Some(128)
         }));
+        for depth in BROWSER_REGISTRY_DEPTHS {
+            let proving_key = generate_registry_proving_key(depth)
+                .expect("browser profile proving key serializes");
+            let report = prove_registry_depth_with_key(depth, &proving_key)
+                .expect("serialized browser profile key proves and verifies");
+            assert!(report.proof_verified);
+            assert_eq!(report.proof_bytes, 128);
+            assert_eq!(proving_key.len(), browser_proving_key_bytes(depth));
+            assert_eq!(report.proving_key_bytes, proving_key.len());
+        }
     }
 }
