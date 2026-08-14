@@ -117,8 +117,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   and TypeScript/Solidity/Rust parity vectors. The first isolated desktop circuit baseline now compares direct
   issuer signature, depth-32 active-registry membership, and their hybrid with pinned CI constraints and valid
   Groth16 round trips. Issuer coordinates are now privately/losslessly bound to `issuerKeyId`, and the active
-  leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. Remaining:
-  mobile/browser, alternate hash/proof-system, EVM gas, operational witness distribution, and the measured ADR.
+  leaf/path/root is bound to `statusId` with revocation and stale/refreshed witness tests. A transport-neutral
+  sparse-registry prototype now exercises activation/revocation, canonical unkeyed deltas, local batched witness
+  refresh, trusted-checkpoint matching, and exact-circuit compatibility. Remaining: mobile/browser, alternate
+  hash/proof-system, EVM gas, root governance, durable transport/privacy hardening, and the measured ADR.
 
 ## 👀 Review (awaiting gates)
 _(none)_

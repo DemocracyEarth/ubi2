@@ -227,8 +227,12 @@ The country root above is a deliberately small parity fixture, not a production 
   signatures/paths fail closed, and generates/verifies a Groth16 proof for each signature, registry, and hybrid
   relation in CI. The follow-up binding slice keeps issuer coordinates private while losslessly binding them to
   public `issuerKeyId` limbs, and binds `statusId`, active leaf, status-derived path, and two-limb active root with
-  revocation/stale/refreshed-witness tests. Mobile/browser, alternate hash/proof-system, EVM gas, and an
-  operational witness-distribution prototype remain.
+  revocation/stale/refreshed-witness tests. A transport-neutral sparse-registry prototype now emits canonical,
+  unkeyed public deltas for local witness refresh and checks the result against an independently accepted
+  checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mobile/browser, alternate
+  hash/proof-system, EVM gas, root governance, durable transport/retention and privacy hardening remain. Depth 32
+  is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
+  registrations, and this prototype rejects such collisions rather than overwriting an existing credential.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 
@@ -334,7 +338,8 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 
 - Exact issuance privacy: temporary Self disclosure bridge versus a commitment-output/passport-native circuit.
 - Credential authenticity: SNARK-native issuer signature, accumulator membership, or both.
-- Revocation accumulator and witness-update mechanism.
+- Revocation accumulator selection and production witness transport/checkpoint governance. The current sparse
+  Merkle prototype validates local updates but does not ratify the accumulator or authorize a network service.
 - Proving stack after measurement; trusted-setup and verifier-version governance.
 - Whether the public subject is an EOA, ERC-1271 account, or a scoped account key for each product flow.
 - Recovery design when neither a synced passkey nor WebAuthn PRF is available.
