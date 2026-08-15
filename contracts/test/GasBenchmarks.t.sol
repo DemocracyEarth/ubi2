@@ -184,6 +184,7 @@ contract V2AdapterGasBenchmarkTest is Test {
         registry.registerCircuit(CIRCUIT_ID, address(rawVerifier));
         registry.authorizeIssuer(CIRCUIT_ID, ISSUER_KEY_ID);
         registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 1, ACTIVE_ROOT);
+        registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 2, DYNAMIC_STATUS_ROOT);
         dynamicStatusPublishedAt = uint32(block.timestamp - 60);
         dynamicPolicyHash = registry.registerDynamicStatusPolicy(
             STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, dynamicStatusPublishedAt, 3_600
@@ -194,7 +195,7 @@ contract V2AdapterGasBenchmarkTest is Test {
 
     function test_Gas_V2AdapterConsumeWithStubVerifier() public {
         vm.pauseGasMetering();
-        uint256[] memory publicSignals = _signals(POLICY_HASH, 0);
+        uint256[] memory publicSignals = _signals(ACTIVE_ROOT, POLICY_HASH, 0);
         uint256[8] memory proofWords;
         proofWords[0] = 1;
         bytes memory proof = abi.encode(proofWords);
@@ -207,7 +208,7 @@ contract V2AdapterGasBenchmarkTest is Test {
 
     function test_Gas_V2AdapterConsumeDynamicStatusWithStubVerifier() public {
         vm.pauseGasMetering();
-        uint256[] memory publicSignals = _signals(dynamicPolicyHash, dynamicStatusPublishedAt);
+        uint256[] memory publicSignals = _signals(DYNAMIC_STATUS_ROOT, dynamicPolicyHash, dynamicStatusPublishedAt);
         uint256[8] memory proofWords;
         proofWords[0] = 1;
         bytes memory proof = abi.encode(proofWords);
@@ -218,12 +219,16 @@ contract V2AdapterGasBenchmarkTest is Test {
         assertTrue(verified);
     }
 
-    function _signals(bytes32 signalPolicyHash, uint32 statusEpoch) private view returns (uint256[] memory signals) {
+    function _signals(bytes32 signalActiveRoot, bytes32 signalPolicyHash, uint32 statusEpoch)
+        private
+        view
+        returns (uint256[] memory signals)
+    {
         signals = new uint256[](18);
         signals[0] = 1;
         _writeIdentifier(signals, 1, CIRCUIT_ID);
         _writeIdentifier(signals, 3, ISSUER_KEY_ID);
-        _writeIdentifier(signals, 5, ACTIVE_ROOT);
+        _writeIdentifier(signals, 5, signalActiveRoot);
         _writeIdentifier(signals, 7, signalPolicyHash);
 
         bytes32 binding = ZkIdentityEncoding.presentationBindingHash(

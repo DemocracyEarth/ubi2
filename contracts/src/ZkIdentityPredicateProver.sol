@@ -31,6 +31,7 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
     error NullifierScopeMismatch();
     error UnregisteredDynamicStatusPolicy();
     error RetiredDynamicStatusPolicy();
+    error DynamicStatusRootMismatch();
     error DynamicStatusEpochMismatch();
     error DynamicStatusFromFuture();
     error StaleDynamicStatus();
@@ -55,7 +56,7 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
     {
         if (msg.sender != predicateVerifier) revert OnlyPredicateVerifier();
         ZkIdentityEncoding.PublicSignals memory decoded = ZkIdentityEncoding.decodePublicSignals(publicSignals);
-        _validateDynamicStatus(decoded.policyHash, decoded.statusEpoch);
+        _validateDynamicStatus(decoded.policyHash, decoded.activeRoot, decoded.statusEpoch);
         _validateContextBindings(decoded, context);
         address verifier = registry.requireRootAccepted(decoded.circuitId, decoded.issuerKeyId, decoded.activeRoot);
         _verifyProof(verifier, proof, publicSignals);
@@ -64,11 +65,13 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
     }
 
     /// @dev Signal 17 is the Unix publication timestamp of the exact dynamic
-    ///      status root committed into `policyHash`. The circuit must output zero
-    ///      for non-dynamic policies and the registered timestamp for dynamic
-    ///      policies. Equality prevents relabeling an old root as a fresh status.
-    function _validateDynamicStatus(bytes32 policyHash, uint32 statusEpoch) private view {
-        (uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active) =
+    ///      status root committed into `policyHash`. The public active root must
+    ///      equal that committed root. The circuit must output zero for
+    ///      non-dynamic policies and the registered timestamp for dynamic
+    ///      policies. Equality prevents root substitution or relabeling an old
+    ///      root as a fresh status.
+    function _validateDynamicStatus(bytes32 policyHash, bytes32 activeRoot, uint32 statusEpoch) private view {
+        (bytes32 statusRoot, uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active) =
             registry.dynamicStatusPolicyState(policyHash);
 
         if (!registered) {
@@ -76,6 +79,7 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
             return;
         }
         if (!active) revert RetiredDynamicStatusPolicy();
+        if (activeRoot != statusRoot) revert DynamicStatusRootMismatch();
         if (statusEpoch == 0 || statusEpoch != publishedAt) revert DynamicStatusEpochMismatch();
         if (uint256(statusEpoch) > block.timestamp) revert DynamicStatusFromFuture();
         if (block.timestamp - uint256(statusEpoch) > maximumAgeSeconds) revert StaleDynamicStatus();

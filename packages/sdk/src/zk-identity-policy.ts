@@ -153,6 +153,12 @@ function bytes32(value: Hex, label: string): Hex {
   return value.toLowerCase() as Hex;
 }
 
+function nonZeroBytes32(value: Hex, label: string): Hex {
+  const normalized = bytes32(value, label);
+  if (BigInt(normalized) === 0n) throw new Error(`${label} must not be zero`);
+  return normalized;
+}
+
 function civilDate(value: string, label: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
   if (!match) throw new Error(`${label} must use YYYY-MM-DD`);
@@ -237,7 +243,7 @@ export function normalizeZkIdentityPolicy(input: ZkIdentityPolicy | ZkIdentityPo
         status: input.status,
         providerId: assertIdentifier(input.providerId, "status provider id"),
         listVersion: assertIdentifier(input.listVersion, "status list version"),
-        statusRoot: bytes32(input.statusRoot, "status root"),
+        statusRoot: nonZeroBytes32(input.statusRoot, "status root"),
         maximumAgeSeconds: input.maximumAgeSeconds,
       };
     case "private-field-match":

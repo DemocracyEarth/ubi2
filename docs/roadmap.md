@@ -229,10 +229,13 @@ and v2 proof generation are not enabled yet.
   requires a timelocked multisig. A strict 18-signal adapter now binds the actual consumer plus chain, permanent
   host, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode; resolves the
   codehash-pinned circuit/issuer/root; and closes wallet-change replay through a prover-authenticated identifier.
-  Host + adapter + registry + replay storage measures 89,885 gas for static policy and 90,173 gas for fresh dynamic
+  Host + adapter + registry + replay storage measures 92,066 gas for static policy and 92,377 gas for fresh dynamic
   status with a stub raw verifier. Proposed ADR-0011 now pins the status signal to the exact governed snapshot
   publication Unix time and maximum age; SDK/Solidity
-  hashes match, and unknown, retired, future, mismatched or stale policies fail closed. Security ratification and
+  hashes match, the proof root must equal the exact policy root, and unknown, retired, future, mismatched or stale
+  policies fail closed. Chain/registry-bound EIP-712 publication manifests now use strict parsing, canonical hash
+  recomputation, signer recovery and the same inclusive freshness window; the trusted publisher remains an
+  application configuration and manifest signatures do not authorize registry writes. Security ratification and
   production-circuit enforcement of that relation, end-to-end target-chain gas, corrected-host testnet redeploy
   and audits remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.

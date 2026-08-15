@@ -203,12 +203,14 @@ The separate [`ZkIdentityPredicateProver.sol`](../../contracts/src/ZkIdentityPre
 exercises the complete 18-signal decoding and EVM binding path with a stub raw verifier. It authenticates the
 host-forwarded consumer, recomputes presentation and nullifier scopes, resolves the codehash-pinned
 circuit/issuer/root, and lets `PredicateVerifier` spend signal 13 as a wallet-independent replay identifier. The
-stateful host + adapter + registry + replay-write snapshots are 89,885 gas for static policy and 90,173 gas for
+stateful host + adapter + registry + replay-write snapshots are 92,066 gas for static policy and 92,377 gas for
 fresh dynamic status. Those numbers isolate integration overhead; they are not end-to-end proof estimates and must
 not be added mechanically to the five-input 230,657-gas result.
-Signal 17 now uses the exact governed snapshot publication Unix time. The adapter rejects unknown, retired, future,
-mismatched and stale policies; the production circuit must still prove the dynamic-policy/status relation before
-this path can be deployed.
+Signal 17 now uses the exact governed snapshot publication Unix time. The adapter additionally requires the proof's
+active root to equal the exact root committed by the policy, rejecting substitution with another otherwise accepted
+root. The SDK's strict EIP-712 manifest binds canonical publisher/list/root/time metadata to one chain and registry.
+The adapter rejects unknown, retired, future, mismatched and stale policies; the production circuit must still prove
+the policy-kind rule and membership against that public root before this path can be deployed.
 
 ## Reproduce
 

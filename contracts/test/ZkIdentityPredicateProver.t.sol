@@ -44,6 +44,7 @@ contract ZkIdentityPredicateProverTest is Test {
         registry.registerCircuit(CIRCUIT_ID, address(rawVerifier));
         registry.authorizeIssuer(CIRCUIT_ID, ISSUER_KEY_ID);
         registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 10, ACTIVE_ROOT);
+        registry.publishStatusRoot(CIRCUIT_ID, ISSUER_KEY_ID, 11, DYNAMIC_STATUS_ROOT);
         adapter = new ZkIdentityPredicateProver(address(predicateVerifier), registry);
         predicateVerifier.setPredicateProver(adapter);
     }
@@ -169,7 +170,15 @@ contract ZkIdentityPredicateProverTest is Test {
             STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
         );
         uint256[] memory signals = _signalsForPolicy(
-            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, publishedAt
+            subject,
+            consumer,
+            ACTION_CONTEXT,
+            CHALLENGE,
+            1,
+            SCOPED_NULLIFIER,
+            DYNAMIC_STATUS_ROOT,
+            policyHash,
+            publishedAt
         );
         bytes memory context = _applicationContext(ACTION_CONTEXT, CHALLENGE, 1);
 
@@ -193,7 +202,9 @@ contract ZkIdentityPredicateProverTest is Test {
         bytes32 policyHash = registry.registerDynamicStatusPolicy(
             STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
         );
-        signals = _signalsForPolicy(subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, 0);
+        signals = _signalsForPolicy(
+            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, DYNAMIC_STATUS_ROOT, policyHash, 0
+        );
         vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusEpochMismatch.selector);
         predicateVerifier.checkProofFor(
             _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
@@ -206,16 +217,21 @@ contract ZkIdentityPredicateProverTest is Test {
         );
 
         uint32 futurePublishedAt = uint32(block.timestamp);
+        bytes32 futureStatusRoot = keccak256("future-status-root");
         bytes32 futurePolicyHash = registry.registerDynamicStatusPolicy(
-            STATUS_PROVIDER_HASH,
-            keccak256("future-list-version"),
-            keccak256("future-status-root"),
-            futurePublishedAt,
-            300
+            STATUS_PROVIDER_HASH, keccak256("future-list-version"), futureStatusRoot, futurePublishedAt, 300
         );
         vm.warp(block.timestamp - 1);
         signals = _signalsForPolicy(
-            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, futurePolicyHash, futurePublishedAt
+            subject,
+            consumer,
+            ACTION_CONTEXT,
+            CHALLENGE,
+            1,
+            SCOPED_NULLIFIER,
+            futureStatusRoot,
+            futurePolicyHash,
+            futurePublishedAt
         );
         vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusFromFuture.selector);
         predicateVerifier.checkProofFor(
@@ -229,11 +245,34 @@ contract ZkIdentityPredicateProverTest is Test {
             STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
         );
         uint256[] memory signals = _signalsForPolicy(
-            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, publishedAt
+            subject,
+            consumer,
+            ACTION_CONTEXT,
+            CHALLENGE,
+            1,
+            SCOPED_NULLIFIER,
+            DYNAMIC_STATUS_ROOT,
+            policyHash,
+            publishedAt
         );
         registry.retireDynamicStatusPolicy(policyHash);
 
         vm.expectRevert(ZkIdentityPredicateProver.RetiredDynamicStatusPolicy.selector);
+        predicateVerifier.checkProofFor(
+            _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
+        );
+    }
+
+    function test_DynamicStatusRejectsAnotherAcceptedRoot() public {
+        uint32 publishedAt = uint32(block.timestamp - 30);
+        bytes32 policyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
+        );
+        uint256[] memory signals = _signalsForPolicy(
+            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, ACTIVE_ROOT, policyHash, publishedAt
+        );
+
+        vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusRootMismatch.selector);
         predicateVerifier.checkProofFor(
             _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
         );
@@ -276,7 +315,15 @@ contract ZkIdentityPredicateProverTest is Test {
         uint256 scopedNullifier
     ) internal view returns (uint256[] memory signals) {
         return _signalsForPolicy(
-            signalSubject, signalConsumer, actionContext, challenge, nullifierMode, scopedNullifier, POLICY_HASH, 0
+            signalSubject,
+            signalConsumer,
+            actionContext,
+            challenge,
+            nullifierMode,
+            scopedNullifier,
+            ACTIVE_ROOT,
+            POLICY_HASH,
+            0
         );
     }
 
@@ -287,6 +334,7 @@ contract ZkIdentityPredicateProverTest is Test {
         bytes32 challenge,
         uint8 nullifierMode,
         uint256 scopedNullifier,
+        bytes32 signalActiveRoot,
         bytes32 signalPolicyHash,
         uint32 statusEpoch
     ) internal view returns (uint256[] memory signals) {
@@ -294,7 +342,7 @@ contract ZkIdentityPredicateProverTest is Test {
         signals[0] = 1;
         _writeIdentifier(signals, 1, CIRCUIT_ID);
         _writeIdentifier(signals, 3, ISSUER_KEY_ID);
-        _writeIdentifier(signals, 5, ACTIVE_ROOT);
+        _writeIdentifier(signals, 5, signalActiveRoot);
         _writeIdentifier(signals, 7, signalPolicyHash);
 
         bytes32 binding = ZkIdentityEncoding.presentationBindingHash(

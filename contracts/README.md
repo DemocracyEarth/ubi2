@@ -20,7 +20,8 @@ age, gender, sanctions result, or identity. One-human-one-token **per chain** vi
   scoped nullifier, not the presenting wallet, so wallet changes do not reset a one-per-scope gate.
 - `src/ZkIdentityPredicateProver.sol` — **pre-deployment** v2 adapter for the pinned 18-signal layout. It binds
   chain, host, consumer, subject, policy, action context, challenge and nullifier mode, then resolves a governed
-  verifier/issuer/root and calls an exact eight-word/18-input raw verifier. Do not configure it until a reviewed
+  verifier/issuer/root and calls an exact eight-word/18-input raw verifier. A dynamic policy additionally requires
+  the proof's active root to equal the exact root committed by that policy. Do not configure it until a reviewed
   production circuit and ceremony artifact exist.
 - `src/ZkIdentityVersionRegistry.sol` — **pre-deployment** additive circuit/codehash, issuer and root governance
   prototype. Production ownership requires a timelock-controlled multisig.
@@ -44,16 +45,21 @@ call `checkProof` from the intended consumer or use `checkProofFor(..., consumer
 v2 canonical policy hash, not a raw private attribute. The proof is ABI-encoded `uint256[8]`; public signals are
 the exact 18 entries documented in [`docs/specs/10-evm-zk-identity-v2.md`](../docs/specs/10-evm-zk-identity-v2.md).
 
-For a sanctions policy, use SDK `dynamicStatusPolicyRegistration` to derive the exact governance inputs. Proposed
-ADR-0011 defines signal 17 as the snapshot publication Unix time; the registry recomputes the policy hash and the
-adapter rejects unknown, retired, future, mismatched or stale snapshots. This remains a pre-deployment seam: the
-production circuit must prove the dynamic-policy/status relation, and stub-verifier gas is not a production
-proof-cost estimate.
+For a sanctions policy, build a chain- and registry-bound publication manifest. Proposed ADR-0011 defines signal
+17 as the snapshot publication Unix time; the registry recomputes the policy hash, and the adapter rejects unknown,
+retired, future, timestamp-mismatched, root-mismatched or stale snapshots. This remains a pre-deployment seam: the
+production circuit must prove membership against the public active root and enforce the policy-kind/status-signal
+rule. Stub-verifier gas is not a production proof-cost estimate.
 
 ```ts
-import { dynamicStatusPolicyRegistration } from "@ubi2/sdk";
+import {
+  createDynamicStatusManifest,
+  dynamicStatusManifestTypedData,
+} from "@ubi2/sdk";
 
-const registration = dynamicStatusPolicyRegistration({
+const manifest = createDynamicStatusManifest({
+  chainId,
+  registry,
   policy: {
     kind: "dynamic-status",
     status: "sanctions-clear",
@@ -65,18 +71,44 @@ const registration = dynamicStatusPolicyRegistration({
   publishedAt, // uint32 Unix seconds assigned to this exact public snapshot
 });
 
+// Sign with the configured status-publication EOA, wallet or HSM.
+const signature = await publisher.signTypedData(
+  dynamicStatusManifestTypedData(manifest),
+);
+
 // registerDynamicStatusPolicy(...)
 const args = [
-  registration.providerIdHash,
-  registration.listVersionHash,
-  registration.statusRoot,
-  registration.publishedAt,
-  registration.maximumAgeSeconds,
+  manifest.providerIdHash,
+  manifest.listVersionHash,
+  manifest.statusRoot,
+  manifest.publishedAt,
+  manifest.maximumAgeSeconds,
 ] as const;
 ```
 
-The transaction return/event policy hash must equal `registration.policyHash`. Applications request that exact
-hash; they must not request an ambiguous “latest sanctions status.”
+The transaction return/event policy hash must equal `manifest.policyHash`. A publication signature does not
+authorize the registry transaction; governance remains a separate timelocked-multisig responsibility.
+
+Applications must get `expectedPublisher` from trusted configuration, never from the downloaded document. Parse
+the entire manifest, verify the signature, then check its time window before requesting that exact policy hash:
+
+```ts
+import {
+  assertDynamicStatusManifestCurrent,
+  parseDynamicStatusManifest,
+  verifyDynamicStatusManifestSignature,
+} from "@ubi2/sdk";
+
+const manifest = parseDynamicStatusManifest(downloadedJson);
+if (!(await verifyDynamicStatusManifestSignature(manifest, signature, expectedPublisher))) {
+  throw new Error("Untrusted sanctions snapshot publisher");
+}
+assertDynamicStatusManifestCurrent(manifest, Math.floor(Date.now() / 1000));
+```
+
+The EIP-712 signature cannot replay across a chain or registry. The helper above recovers EOA signatures; an
+ERC-1271 publication authority requires a contract-signature check over `dynamicStatusManifestDigest(manifest)`.
+Applications must not request an ambiguous “latest sanctions status.”
 
 ## Setup (dependencies are not vendored)
 `lib/` is git-ignored; restore the pinned deps with:

@@ -130,14 +130,15 @@ contract ZkIdentityVersionRegistryTest is Test {
         assertTrue(registered);
         assertTrue(active);
 
-        (publishedAt, maximumAgeSeconds, registered, active) = registry.dynamicStatusPolicyState(policyHash);
+        (statusRoot, publishedAt, maximumAgeSeconds, registered, active) = registry.dynamicStatusPolicyState(policyHash);
+        assertEq(statusRoot, DYNAMIC_STATUS_ROOT);
         assertEq(publishedAt, STATUS_PUBLISHED_AT);
         assertEq(maximumAgeSeconds, 86_400);
         assertTrue(registered);
         assertTrue(active);
 
         registry.retireDynamicStatusPolicy(policyHash);
-        (,,, active) = registry.dynamicStatusPolicyState(policyHash);
+        (,,,, active) = registry.dynamicStatusPolicyState(policyHash);
         assertFalse(active);
 
         vm.expectRevert(

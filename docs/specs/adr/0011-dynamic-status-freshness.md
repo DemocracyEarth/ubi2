@@ -33,6 +33,9 @@ window would also let one consumer silently weaken another consumer's policy.
    60 seconds through 365 days, matching the SDK schema.
 4. **The proof must reproduce that timestamp exactly.** For a registered dynamic policy, signal 17 must be non-zero
    and equal the registry's `publishedAt`. This prevents a valid old root from being presented with a newer clock.
+   The adapter also requires the proof's public active root to equal the exact `statusRoot` committed by that
+   policy, even when another root is valid for the same circuit and issuer. The circuit remains responsible for
+   proving status membership against that public root.
 5. **Freshness is inclusive at the boundary.** The adapter accepts when
    `block.timestamp - publishedAt <= maximumAgeSeconds`; it rejects future timestamps and becomes stale one second
    after the configured maximum age.
@@ -62,6 +65,13 @@ The status publisher must make a new root, list version and publication timestam
 policy expires. Applications should fetch an authenticated policy manifest and display its provider, list version,
 publication time and expiry before requesting a proof. They must not ask for an ambiguous `latest` status.
 
+The SDK manifest format recomputes all policy hashes from the human-readable metadata and signs provider hash,
+list-version hash, root, publication time and maximum age with EIP-712. Its domain includes the destination chain
+and registry, so signatures cannot replay across deployments. Applications must compare the recovered signer with
+an independently configured publisher key and apply the same inclusive freshness window. A manifest signature is
+distribution authentication only; it does not authorize or replace the governance transaction. ERC-1271
+publishers require an explicit contract-signature check.
+
 The registry owner is a trust root for which public snapshots are accepted. Production ownership therefore remains
 a timelocked multisig, and publication tooling must verify the canonical SDK hash before proposing a transaction.
 An authorized but incorrect sanctions root remains an operational/provider failure; this mechanism makes the root
@@ -81,5 +91,6 @@ and timing auditable but does not judge the source list's correctness.
 
 ## Ratification gate
 
-Accept this ADR only after security review confirms the circuit will enforce the zero/non-zero policy-kind rule and
-bind the exact canonical dynamic-status policy hash. Mainnet still requires the full Stage 5 audit and release gate.
+Accept this ADR only after security review confirms the circuit will enforce the zero/non-zero policy-kind rule,
+authenticate all 18 public signals and prove status membership against the active root that the adapter binds to
+the canonical policy. Mainnet still requires the full Stage 5 audit and release gate.
