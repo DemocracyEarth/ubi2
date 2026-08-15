@@ -38,7 +38,8 @@ migrating the NFT or changing the forever-interface.
    credential authentication are not pinned until Stage 1 benchmarks. Each circuit version is a replaceable
    prover behind `IPredicateProver`; the SBT is unchanged.
 7. **Separate long-lived passport facts from dynamic status.** Sanctions and similar mutable decisions use
-   short-lived, versioned status credentials and cannot inherit the base credential's validity period.
+   short-lived, versioned status credentials and cannot inherit the base credential's validity period. Proposed
+   [ADR-0011](0011-dynamic-status-freshness.md) pins the snapshot publication-time and maximum-age boundary.
 8. **Do not enable production persistence in the first slice.** Ship and test the vault primitive first;
    WebAuthn ceremony, recovery, isolated proving, E2EE backup, schema validation and security review gate UI
    integration.

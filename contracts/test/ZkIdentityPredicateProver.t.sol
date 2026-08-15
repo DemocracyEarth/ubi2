@@ -23,6 +23,9 @@ contract ZkIdentityPredicateProverTest is Test {
     bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-1");
     bytes32 internal constant ACTIVE_ROOT = keccak256("active-root-10");
     bytes32 internal constant POLICY_HASH = keccak256("age-range-policy");
+    bytes32 internal constant STATUS_PROVIDER_HASH = 0x116175bf9d7293d67f2e7b7309631a6b8c1cb2eef79f38ef33e45ab0968a8a55;
+    bytes32 internal constant STATUS_LIST_HASH = 0xe8261aa0634bc9f1544375a820c195025e7a45b6e29f0ba57769964d92205726;
+    bytes32 internal constant DYNAMIC_STATUS_ROOT = 0x217f00d353043696f123b4919b74ba57900770ce0f80414db45d0e52cbbf2ccf;
     bytes32 internal constant ACTION_CONTEXT = keccak256("membership:season-1");
     bytes32 internal constant CHALLENGE = keccak256("challenge-1");
     uint256 internal constant SCOPED_NULLIFIER = 4242424242;
@@ -160,14 +163,79 @@ contract ZkIdentityPredicateProverTest is Test {
         );
     }
 
-    function test_DynamicStatusFailsClosedUntilFreshnessPolicyIsRatified() public {
+    function test_DynamicStatusAcceptsExactFreshSnapshotAndRejectsStaleBoundary() public {
+        uint32 publishedAt = uint32(block.timestamp - 300);
+        bytes32 policyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
+        );
+        uint256[] memory signals = _signalsForPolicy(
+            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, publishedAt
+        );
+        bytes memory context = _applicationContext(ACTION_CONTEXT, CHALLENGE, 1);
+
+        assertTrue(predicateVerifier.checkProofFor(_proof(), signals, context, policyHash, subject, consumer));
+        vm.warp(block.timestamp + 1);
+        vm.expectRevert(ZkIdentityPredicateProver.StaleDynamicStatus.selector);
+        predicateVerifier.checkProofFor(_proof(), signals, context, policyHash, subject, consumer);
+    }
+
+    function test_DynamicStatusRejectsUnknownZeroMismatchedAndFutureEpochs() public {
         uint256[] memory signals = _signals(subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER);
         signals[17] = 1;
 
         vm.prank(consumer);
-        vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusUnsupported.selector);
+        vm.expectRevert(ZkIdentityPredicateProver.UnregisteredDynamicStatusPolicy.selector);
         predicateVerifier.consumeWithProof(
             _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), POLICY_HASH, subject
+        );
+
+        uint32 publishedAt = uint32(block.timestamp - 30);
+        bytes32 policyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
+        );
+        signals = _signalsForPolicy(subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, 0);
+        vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusEpochMismatch.selector);
+        predicateVerifier.checkProofFor(
+            _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
+        );
+
+        signals[17] = publishedAt + 1;
+        vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusEpochMismatch.selector);
+        predicateVerifier.checkProofFor(
+            _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
+        );
+
+        uint32 futurePublishedAt = uint32(block.timestamp);
+        bytes32 futurePolicyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH,
+            keccak256("future-list-version"),
+            keccak256("future-status-root"),
+            futurePublishedAt,
+            300
+        );
+        vm.warp(block.timestamp - 1);
+        signals = _signalsForPolicy(
+            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, futurePolicyHash, futurePublishedAt
+        );
+        vm.expectRevert(ZkIdentityPredicateProver.DynamicStatusFromFuture.selector);
+        predicateVerifier.checkProofFor(
+            _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), futurePolicyHash, subject, consumer
+        );
+    }
+
+    function test_DynamicStatusRetirementFailsClosed() public {
+        uint32 publishedAt = uint32(block.timestamp - 30);
+        bytes32 policyHash = registry.registerDynamicStatusPolicy(
+            STATUS_PROVIDER_HASH, STATUS_LIST_HASH, DYNAMIC_STATUS_ROOT, publishedAt, 300
+        );
+        uint256[] memory signals = _signalsForPolicy(
+            subject, consumer, ACTION_CONTEXT, CHALLENGE, 1, SCOPED_NULLIFIER, policyHash, publishedAt
+        );
+        registry.retireDynamicStatusPolicy(policyHash);
+
+        vm.expectRevert(ZkIdentityPredicateProver.RetiredDynamicStatusPolicy.selector);
+        predicateVerifier.checkProofFor(
+            _proof(), signals, _applicationContext(ACTION_CONTEXT, CHALLENGE, 1), policyHash, subject, consumer
         );
     }
 
@@ -207,16 +275,31 @@ contract ZkIdentityPredicateProverTest is Test {
         uint8 nullifierMode,
         uint256 scopedNullifier
     ) internal view returns (uint256[] memory signals) {
+        return _signalsForPolicy(
+            signalSubject, signalConsumer, actionContext, challenge, nullifierMode, scopedNullifier, POLICY_HASH, 0
+        );
+    }
+
+    function _signalsForPolicy(
+        address signalSubject,
+        address signalConsumer,
+        bytes32 actionContext,
+        bytes32 challenge,
+        uint8 nullifierMode,
+        uint256 scopedNullifier,
+        bytes32 signalPolicyHash,
+        uint32 statusEpoch
+    ) internal view returns (uint256[] memory signals) {
         signals = new uint256[](18);
         signals[0] = 1;
         _writeIdentifier(signals, 1, CIRCUIT_ID);
         _writeIdentifier(signals, 3, ISSUER_KEY_ID);
         _writeIdentifier(signals, 5, ACTIVE_ROOT);
-        _writeIdentifier(signals, 7, POLICY_HASH);
+        _writeIdentifier(signals, 7, signalPolicyHash);
 
         bytes32 binding = ZkIdentityEncoding.presentationBindingHash(
             ZkIdentityEncoding.PresentationBinding({
-                policyHash: POLICY_HASH,
+                policyHash: signalPolicyHash,
                 chainId: block.chainid,
                 verifier: address(predicateVerifier),
                 consumer: signalConsumer,
@@ -235,7 +318,7 @@ contract ZkIdentityPredicateProverTest is Test {
                 verifier: address(predicateVerifier),
                 consumer: signalConsumer,
                 context: actionContext,
-                policyHash: POLICY_HASH
+                policyHash: signalPolicyHash
             })
         );
         _writeIdentifier(signals, 11, scope);
@@ -243,7 +326,7 @@ contract ZkIdentityPredicateProverTest is Test {
         signals[14] = uint160(signalSubject);
         signals[15] = 1;
         signals[16] = predicateVerifier.currentEpoch();
-        signals[17] = 0;
+        signals[17] = statusEpoch;
     }
 
     function _writeIdentifier(uint256[] memory signals, uint256 highIndex, bytes32 value) internal pure {

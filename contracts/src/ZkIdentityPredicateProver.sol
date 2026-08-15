@@ -29,7 +29,11 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
     error InvalidProofContext();
     error PresentationBindingMismatch();
     error NullifierScopeMismatch();
-    error DynamicStatusUnsupported();
+    error UnregisteredDynamicStatusPolicy();
+    error RetiredDynamicStatusPolicy();
+    error DynamicStatusEpochMismatch();
+    error DynamicStatusFromFuture();
+    error StaleDynamicStatus();
     error InvalidProof();
 
     constructor(address predicateVerifier_, ZkIdentityVersionRegistry registry_) {
@@ -51,15 +55,30 @@ contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {
     {
         if (msg.sender != predicateVerifier) revert OnlyPredicateVerifier();
         ZkIdentityEncoding.PublicSignals memory decoded = ZkIdentityEncoding.decodePublicSignals(publicSignals);
-        // Signal 17 is reserved for short-lived dynamic status. Its time unit,
-        // policy-specific maximum age and root-publication relationship are not
-        // ratified yet, so accepting a non-zero value would invent freshness.
-        if (decoded.statusEpoch != 0) revert DynamicStatusUnsupported();
+        _validateDynamicStatus(decoded.policyHash, decoded.statusEpoch);
         _validateContextBindings(decoded, context);
         address verifier = registry.requireRootAccepted(decoded.circuitId, decoded.issuerKeyId, decoded.activeRoot);
         _verifyProof(verifier, proof, publicSignals);
 
         return (decoded.subject, decoded.policyHash, decoded.result, decoded.credentialEpoch);
+    }
+
+    /// @dev Signal 17 is the Unix publication timestamp of the exact dynamic
+    ///      status root committed into `policyHash`. The circuit must output zero
+    ///      for non-dynamic policies and the registered timestamp for dynamic
+    ///      policies. Equality prevents relabeling an old root as a fresh status.
+    function _validateDynamicStatus(bytes32 policyHash, uint32 statusEpoch) private view {
+        (uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active) =
+            registry.dynamicStatusPolicyState(policyHash);
+
+        if (!registered) {
+            if (statusEpoch != 0) revert UnregisteredDynamicStatusPolicy();
+            return;
+        }
+        if (!active) revert RetiredDynamicStatusPolicy();
+        if (statusEpoch == 0 || statusEpoch != publishedAt) revert DynamicStatusEpochMismatch();
+        if (uint256(statusEpoch) > block.timestamp) revert DynamicStatusFromFuture();
+        if (block.timestamp - uint256(statusEpoch) > maximumAgeSeconds) revert StaleDynamicStatus();
     }
 
     function _validateContextBindings(ZkIdentityEncoding.PublicSignals memory decoded, bytes calldata context)

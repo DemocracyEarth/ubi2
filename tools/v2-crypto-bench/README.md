@@ -194,18 +194,21 @@ waste are public, so neither the verifier, its key nor its proof is deployable.
 [`ZkIdentityVersionRegistry.sol`](../../contracts/src/ZkIdentityVersionRegistry.sol) separately prototypes the
 minimum fail-closed governance tuple: additive circuit IDs pin a verifier address and runtime codehash; issuer keys
 are authorized per circuit; status epochs increase monotonically; a root cannot be reused; and exact roots can
-overlap until explicit revocation. Circuit and issuer retirement is irreversible. The registry intentionally does
-not invent proof freshness—an adapter or consumer must apply its documented age/window policy. Its owner must be a
-timelock-controlled multisig before any production deployment. This is a governance design input, not a production
-ratification or a migration of the operational depth-32 registry.
+overlap until explicit revocation. Circuit and issuer retirement is irreversible. Proposed ADR-0011 also lets
+governance register and irreversibly retire an exact dynamic-status policy hash whose provider, list version, root
+and maximum age are canonical. Its owner must be a timelock-controlled multisig before any production deployment.
+This is a governance design input, not a production ratification or a migration of the operational depth-32 registry.
 
 The separate [`ZkIdentityPredicateProver.sol`](../../contracts/src/ZkIdentityPredicateProver.sol) prototype now
 exercises the complete 18-signal decoding and EVM binding path with a stub raw verifier. It authenticates the
 host-forwarded consumer, recomputes presentation and nullifier scopes, resolves the codehash-pinned
 circuit/issuer/root, and lets `PredicateVerifier` spend signal 13 as a wallet-independent replay identifier. The
-stateful host + adapter + registry + replay-write snapshot is 86,210 gas. That number isolates integration overhead;
-it is not an end-to-end proof estimate and must not be added mechanically to the five-input 230,657-gas result.
-Signal 17 fails closed when non-zero until short-lived dynamic-status freshness is ratified.
+stateful host + adapter + registry + replay-write snapshots are 89,885 gas for static policy and 90,173 gas for
+fresh dynamic status. Those numbers isolate integration overhead; they are not end-to-end proof estimates and must
+not be added mechanically to the five-input 230,657-gas result.
+Signal 17 now uses the exact governed snapshot publication Unix time. The adapter rejects unknown, retired, future,
+mismatched and stale policies; the production circuit must still prove the dynamic-policy/status relation before
+this path can be deployed.
 
 ## Reproduce
 

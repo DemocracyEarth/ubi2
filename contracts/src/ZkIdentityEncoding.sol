@@ -14,13 +14,19 @@ library ZkIdentityEncoding {
 
     uint16 internal constant PRIVATE_CREDENTIAL_VERSION = 1;
     uint16 internal constant NULLIFIER_SCOPE_VERSION = 1;
+    uint16 internal constant POLICY_VERSION = 1;
     uint16 internal constant PRESENTATION_VERSION = 1;
     uint16 internal constant PUBLIC_SIGNALS_VERSION = 1;
     uint256 internal constant PUBLIC_SIGNAL_COUNT = 18;
+    uint32 internal constant MINIMUM_DYNAMIC_STATUS_AGE = 60;
+    uint32 internal constant MAXIMUM_DYNAMIC_STATUS_AGE = 365 days;
 
     bytes32 internal constant PRIVATE_CREDENTIAL_DOMAIN = keccak256("org.proofofhumanity.zk-private-credential");
     bytes32 internal constant NULLIFIER_SCOPE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope");
     bytes32 internal constant NULLIFIER_PREIMAGE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope:derive");
+    bytes32 internal constant POLICY_DOMAIN = keccak256("org.proofofhumanity.zk-policy");
+    bytes32 internal constant DYNAMIC_STATUS_KIND = keccak256("org.proofofhumanity.zk-policy:dynamic-status");
+    bytes32 internal constant SANCTIONS_CLEAR_STATUS = keccak256("sanctions-clear");
     bytes32 internal constant PRESENTATION_DOMAIN = keccak256("org.proofofhumanity.zk-presentation");
 
     uint256 internal constant IDX_LAYOUT_VERSION = 0;
@@ -84,6 +90,13 @@ library ZkIdentityEncoding {
         uint32 epoch;
     }
 
+    struct DynamicStatusPolicy {
+        bytes32 providerIdHash;
+        bytes32 listVersionHash;
+        bytes32 statusRoot;
+        uint32 maximumAgeSeconds;
+    }
+
     error NonCanonicalField(uint256 index);
     error UnsupportedPublicSignalLayout();
     error InvalidPublicSignalLength();
@@ -94,6 +107,7 @@ library ZkIdentityEncoding {
     error InvalidResult();
     error InvalidEpoch(uint256 index);
     error InvalidPresentationBinding();
+    error InvalidDynamicStatusPolicy();
 
     /// @notice Diagnostic parity fingerprint of the private credential ABI.
     /// @dev Never publish or use this stable value as a presentation identifier.
@@ -149,6 +163,29 @@ library ZkIdentityEncoding {
                 binding.epoch
             )
         );
+    }
+
+    /// @notice Reproduce the SDK's canonical sanctions-status policy hash.
+    /// @dev Governance registers this exact hash together with the snapshot's
+    ///      publication timestamp. Provider/list identifiers are hashed off-chain
+    ///      after canonical identifier validation; zero values fail closed here.
+    function dynamicStatusPolicyHash(DynamicStatusPolicy memory policy) internal pure returns (bytes32) {
+        if (
+            policy.providerIdHash == bytes32(0) || policy.listVersionHash == bytes32(0)
+                || policy.statusRoot == bytes32(0) || policy.maximumAgeSeconds < MINIMUM_DYNAMIC_STATUS_AGE
+                || policy.maximumAgeSeconds > MAXIMUM_DYNAMIC_STATUS_AGE
+        ) revert InvalidDynamicStatusPolicy();
+
+        bytes32 parametersHash = keccak256(
+            abi.encode(
+                SANCTIONS_CLEAR_STATUS,
+                policy.providerIdHash,
+                policy.listVersionHash,
+                policy.statusRoot,
+                policy.maximumAgeSeconds
+            )
+        );
+        return keccak256(abi.encode(POLICY_DOMAIN, POLICY_VERSION, DYNAMIC_STATUS_KIND, parametersHash));
     }
 
     /// @notice Ordered field preimage a measured circuit-native hash will consume.
