@@ -220,7 +220,7 @@ and v2 proof generation are not enabled yet.
   depth 96 to 836 B and reduces
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection; issuer slot allocation, uniqueness separation, mobile proving, alternate
-  hash/proof-system, production 18-input verifier gas, durable transport/privacy hardening, and the final ADR
+  hash/proof-system, production ceremony and target-chain gas, durable transport/privacy hardening, and the final ADR
   remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
   2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
@@ -235,9 +235,13 @@ and v2 proof generation are not enabled yet.
   hashes match, the proof root must equal the exact policy root, and unknown, retired, future, mismatched or stale
   policies fail closed. Chain/registry-bound EIP-712 publication manifests now use strict parsing, canonical hash
   recomputation, signer recovery and the same inclusive freshness window; the trusted publisher remains an
-  application configuration and manifest signatures do not authorize registry writes. Security ratification and
-  production-circuit enforcement of that relation, end-to-end target-chain gas, corrected-host testnet redeploy
-  and audits remain.
+  application configuration and manifest signatures do not authorize registry writes. A deterministic
+  public-toxic-waste research circuit now implements the exact 18-input sanctions-clear ABI at 28,499 constraints,
+  binds signed issuer/status/epoch data, derives the scoped nullifier and verifies all the way through governed
+  replay storage. Its 3,349-byte verifier costs 331,699 gas and the full local Cancun path 419,219 gas; all 18 input
+  mutations reject. This is reproducible research evidence, not a production circuit or setup. Independent circuit
+  ratification, production ceremony, mobile and target-chain measurements, corrected-host testnet redeploy and
+  audits remain.
 - **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.

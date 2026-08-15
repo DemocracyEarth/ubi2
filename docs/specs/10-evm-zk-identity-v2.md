@@ -264,7 +264,7 @@ The country root above is a deliberately small parity fixture, not a production 
   revocation/stale/refreshed-witness tests. A transport-neutral sparse-registry prototype now emits canonical,
   unkeyed public deltas for local witness refresh and checks the result against an independently accepted
   checkpoint; its initial and refreshed witnesses satisfy the exact circuit relation. Mid-range mobile and
-  production browser integration, alternate hash/proof-system, production 18-input verifier and target-chain gas,
+  production browser integration, alternate hash/proof-system, production ceremony and target-chain gas,
   production root governance,
   durable transport/retention and privacy hardening remain. Depth 32
   is explicitly not ratified for production: its hashed-index collision probability is about 50% near 77,000
@@ -289,12 +289,11 @@ The country root above is a deliberately small parity fixture, not a production 
   workloads by 88.83%–95.93% versus depth-96 sparse batches. Dense updates switch to the smaller snapshot. This
   makes signature + packed status the candidate to beat, not a protocol selection: status-slot allocation,
   uniqueness/duplicate prevention, update authorization, checkpoint governance, availability/fork recovery,
-  mobile proving, production 18-input end-to-end EVM gas and privacy review remain open.
+  mobile proving, production setup, target-chain EVM gas and privacy review remain open.
 - **Research EVM verifier and governance prototype implemented:** the harness deterministically exports the packed
   fixture proof/VK in EIP-197 order and a 2,211-byte Solidity runtime verifies the real arkworks proof through the
   BN254 precompiles. The pinned five-input target call costs 230,657 gas under the repository's Cancun profile;
-  malformed curve input has bounded precompile gas. This is not the final 18-input raw verifier or a deployable
-  setup.
+  malformed curve input has bounded precompile gas. This is not a deployable setup.
   A separate registry prototype pins additive circuit IDs to verifier codehashes, scopes monotonically versioned
   roots by issuer key, permits explicit overlapping root windows, and makes root/circuit/issuer retirement
   fail-closed. Freshness remains an adapter policy and production ownership must be a timelocked multisig.
@@ -312,6 +311,18 @@ The country root above is a deliberately small parity fixture, not a production 
   same inclusive freshness check. The production circuit must still enforce dynamic-policy semantics and prove
   membership against the public root. Existing
   Phase 2 hosts remain v1-only and no production prover is configured.
+- **Exact 18-signal research proof implemented:** a dedicated sanctions-clear circuit carries the signed issuer
+  credential and packed-status non-revocation relation into every field of the product ABI, binds the signed
+  credential epoch, derives the scoped nullifier and requires a true result. It measures 28,499 constraints and
+  27,561 witness variables. A reproducibly generated 3,349-byte Solidity runtime verifies the real arkworks proof
+  at 331,699 gas, and the proof traverses registry, adapter, host and replay storage at 419,219 gas under the local
+  Cancun profile. Every one of the 18 signals rejects when mutated, and the vector is SDK-derived. Policy,
+  presentation and scope Keccak preimages remain adapter-authenticated; the circuit fixes sanctions-clear semantics
+  through its dedicated circuit ID and proves membership under the adapter-governed root. The deterministic setup
+  exposes toxic waste and is non-deployable. The explicit security boundary, constraint-audit plan and production
+  ceremony gates are recorded in
+  [`v2-dynamic-status-research-security.md`](v2-dynamic-status-research-security.md). Independent review, attribute
+  circuits, mobile proving and target-chain measurements remain.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.
 

@@ -54,6 +54,7 @@ pub type StatusField = CircuitField;
 // lossless 128-bit limbs, so the circuit commitment absorbs 16 field elements.
 pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
 pub const NULLIFIER_FIELD_COUNT: usize = 6;
+pub const DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT: usize = 18;
 pub const REGISTRY_DEPTH: usize = 32;
 pub const REGISTRY_DEPTH_PROFILES: [usize; 4] = [32, 64, 96, 128];
 pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_995];
@@ -64,7 +65,10 @@ pub const BROWSER_PACKED_STATUS_PROVING_KEY_BYTES: usize = 5_250_320;
 /// Non-cryptographic drift fingerprint of the compact fixture-export JSON.
 /// A change requires reviewing and regenerating the Solidity verifier fixture.
 pub const PACKED_STATUS_EVM_FIXTURE_FNV64: u64 = 0x7b92_4d07_c905_43a3;
+/// Fingerprint of the deterministic 18-signal research fixture export.
+pub const DYNAMIC_STATUS_EVM_FIXTURE_FNV64: u64 = 0xc76c_9a32_d48f_d2f6;
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
+const CREDENTIAL_ISSUED_AT_EPOCH_INDEX: usize = 15;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
 const CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX: usize = 4;
 const CREDENTIAL_STATUS_ID_HIGH_INDEX: usize = 5;
@@ -79,6 +83,8 @@ pub const ACTIVE_REGISTRY_CONSTRAINTS: usize = 21_723;
 pub const HYBRID_CONSTRAINTS: usize = 31_843;
 pub const SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS: usize = 27_157;
 pub const SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES: usize = 26_253;
+pub const DYNAMIC_STATUS_PRESENTATION_CONSTRAINTS: usize = 28_499;
+pub const DYNAMIC_STATUS_PRESENTATION_WITNESS_VARIABLES: usize = 27_561;
 
 const CREDENTIAL_DOMAIN: u64 = 1;
 const NULLIFIER_DOMAIN: u64 = 2;
@@ -88,6 +94,31 @@ const ISSUER_KEY_DOMAIN: u64 = 5;
 const STATUS_LEAF_DOMAIN: u64 = 6;
 const STATUS_INDEX_DOMAIN: u64 = 7;
 const PACKED_STATUS_LEAF_DOMAIN: u64 = 8;
+
+// Canonical EVM fixture values for the research-only dynamic sanctions-clear
+// presentation. bytes32 values are represented high-limb first.
+const DYNAMIC_STATUS_CIRCUIT_ID: [u128; 2] = [
+    289_702_399_193_246_464_478_010_289_331_281_785_396,
+    48_741_886_182_628_607_789_356_429_954_167_136_159,
+];
+const DYNAMIC_STATUS_POLICY_HASH: [u128; 2] = [
+    66_979_320_182_552_521_921_400_387_039_049_807_430,
+    243_265_757_976_093_206_830_525_462_510_393_571_529,
+];
+const DYNAMIC_STATUS_PRESENTATION_BINDING: [u128; 2] = [
+    18_413_394_222_340_233_844_127_362_083_622_107_755,
+    139_360_669_093_465_060_426_168_882_985_392_551_801,
+];
+const DYNAMIC_STATUS_NULLIFIER_SCOPE: [u128; 2] = [
+    6_847_975_291_419_670_879_861_391_421_147_823_714,
+    88_504_934_016_337_333_378_500_625_477_300_740_379,
+];
+const NULLIFIER_PREIMAGE_DOMAIN: [u128; 2] = [
+    3_753_063_511_814_324_395_807_447_140_844_095_217,
+    39_595_397_136_107_903_161_255_285_981_469_469_429,
+];
+const DYNAMIC_STATUS_CREDENTIAL_EPOCH: u32 = 230;
+const DYNAMIC_STATUS_PUBLISHED_AT: u32 = 1_788_480_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -134,6 +165,16 @@ pub struct SpikeCircuit {
     packed_status_chunk: [CircuitField; 2],
     registry_siblings: Vec<CircuitField>,
     expected_registry_root: [CircuitField; 2],
+}
+
+/// Research bridge from the authenticated packed-status relation to the exact
+/// product 18-signal ABI. It is intentionally a sanctions-clear circuit: the
+/// adapter authenticates Keccak policy/binding values and governed freshness,
+/// while this relation proves the signed status slot is clear under that root.
+#[derive(Clone)]
+pub struct DynamicStatusPresentationCircuit {
+    inner: SpikeCircuit,
+    public_signals: [CircuitField; DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT],
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +302,25 @@ pub struct EvmGroth16Proof {
 pub struct PackedStatusEvmFixtureReport {
     pub schema: &'static str,
     pub warning: &'static str,
+    pub public_input_count: usize,
+    pub public_inputs: Vec<String>,
+    pub alpha_g1: EvmG1Point,
+    pub beta_g2: EvmG2Point,
+    pub gamma_g2: EvmG2Point,
+    pub delta_g2: EvmG2Point,
+    pub gamma_abc_g1: Vec<EvmG1Point>,
+    pub proof: EvmGroth16Proof,
+    pub proof_verified: bool,
+}
+
+/// Exact 18-signal EVM artifact for the dynamic sanctions-clear research
+/// relation. The deterministic setup is intentionally public toxic waste.
+#[derive(Debug, Serialize)]
+pub struct DynamicStatusEvmFixtureReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub constraints: usize,
+    pub witness_variables: usize,
     pub public_input_count: usize,
     pub public_inputs: Vec<String>,
     pub alpha_g1: EvmG1Point,
@@ -665,6 +725,80 @@ impl SpikeCircuit {
     }
 }
 
+impl DynamicStatusPresentationCircuit {
+    pub fn fixture() -> Self {
+        let poseidon = poseidon_config();
+        let mut inner = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+
+        // Bind the public credential epoch to the signed credential rather than
+        // carrying a presentation-only timestamp.
+        inner.credential_elements[CREDENTIAL_ISSUED_AT_EPOCH_INDEX] =
+            CircuitField::from(DYNAMIC_STATUS_CREDENTIAL_EPOCH);
+        let credential_commitment = poseidon_native(
+            &poseidon,
+            CREDENTIAL_DOMAIN,
+            inner.credential_elements.as_slice(),
+        );
+        let issuer_secret = JubjubScalar::from(4_242_424u64);
+        let challenge = signature_challenge_native(
+            &poseidon,
+            &inner.signature_commitment,
+            &inner.issuer_public_key,
+            credential_commitment,
+        );
+        inner.signature_response = JubjubScalar::from(8_181_818u64)
+            - jubjub_scalar_from_circuit_field(challenge) * issuer_secret;
+
+        let nullifier_preimage = [
+            CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[0]),
+            CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[1]),
+            CircuitField::from(1u64),
+            inner.credential_elements[CREDENTIAL_HOLDER_SECRET_INDEX],
+            CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[0]),
+            CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[1]),
+        ];
+        let scoped_nullifier = poseidon_native(&poseidon, NULLIFIER_DOMAIN, &nullifier_preimage);
+        let subject = CircuitField::from_be_bytes_mod_order(&[0x33; 20]);
+
+        let mut public_signals = [CircuitField::from(0u64); DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT];
+        public_signals[0] = CircuitField::from(1u64);
+        public_signals[1] = CircuitField::from(DYNAMIC_STATUS_CIRCUIT_ID[0]);
+        public_signals[2] = CircuitField::from(DYNAMIC_STATUS_CIRCUIT_ID[1]);
+        public_signals[3..5].copy_from_slice(&inner.issuer_key_id);
+        public_signals[5..7].copy_from_slice(&inner.expected_registry_root);
+        public_signals[7] = CircuitField::from(DYNAMIC_STATUS_POLICY_HASH[0]);
+        public_signals[8] = CircuitField::from(DYNAMIC_STATUS_POLICY_HASH[1]);
+        public_signals[9] = CircuitField::from(DYNAMIC_STATUS_PRESENTATION_BINDING[0]);
+        public_signals[10] = CircuitField::from(DYNAMIC_STATUS_PRESENTATION_BINDING[1]);
+        public_signals[11] = CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[0]);
+        public_signals[12] = CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[1]);
+        public_signals[13] = scoped_nullifier;
+        public_signals[14] = subject;
+        public_signals[15] = CircuitField::from(1u64);
+        public_signals[16] = CircuitField::from(DYNAMIC_STATUS_CREDENTIAL_EPOCH);
+        public_signals[17] = CircuitField::from(DYNAMIC_STATUS_PUBLISHED_AT);
+
+        Self {
+            inner,
+            public_signals,
+        }
+    }
+
+    pub fn public_inputs(&self) -> Vec<CircuitField> {
+        self.public_signals.to_vec()
+    }
+
+    #[cfg(test)]
+    fn set_public_signal(&mut self, index: usize, value: CircuitField) {
+        self.public_signals[index] = value;
+    }
+
+    #[cfg(test)]
+    fn revoke_packed_status(&mut self) {
+        self.inner.revoke_packed_status();
+    }
+}
+
 impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
     fn generate_constraints(
         self,
@@ -757,6 +891,90 @@ impl ConstraintSynthesizer<CircuitField> for SpikeCircuit {
                 self.expected_registry_root,
             )?;
         }
+
+        Ok(())
+    }
+}
+
+impl ConstraintSynthesizer<CircuitField> for DynamicStatusPresentationCircuit {
+    fn generate_constraints(
+        self,
+        cs: ConstraintSystemRef<CircuitField>,
+    ) -> Result<(), SynthesisError> {
+        let poseidon = poseidon_config();
+        let public = self
+            .public_signals
+            .iter()
+            .map(|value| FpVar::new_input(cs.clone(), || Ok(*value)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        public[0].enforce_equal(&FpVar::Constant(CircuitField::from(1u64)))?;
+        public[1].enforce_equal(&FpVar::Constant(CircuitField::from(
+            DYNAMIC_STATUS_CIRCUIT_ID[0],
+        )))?;
+        public[2].enforce_equal(&FpVar::Constant(CircuitField::from(
+            DYNAMIC_STATUS_CIRCUIT_ID[1],
+        )))?;
+        for high_index in [1usize, 3, 5, 7, 9, 11] {
+            enforce_identifier(&public[high_index], &public[high_index + 1])?;
+        }
+
+        let credential_vars = self
+            .inner
+            .credential_elements
+            .iter()
+            .map(|value| FpVar::new_witness(cs.clone(), || Ok(*value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let credential_commitment = poseidon_gadget(
+            cs.clone(),
+            &poseidon,
+            CREDENTIAL_DOMAIN,
+            credential_vars.as_slice(),
+        )?;
+        credential_vars[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX].enforce_equal(&public[3])?;
+        credential_vars[CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX].enforce_equal(&public[4])?;
+        credential_vars[CREDENTIAL_ISSUED_AT_EPOCH_INDEX].enforce_equal(&public[16])?;
+
+        enforce_signature(
+            cs.clone(),
+            &poseidon,
+            &credential_commitment,
+            SignatureWitness {
+                issuer_public_key: self.inner.issuer_public_key,
+                issuer_key_id: [public[3].clone(), public[4].clone()],
+                signature_commitment: self.inner.signature_commitment,
+                signature_response: self.inner.signature_response,
+            },
+        )?;
+        enforce_packed_status_nonrevocation_with_public_root(
+            cs.clone(),
+            &poseidon,
+            credential_vars[CREDENTIAL_STATUS_ID_HIGH_INDEX].clone(),
+            credential_vars[CREDENTIAL_STATUS_ID_LOW_INDEX].clone(),
+            self.inner.packed_status_chunk,
+            &self.inner.registry_siblings,
+            [public[5].clone(), public[6].clone()],
+        )?;
+
+        let nullifier_preimage = [
+            FpVar::Constant(CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[0])),
+            FpVar::Constant(CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[1])),
+            FpVar::Constant(CircuitField::from(1u64)),
+            credential_vars[CREDENTIAL_HOLDER_SECRET_INDEX].clone(),
+            public[11].clone(),
+            public[12].clone(),
+        ];
+        let scoped_nullifier =
+            poseidon_gadget(cs.clone(), &poseidon, NULLIFIER_DOMAIN, &nullifier_preimage)?;
+        scoped_nullifier.enforce_equal(&public[13])?;
+        public[13].is_zero()?.enforce_equal(&Boolean::FALSE)?;
+
+        let _ = public[14].to_bits_le_with_top_bits_zero(160)?;
+        public[14].is_zero()?.enforce_equal(&Boolean::FALSE)?;
+        public[15].enforce_equal(&FpVar::Constant(CircuitField::from(1u64)))?;
+        let _ = public[16].to_bits_le_with_top_bits_zero(32)?;
+        let _ = public[17].to_bits_le_with_top_bits_zero(32)?;
+        public[17].is_zero()?.enforce_equal(&Boolean::FALSE)?;
 
         Ok(())
     }
@@ -1007,6 +1225,61 @@ pub fn generate_packed_status_evm_fixture(
 ) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
     let proving_key = generate_packed_status_proving_key()?;
     export_packed_status_evm_fixture_with_key(&proving_key)
+}
+
+/// Generate the deterministic 18-signal sanctions-clear setup and export one
+/// verified proof plus its verifying key in EIP-197 word order.
+pub fn generate_dynamic_status_evm_fixture(
+) -> Result<DynamicStatusEvmFixtureReport, BrowserBenchmarkError> {
+    let circuit = DynamicStatusPresentationCircuit::fixture();
+    let measurement_cs = ConstraintSystem::<CircuitField>::new_ref();
+    circuit
+        .clone()
+        .generate_constraints(measurement_cs.clone())?;
+    if !measurement_cs.is_satisfied()? {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+    let constraints = measurement_cs.num_constraints();
+    let witness_variables = measurement_cs.num_witness_variables();
+    let public_inputs = circuit.public_inputs();
+
+    // Public deterministic seeds make this reproducible and make the output
+    // categorically unsafe for production use.
+    let mut setup_rng = StdRng::seed_from_u64(0x44_59_4e_53_54_41_54_55);
+    let (proving_key, _) =
+        Groth16::<Bn254>::circuit_specific_setup(circuit.clone(), &mut setup_rng)?;
+    let mut proof_rng = StdRng::seed_from_u64(0x53_54_41_54_55_53_5f_31);
+    let proof = Groth16::<Bn254>::prove(&proving_key, circuit, &mut proof_rng)?;
+    let processed = Groth16::<Bn254>::process_vk(&proving_key.vk)?;
+    let proof_verified =
+        Groth16::<Bn254>::verify_with_processed_vk(&processed, &public_inputs, &proof)?;
+    if !proof_verified {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+
+    Ok(DynamicStatusEvmFixtureReport {
+        schema: "org.proofofhumanity.v2-dynamic-status-evm-fixture/1",
+        warning:
+            "research fixture only; deterministic toxic-waste setup is public and not deployable",
+        constraints,
+        witness_variables,
+        public_input_count: public_inputs.len(),
+        public_inputs: public_inputs
+            .into_iter()
+            .map(field_element_decimal)
+            .collect(),
+        alpha_g1: evm_g1(&proving_key.vk.alpha_g1),
+        beta_g2: evm_g2(&proving_key.vk.beta_g2),
+        gamma_g2: evm_g2(&proving_key.vk.gamma_g2),
+        delta_g2: evm_g2(&proving_key.vk.delta_g2),
+        gamma_abc_g1: proving_key.vk.gamma_abc_g1.iter().map(evm_g1).collect(),
+        proof: EvmGroth16Proof {
+            a: evm_g1(&proof.a),
+            b: evm_g2(&proof.b),
+            c: evm_g1(&proof.c),
+        },
+        proof_verified,
+    })
 }
 
 fn export_packed_status_evm_fixture_with_key(
@@ -1378,6 +1651,15 @@ fn enforce_u128_limb(value: &FpVar<CircuitField>) -> Result<(), SynthesisError> 
     Ok(())
 }
 
+fn enforce_identifier(
+    high: &FpVar<CircuitField>,
+    low: &FpVar<CircuitField>,
+) -> Result<(), SynthesisError> {
+    enforce_u128_limb(high)?;
+    enforce_u128_limb(low)?;
+    Boolean::enforce_kary_nand(&[high.is_zero()?, low.is_zero()?])
+}
+
 fn merkle_root_native(
     config: &PoseidonConfig<CircuitField>,
     leaf: CircuitField,
@@ -1446,6 +1728,30 @@ fn enforce_packed_status_nonrevocation(
     siblings: &[CircuitField],
     expected_root: [CircuitField; 2],
 ) -> Result<(), SynthesisError> {
+    let public_root = [
+        FpVar::new_input(cs.clone(), || Ok(expected_root[0]))?,
+        FpVar::new_input(cs.clone(), || Ok(expected_root[1]))?,
+    ];
+    enforce_packed_status_nonrevocation_with_public_root(
+        cs,
+        config,
+        status_id_high,
+        status_id_low,
+        packed_status_chunk,
+        siblings,
+        public_root,
+    )
+}
+
+fn enforce_packed_status_nonrevocation_with_public_root(
+    cs: ConstraintSystemRef<CircuitField>,
+    config: &PoseidonConfig<CircuitField>,
+    status_id_high: FpVar<CircuitField>,
+    status_id_low: FpVar<CircuitField>,
+    packed_status_chunk: [CircuitField; 2],
+    siblings: &[CircuitField],
+    public_root: [FpVar<CircuitField>; 2],
+) -> Result<(), SynthesisError> {
     status_id_high.enforce_equal(&FpVar::Constant(CircuitField::from(0u64)))?;
     let (status_id_low_bits, _) = status_id_low.to_bits_le_with_top_bits_zero(32)?;
     let chunk_vars = [
@@ -1481,9 +1787,7 @@ fn enforce_packed_status_nonrevocation(
         let right = current_is_right.select(&current, &sibling)?;
         current = poseidon_gadget(cs.clone(), config, REGISTRY_NODE_DOMAIN, &[left, right])?;
     }
-    let public_root_high = FpVar::new_input(cs.clone(), || Ok(expected_root[0]))?;
-    let public_root_low = FpVar::new_input(cs, || Ok(expected_root[1]))?;
-    enforce_lossless_bytes32_limbs(&current, &public_root_high, &public_root_low)
+    enforce_lossless_bytes32_limbs(&current, &public_root[0], &public_root[1])
 }
 
 fn active_status_leaf_native(
@@ -1558,6 +1862,64 @@ mod tests {
             report.results[3].witness_variables, SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES,
             "packed-status witness drift requires an explicit browser-report review"
         );
+    }
+
+    #[test]
+    fn dynamic_status_presentation_uses_the_exact_eighteen_signal_layout() {
+        let circuit = DynamicStatusPresentationCircuit::fixture();
+        let inputs = circuit.public_inputs();
+        assert_eq!(inputs.len(), DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT);
+        assert_eq!(inputs[0], CircuitField::from(1u64));
+        assert_eq!(inputs[1], CircuitField::from(DYNAMIC_STATUS_CIRCUIT_ID[0]));
+        assert_eq!(inputs[2], CircuitField::from(DYNAMIC_STATUS_CIRCUIT_ID[1]));
+        assert_eq!(&inputs[3..5], &circuit.inner.issuer_key_id);
+        assert_eq!(&inputs[5..7], &circuit.inner.expected_registry_root);
+        assert_eq!(
+            inputs[14],
+            CircuitField::from_be_bytes_mod_order(&[0x33; 20])
+        );
+        assert_eq!(inputs[15], CircuitField::from(1u64));
+        assert_eq!(
+            inputs[16],
+            CircuitField::from(DYNAMIC_STATUS_CREDENTIAL_EPOCH)
+        );
+        assert_eq!(inputs[17], CircuitField::from(DYNAMIC_STATUS_PUBLISHED_AT));
+
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+        assert_eq!(cs.num_instance_variables() - 1, 18);
+        assert_eq!(
+            cs.num_constraints(),
+            DYNAMIC_STATUS_PRESENTATION_CONSTRAINTS,
+            "constraint drift requires explicit verifier-artifact review"
+        );
+        assert_eq!(
+            cs.num_witness_variables(),
+            DYNAMIC_STATUS_PRESENTATION_WITNESS_VARIABLES,
+            "witness drift requires explicit verifier-artifact review"
+        );
+    }
+
+    #[test]
+    fn dynamic_status_presentation_binds_scope_epoch_and_circuit() {
+        for index in [1usize, 11, 16] {
+            let mut circuit = DynamicStatusPresentationCircuit::fixture();
+            let changed = circuit.public_signals[index] + CircuitField::from(1u64);
+            circuit.set_public_signal(index, changed);
+            let cs = ConstraintSystem::<CircuitField>::new_ref();
+            circuit.generate_constraints(cs.clone()).unwrap();
+            assert!(!cs.is_satisfied().unwrap(), "signal {index} must be bound");
+        }
+    }
+
+    #[test]
+    fn dynamic_status_presentation_rejects_the_selected_sanctions_bit() {
+        let mut circuit = DynamicStatusPresentationCircuit::fixture();
+        circuit.revoke_packed_status();
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
     }
 
     #[test]
@@ -1983,6 +2345,30 @@ mod tests {
         assert_eq!(
             fingerprint, PACKED_STATUS_EVM_FIXTURE_FNV64,
             "fixture drift requires regenerating and reviewing the Solidity verifier"
+        );
+
+        let dynamic_fixture = generate_dynamic_status_evm_fixture()
+            .expect("dynamic-status fixture exports in EIP-197 order");
+        assert!(dynamic_fixture.proof_verified);
+        assert_eq!(dynamic_fixture.public_input_count, 18);
+        assert_eq!(dynamic_fixture.gamma_abc_g1.len(), 19);
+        assert_eq!(
+            dynamic_fixture.constraints,
+            DYNAMIC_STATUS_PRESENTATION_CONSTRAINTS
+        );
+        assert_eq!(
+            dynamic_fixture.witness_variables,
+            DYNAMIC_STATUS_PRESENTATION_WITNESS_VARIABLES
+        );
+        let serialized = serde_json::to_vec(&dynamic_fixture).expect("EVM fixture serializes");
+        let fingerprint = serialized
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!(
+            fingerprint, DYNAMIC_STATUS_EVM_FIXTURE_FNV64,
+            "fixture drift requires regenerating and reviewing the 18-signal Solidity verifier"
         );
     }
 }

@@ -14,6 +14,10 @@ import {
   ZK_PUBLIC_SIGNAL_COUNT,
   type ZkIdentityPublicSignalValues,
 } from "./zk-identity-encoding";
+import {
+  dynamicStatusPolicyRegistration,
+  zkPresentationBindingHash,
+} from "./zk-identity-policy";
 
 const issuerKeyId = keccak256(stringToBytes("issuer-key:testnet:v1"));
 const statusId = keccak256(stringToBytes("status:fixture:1"));
@@ -111,6 +115,89 @@ assert.deepEqual(
 );
 assert.deepEqual(decodeZkIdentityPublicSignals(signals), signalValues);
 assert.equal(serializeZkIdentityPublicSignals(signals).length, 2 + 64 * ZK_PUBLIC_SIGNAL_COUNT);
+
+const researchActiveRoot =
+  "0x1f9cbf406714091dcdcc8ceaeecdcb56f0d50cead85493ac98d952b186bd70ef" as const;
+const researchVerifier = "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f" as const;
+const researchConsumer = "0x2222222222222222222222222222222222222222" as const;
+const researchSubject = "0x3333333333333333333333333333333333333333" as const;
+const researchContext = keccak256(stringToBytes("membership:dynamic-status-fixture"));
+const researchChallenge = keccak256(stringToBytes("challenge:dynamic-status-fixture"));
+const researchRegistration = dynamicStatusPolicyRegistration({
+  policy: {
+    kind: "dynamic-status",
+    status: "sanctions-clear",
+    providerId: "self:ofac",
+    listVersion: "research:fixture-1",
+    statusRoot: researchActiveRoot,
+    maximumAgeSeconds: 86_400,
+  },
+  publishedAt: 1_788_480_000,
+});
+assert.equal(
+  researchRegistration.policyHash,
+  "0x3263bf72679d2a1d55af03c9659ff646b70347e0bda15b50fbe11ad19ac338c9",
+);
+const researchBinding = zkPresentationBindingHash({
+  policyHash: researchRegistration.policyHash,
+  chainId: 84_532,
+  verifier: researchVerifier,
+  consumer: researchConsumer,
+  subject: researchSubject,
+  context: researchContext,
+  challenge: researchChallenge,
+  epoch: 230,
+});
+const researchScopeHash = zkNullifierScopeHash({
+  mode: "single-use",
+  chainId: 84_532,
+  verifier: researchVerifier,
+  consumer: researchConsumer,
+  context: researchContext,
+  policyHash: researchRegistration.policyHash,
+});
+const researchSignalValues: ZkIdentityPublicSignalValues = {
+  circuitId: keccak256(stringToBytes("ubi2.zk-identity.v2.dynamic-status-packed-research-1")),
+  issuerKeyId: joinBytes32(
+    5_684_059_935_654_687_451_218_130_737_850_785_594n,
+    67_299_010_049_198_418_576_218_540_330_172_003_346n,
+  ),
+  activeRoot: researchActiveRoot,
+  policyHash: researchRegistration.policyHash,
+  presentationBindingHash: researchBinding,
+  nullifierScopeHash: researchScopeHash,
+  scopedNullifier: 20_836_277_576_622_436_304_605_240_530_674_583_438_128_730_513_013_950_421_677_813_631_609_875_289_808n,
+  subject: researchSubject,
+  result: true,
+  credentialEpoch: 230,
+  statusEpoch: researchRegistration.publishedAt,
+};
+const researchSignals = encodeZkIdentityPublicSignals(researchSignalValues);
+assert.deepEqual(
+  researchSignals.map(String),
+  [
+    "1",
+    "289702399193246464478010289331281785396",
+    "48741886182628607789356429954167136159",
+    "5684059935654687451218130737850785594",
+    "67299010049198418576218540330172003346",
+    "42019945222001701131111497448068860758",
+    "320120940214504009201675825938958217455",
+    "66979320182552521921400387039049807430",
+    "243265757976093206830525462510393571529",
+    "18413394222340233844127362083622107755",
+    "139360669093465060426168882985392551801",
+    "6847975291419670879861391421147823714",
+    "88504934016337333378500625477300740379",
+    "20836277576622436304605240530674583438128730513013950421677813631609875289808",
+    "292300327466180583640736966543256603931186508595",
+    "1",
+    "230",
+    "1788480000",
+  ],
+  "research proof public signals are pinned across SDK, circuit, and Solidity",
+);
+assert.deepEqual(decodeZkIdentityPublicSignals(researchSignals), researchSignalValues);
 
 assert.equal(
   encodeZkPredicateProofContext({

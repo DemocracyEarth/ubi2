@@ -127,8 +127,8 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   deterministic public
   multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
   88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. Remaining: issuer
-  slot/uniqueness design, mobile, alternate hash/proof-system, production-verifier/target-chain gas, transport/privacy
-  hardening, and the measured ADR. The raw five-input arkworks fixture now verifies through EIP-196/197 at a pinned
+  slot/uniqueness design, mobile, alternate hash/proof-system, production ceremony/target-chain gas,
+  transport/privacy hardening, and the measured ADR. The raw five-input arkworks fixture verifies through EIP-196/197 at a pinned
   230,657 gas with 2,211-byte runtime code, and a pre-deployment governance registry pins verifier codehashes plus
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. The fixture setup is
   intentionally non-deployable. A strict 18-signal adapter now authenticates the host-forwarded consumer and every
@@ -138,9 +138,13 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   publication Unix time and maximum age, with
   SDK/Solidity hash parity, exact proof-root equality and unknown/retired/future/mismatch/staleness rejection.
   Strict EIP-712 publication manifests bind the canonical metadata to one chain/registry and recover an
-  application-configured publisher while preserving separate on-chain governance. Security ratification and
-  production-circuit enforcement, the production 18-input verifier, corrected-host testnet redeploy, timelocked
-  ownership, target-chain gas and audits remain.
+  application-configured publisher while preserving separate on-chain governance. A deterministic 28,499-constraint
+  research circuit now emits the exact 18 signals, proves the signed packed status slot is clear, derives the scoped
+  nullifier, and passes the real registry→adapter→host→replay path. Its 3,349-byte raw verifier costs 331,699 gas and
+  the stateful path costs 419,219 gas locally; every signal mutation rejects. The setup toxic waste is public and
+  categorically non-deployable. The security boundary, constraint-audit plan and ceremony gates are recorded.
+  Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
+  target-chain measurements, production ceremony and audits remain.
 
 ## 👀 Review (awaiting gates)
 _(none)_
