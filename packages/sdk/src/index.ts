@@ -19,6 +19,7 @@ export * from "./passport";
 export * from "./predicate";
 export * from "./credential-vault";
 export * from "./zk-identity-policy";
+export * from "./zk-identity-status-manifest";
 export * from "./zk-identity-encoding";
 
 export const UBI_DECIMALS = 18n;

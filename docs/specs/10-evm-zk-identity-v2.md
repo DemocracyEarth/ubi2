@@ -177,7 +177,8 @@ The pre-deployment [`ZkIdentityPredicateProver`](../../contracts/src/ZkIdentityP
   challenge, policy and credential epoch;
 - recomputes the nullifier scope from chain, host, consumer, action context, policy and nullifier mode;
 - resolves an active codehash-pinned circuit/issuer/root tuple from the registry before calling the raw verifier;
-- enforces exact governance registration, publication time, maximum age and retirement for dynamic-status policies;
+- enforces exact governance registration, status-root equality, publication time, maximum age and retirement for
+  dynamic-status policies;
 - returns only `(subject, policyHash, result, credentialEpoch)` and exposes only the scoped nullifier to the
   host replay extension.
 
@@ -186,9 +187,13 @@ uint8 nullifierMode)`, emitted by the SDK helper `encodeZkPredicateProofContext`
 17 is the Unix publication timestamp in seconds of the exact sanctions snapshot committed by `policyHash`.
 `dynamicStatusPolicyRegistration` emits the canonical governance arguments. The registry recomputes the policy
 hash from provider, list version, root and maximum age; the adapter requires a registered active policy, exact
-timestamp equality, no future time and `block.timestamp - publishedAt <= maximumAgeSeconds`. Non-dynamic policies
-use zero. This pre-deployment implementation does not enable sanctions without a production circuit that proves
-the policy-kind zero/non-zero rule and membership against the committed root.
+active-root equality, timestamp equality, no future time and
+`block.timestamp - publishedAt <= maximumAgeSeconds`. Another accepted root cannot substitute for the policy root.
+The SDK's EIP-712 manifest helper strictly recomputes the metadata hashes and binds a publisher signature to one
+chain and registry; applications must trust the expected publisher independently, validate freshness, and use
+ERC-1271 verification for a contract publisher. The signature authenticates distribution but does not authorize a
+registry write. Non-dynamic policies use zero. This pre-deployment implementation does not enable sanctions without
+a production circuit that proves the policy-kind zero/non-zero rule and membership against the public active root.
 
 Circuit versions are additive raw verifier contracts; an audited registry/multisig with a timelock controls which
 versions consumers may accept. No proof-system upgrade may mutate the SBT or its holders.
@@ -297,12 +302,15 @@ The country root above is a deliberately small parity fixture, not a production 
   actual consumer, subject, action context, challenge, policy, credential epoch and scoped-nullifier mode before
   resolving an accepted circuit/issuer/root and calling an exact eight-word/18-input raw verifier. The host now
   forwards the actual consumer and spends a prover-authenticated replay identifier, closing wallet-change replay.
-  The pinned stateful host + adapter + registry + replay-write calls are 89,885 gas for a static policy and 90,173
+  The pinned stateful host + adapter + registry + replay-write calls are 92,066 gas for a static policy and 92,377
   gas for fresh dynamic status with a stub raw verifier; they are not end-to-end proof estimates and must not be
   added mechanically to the five-input research result. Proposed
   ADR-0011 now pins signal 17 to the exact governed Unix publication time of the sanctions snapshot; canonical SDK
-  and Solidity policy hashes bind provider/list/root/maximum age, and the adapter rejects unknown, retired, future,
-  mismatched or stale snapshots. The production circuit must still enforce dynamic-policy semantics. Existing
+  and Solidity policy hashes bind provider/list/root/maximum age. The adapter requires the proof's active root to
+  equal that exact policy root and rejects unknown, retired, future, mismatched or stale snapshots. SDK publication
+  manifests add strict whole-document parsing, chain/registry-bound EIP-712 authentication, signer recovery and the
+  same inclusive freshness check. The production circuit must still enforce dynamic-policy semantics and prove
+  membership against the public root. Existing
   Phase 2 hosts remain v1-only and no production prover is configured.
 - Produce a circuit threat model, constraint audit plan, setup/ceremony plan and version registry design.
 - Exit: one decision ADR with measured results; no cryptographic choice based only on familiarity.

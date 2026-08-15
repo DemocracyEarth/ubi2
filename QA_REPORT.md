@@ -55,8 +55,10 @@ every line and branch covered.
   replay identifiers, and wallet changes that must not bypass one-per-scope replay.
 - The governed v2 adapter covers exact 18-signal/eight-word decoding, host-only calls, chain/host/consumer/subject/
   context/challenge/policy/nullifier-mode binding, verifier-codehash/issuer/root governance, invalid proofs,
-  revoked roots, and governed dynamic-status registration, exact publication-time binding, inclusive freshness,
-  stale-by-one-second rejection, unknown/zero/mismatch/future rejection and irreversible retirement.
+  revoked roots, and governed dynamic-status registration, exact policy-root/public-root and publication-time
+  binding, inclusive freshness, stale-by-one-second rejection, unknown/zero/mismatch/future rejection and
+  irreversible retirement. SDK tests additionally cover strict whole-manifest parsing, canonical metadata/hash
+  consistency, EIP-712 signer recovery, wrong publisher/chain/registry rejection and matching freshness boundaries.
 - SybilResistantVote covers valid yes/no votes, one-human-one-vote, invalid or absent SBTs, expired SBTs,
   predicate/context/consumer/subject mismatch, false predicates, bad signatures, replay, and double vote.
 - Privacy tests use `vm.record`, `vm.recordLogs`, `vm.accesses`, and `vm.load` to assert representative
@@ -86,8 +88,8 @@ chain-specific fee estimates.
 | In-place newer-epoch refresh | 13,813 |
 | Issuer path `consume` | 39,855 |
 | Mock proof path `consumeWithProof` | 36,159 |
-| V2 static policy host + adapter + registry + replay write (stub raw verifier) | 89,885 |
-| V2 fresh dynamic status host + adapter + registry + replay write (stub raw verifier) | 90,173 |
+| V2 static policy host + adapter + registry + replay write (stub raw verifier) | 92,066 |
+| V2 fresh dynamic status host + adapter + registry + replay write (stub raw verifier) | 92,377 |
 | Research five-input BN254 raw verifier | 230,657 |
 
 The adapter numbers isolate integration overhead with a stub raw verifier. The five-input verifier uses public
@@ -141,9 +143,18 @@ remain v1-only with prover unset, and require a versioned redeploy before v2 tes
 Signal 17 had no pinned unit or authority, so accepting it could let an old sanctions root be relabeled with a
 fresh holder/issuer timestamp. The canonical policy hash now commits to provider, list version, root and maximum
 age; governance registers that exact hash with the snapshot's Unix publication time; and the adapter requires exact
-timestamp equality before applying the inclusive age window. Unknown, retired, future, mismatched and stale
-snapshots fail closed. Production activation still requires the final circuit to prove the policy-kind zero/non-zero
-rule and status-root relation, plus independent review.
+timestamp equality and exact proof-root equality before applying the inclusive age window. This rejects another
+accepted root as a substitute. Unknown, retired, future, mismatched and stale snapshots fail closed. Production
+activation still requires the final circuit to prove the policy-kind zero/non-zero rule and membership against the
+public root, plus independent review.
+
+### V2-SEC-03 — Snapshot distribution was not authenticated (resolved pre-deployment)
+
+The SDK now emits a strict canonical manifest and EIP-712 payload for one policy snapshot. Provider/list labels are
+re-hashed during whole-document parsing, expiry is derived rather than trusted, and the signature domain binds one
+chain and registry. Tests reject the wrong publisher, chain, registry, metadata, future time and stale-by-one-second
+case. Applications must source the expected publisher independently; the signature does not authorize governance,
+and contract publishers require ERC-1271 verification.
 
 No open High or Critical finding remains from this phase.
 
@@ -160,7 +171,7 @@ No open High or Critical finding remains from this phase.
 | Privacy | SBT state is nullifier + epoch. Predicate tests assert exact private attribute values are absent from calldata, logs, and storage. `tokenURI` tests assert no PII fields. |
 | Issuer blast radius | The v1 issuer can authorize SBTs and arbitrary predicate booleans, including future epochs. This is an explicit v1 trust assumption. Protect it as a production signing secret, monitor it, and retain rapid owner/multisig rotation. |
 | Owner/prover blast radius | The owner can rotate issuer, renderer, and predicate prover. A malicious prover can mislead consumers that opt into the proof path, but cannot alter SBT/nullifier state or UBI eligibility. Launch with prover unset and use a multisig owner. |
-| Prover context binding | The host constructs `abi.encode(actualConsumer, applicationContext)` before the nested call. The v2 adapter recomputes every pinned presentation/nullifier binding and resolves codehash-pinned governance. Proposed ADR-0011 additionally binds dynamic status to an exact registered snapshot publication time and maximum age. Any real prover still requires circuit/Solidity review before activation. |
+| Prover context binding | The host constructs `abi.encode(actualConsumer, applicationContext)` before the nested call. The v2 adapter recomputes every pinned presentation/nullifier binding and resolves codehash-pinned governance. Proposed ADR-0011 additionally binds dynamic status to the exact registered root, publication time and maximum age. Any real prover still requires circuit/Solidity review before activation. |
 
 Foundry lint emitted only advisory items: deliberate narrowing for epoch/display values, hashing-efficiency
 suggestions, naming style, and test-only base64 arithmetic. None changes the release decision. The epoch

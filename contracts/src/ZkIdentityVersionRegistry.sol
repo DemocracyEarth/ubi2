@@ -211,14 +211,14 @@ contract ZkIdentityVersionRegistry is Ownable2Step {
         );
     }
 
-    /// @notice Minimal policy state consumed by the verifier adapter.
+    /// @notice Minimal root and freshness state consumed by the verifier adapter.
     function dynamicStatusPolicyState(bytes32 policyHash)
         external
         view
-        returns (uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active)
+        returns (bytes32 statusRoot, uint32 publishedAt, uint32 maximumAgeSeconds, bool registered, bool active)
     {
         DynamicStatusPolicy storage policy = dynamicStatusPolicies[policyHash];
-        return (policy.publishedAt, policy.maximumAgeSeconds, policy.registered, policy.active);
+        return (policy.statusRoot, policy.publishedAt, policy.maximumAgeSeconds, policy.registered, policy.active);
     }
 
     function isAccepted(bytes32 circuitId, address verifier, bytes32 issuerKeyId, bytes32 root, uint32 epoch)
