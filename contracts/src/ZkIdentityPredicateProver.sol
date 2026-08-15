@@ -14,8 +14,9 @@ interface IZkIdentityGroth16Verifier {
 /// @notice Strictly decodes the pinned 18-signal layout, authenticates every EVM
 ///         presentation binding, resolves an accepted verifier/issuer/root tuple,
 ///         and verifies the proof before returning the forever-interface result.
-/// @dev PRE-DEPLOYMENT DESIGN. No production 18-signal circuit or ceremony
-///      artifact exists yet, so this contract MUST NOT be configured on a live
+/// @dev PRE-DEPLOYMENT DESIGN. The only exact 18-signal circuit artifact is a
+///      deterministic public-toxic-waste research fixture, not a production
+///      ceremony artifact, so this contract MUST NOT be configured on a live
 ///      PredicateVerifier. The application context is ABI-encoded as
 ///      `(bytes32 actionContext, bytes32 challenge, uint8 nullifierMode)`.
 contract ZkIdentityPredicateProver is IPredicateProver, IPredicateProverReplay {

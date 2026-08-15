@@ -187,9 +187,20 @@ gas forwarded to each precompile, so malformed curve input fails within a bounde
 caller-provided gas. CI pins a drift fingerprint over the complete exported key, proof and input JSON; changing it
 requires regenerating and reviewing the Solidity fixture in the same change.
 
-This closes only the raw pairing-verifier measurement for the five-input research relation. It does **not** measure
-the final 18-input presentation circuit or target-chain transaction overhead. The fixture setup seed and toxic
-waste are public, so neither the verifier, its key nor its proof is deployable.
+The follow-up `dynamic-status-packed-research-1` circuit carries the same signed credential and packed-status
+membership into the exact 18-field product ABI. It binds the signed credential epoch, derives the scoped nullifier
+from the signed holder secret and public scope limbs, fixes sanctions-clear semantics through a dedicated circuit
+ID, requires `result == true`, and exposes canonical subject and snapshot-time fields. The adapter remains
+responsible for recomputing the policy, presentation and scope Keccak hashes and for governed root/timestamp
+freshness. That trust split and its production gates are explicit in
+[`v2-dynamic-status-research-security.md`](../../docs/specs/v2-dynamic-status-research-security.md).
+
+The relation is pinned at 28,499 constraints and 27,561 witness variables. Its generated 3,349-byte Solidity
+runtime verifies the real arkworks proof with all 18 public inputs at 331,699 gas. The same proof traverses registry,
+adapter, host and replay storage at 419,219 gas. Foundry independently mutates all 18 public signals and requires
+rejection. SDK-derived hashes pin the same vector in TypeScript. These are local Cancun-profile research
+measurements, not target-chain budgets or a final cryptographic selection. Both deterministic fixture setups expose
+their toxic waste, so neither verifier, key nor proof is deployable.
 
 [`ZkIdentityVersionRegistry.sol`](../../contracts/src/ZkIdentityVersionRegistry.sol) separately prototypes the
 minimum fail-closed governance tuple: additive circuit IDs pin a verifier address and runtime codehash; issuer keys
@@ -200,17 +211,18 @@ and maximum age are canonical. Its owner must be a timelock-controlled multisig 
 This is a governance design input, not a production ratification or a migration of the operational depth-32 registry.
 
 The separate [`ZkIdentityPredicateProver.sol`](../../contracts/src/ZkIdentityPredicateProver.sol) prototype now
-exercises the complete 18-signal decoding and EVM binding path with a stub raw verifier. It authenticates the
+exercises the complete 18-signal decoding and EVM binding path with both a stub and the research raw verifier. It authenticates the
 host-forwarded consumer, recomputes presentation and nullifier scopes, resolves the codehash-pinned
 circuit/issuer/root, and lets `PredicateVerifier` spend signal 13 as a wallet-independent replay identifier. The
-stateful host + adapter + registry + replay-write snapshots are 92,066 gas for static policy and 92,377 gas for
-fresh dynamic status. Those numbers isolate integration overhead; they are not end-to-end proof estimates and must
-not be added mechanically to the five-input 230,657-gas result.
+stateful host + adapter + registry + replay-write snapshots remain 92,066 gas for static policy and 92,377 gas for
+fresh dynamic status with the stub. The exact research proof's 419,219-gas full path is measured separately; none of
+these local figures substitutes for target-chain measurements.
 Signal 17 now uses the exact governed snapshot publication Unix time. The adapter additionally requires the proof's
 active root to equal the exact root committed by the policy, rejecting substitution with another otherwise accepted
 root. The SDK's strict EIP-712 manifest binds canonical publisher/list/root/time metadata to one chain and registry.
-The adapter rejects unknown, retired, future, mismatched and stale policies; the production circuit must still prove
-the policy-kind rule and membership against that public root before this path can be deployed.
+The adapter rejects unknown, retired, future, mismatched and stale policies. The dedicated research circuit now
+proves the signed slot is clear against that public root and fixes the policy kind by circuit ID, but production
+deployment still requires independent constraint review, a safe ceremony, audited bytecode and target-chain gates.
 
 ## Reproduce
 
@@ -230,8 +242,15 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --status-distribution
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --packed-evm-fixture
+mkdir -p /tmp/ubi2-v2-research
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --dynamic-status-evm-fixture > /tmp/ubi2-v2-research/dynamic-status.json
+node contracts/scripts/generate-v2-dynamic-status-research.mjs \
+  /tmp/ubi2-v2-research/dynamic-status.json
+git diff --exit-code -- contracts/src/research/V2DynamicStatusGroth16Verifier.sol \
+  contracts/test/fixtures/V2DynamicStatusFixture.sol
 (cd contracts && forge snapshot --check \
-  --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest|V2AdapterGasBenchmarkTest')
+  --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest|V2DynamicStatusVerifierGasBenchmarkTest|V2AdapterGasBenchmarkTest')
 ```
 
 Use `-- --constraints-only` on the baseline or registry-depth suite for deterministic relation metadata without
