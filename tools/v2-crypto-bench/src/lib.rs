@@ -35,6 +35,7 @@ use wasm_bindgen::{prelude::*, JsCast};
 
 mod status_distribution;
 mod status_registry;
+mod status_snapshot;
 
 pub use status_distribution::{
     run_status_distribution_bakeoff, DeliveryMode, PackedStatusBatchEstimate,
@@ -45,6 +46,12 @@ pub use status_registry::{
     refresh_status_witness, StatusActivation, StatusCheckpoint, StatusRegistry,
     StatusRegistryDelta, StatusRegistryError, StatusWitness, STATUS_REGISTRY_DELTA_MAX_JSON_BYTES,
     STATUS_REGISTRY_DELTA_SCHEMA,
+};
+pub use status_snapshot::{
+    build_packed_status_snapshot_from_json, FinalizedStatusBlock, PackedStatusChunk,
+    PackedStatusSnapshot, PackedStatusSnapshotBuilder, PackedStatusSnapshotChunk,
+    PackedStatusSnapshotError, PackedStatusSourceEvent, PackedStatusWitness, SourceBlockRef,
+    PACKED_STATUS_SNAPSHOT_SCHEMA, PACKED_STATUS_SOURCE_SCHEMA, PACKED_STATUS_WITNESS_SCHEMA,
 };
 
 /// Native field used by the Stage-1 status-registry prototype.
