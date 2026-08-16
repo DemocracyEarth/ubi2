@@ -20,6 +20,7 @@ export * from "./predicate";
 export * from "./credential-vault";
 export * from "./zk-identity-policy";
 export * from "./zk-identity-status-manifest";
+export * from "./zk-identity-packed-status";
 export * from "./zk-identity-encoding";
 export * from "./zk-self-issuance";
 

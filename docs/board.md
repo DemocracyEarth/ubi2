@@ -127,12 +127,16 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   deterministic public
   multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
   88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. A separate
-  pre-deployment issuance registry now constrains authenticated monotonic status-slot allocation and globally
-  consumes registry-scoped duplicate keys/credential commitments at a pinned 129,763 local gas. An immutable
+  pre-deployment issuance registry now constrains authenticated monotonic status-slot allocation, globally
+  consumes registry-scoped duplicate keys/credential commitments, and authenticates codehash-pinned packed-status
+  publishers plus allocation-bound overlapping/revocable snapshots. Unallocated/revoked packed bits fail closed at
+  `1`; allocation clears exactly one bit. Allocation and first publication cost 129,886 and 103,407 local gas. An
+  immutable
   EIP-712 Self bridge now binds a byte-exact configured off-chain verification decision to the proof subject,
   proof-bound holder commitment, registry-scoped key, issuer key and expected slot/epoch; bridge plus allocation is
-  pinned at 140,014 local gas. Remaining: on-chain/native passport proof verification, production credential
-  commitment generation, status lifecycle, mobile, alternate hash/proof-system, production ceremony/target-chain gas,
+  pinned at 140,108 local gas. Remaining: on-chain/native passport proof verification, production credential
+  commitment generation, the public snapshot builder/distribution lifecycle, mobile, alternate hash/proof-system,
+  production ceremony/target-chain gas,
   transport/privacy hardening, and the measured ADR. The raw five-input arkworks fixture verifies through EIP-196/197 at a pinned
   230,657 gas with 2,211-byte runtime code, and a pre-deployment governance registry pins verifier codehashes plus
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. The fixture setup is

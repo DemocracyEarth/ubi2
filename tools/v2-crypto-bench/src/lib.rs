@@ -64,9 +64,9 @@ pub const BROWSER_REGISTRY_PROVING_KEY_BYTES: [usize; 2] = [10_452_496, 15_022_6
 pub const BROWSER_PACKED_STATUS_PROVING_KEY_BYTES: usize = 5_250_320;
 /// Non-cryptographic drift fingerprint of the compact fixture-export JSON.
 /// A change requires reviewing and regenerating the Solidity verifier fixture.
-pub const PACKED_STATUS_EVM_FIXTURE_FNV64: u64 = 0x7b92_4d07_c905_43a3;
+pub const PACKED_STATUS_EVM_FIXTURE_FNV64: u64 = 0x6d5b_42a8_22c9_3acd;
 /// Fingerprint of the deterministic 18-signal research fixture export.
-pub const DYNAMIC_STATUS_EVM_FIXTURE_FNV64: u64 = 0xc76c_9a32_d48f_d2f6;
+pub const DYNAMIC_STATUS_EVM_FIXTURE_FNV64: u64 = 0x3e08_2adc_0c10_07e6;
 const CREDENTIAL_HOLDER_SECRET_INDEX: usize = 7;
 const CREDENTIAL_ISSUED_AT_EPOCH_INDEX: usize = 15;
 const CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX: usize = 3;
@@ -102,16 +102,16 @@ const DYNAMIC_STATUS_CIRCUIT_ID: [u128; 2] = [
     48_741_886_182_628_607_789_356_429_954_167_136_159,
 ];
 const DYNAMIC_STATUS_POLICY_HASH: [u128; 2] = [
-    66_979_320_182_552_521_921_400_387_039_049_807_430,
-    243_265_757_976_093_206_830_525_462_510_393_571_529,
+    193_982_682_682_601_763_857_871_921_400_019_234_941,
+    144_791_356_043_039_333_640_796_404_275_935_384_537,
 ];
 const DYNAMIC_STATUS_PRESENTATION_BINDING: [u128; 2] = [
-    18_413_394_222_340_233_844_127_362_083_622_107_755,
-    139_360_669_093_465_060_426_168_882_985_392_551_801,
+    251_146_112_810_056_859_446_043_645_491_032_321_007,
+    180_051_849_839_934_735_603_729_905_154_568_835_574,
 ];
 const DYNAMIC_STATUS_NULLIFIER_SCOPE: [u128; 2] = [
-    6_847_975_291_419_670_879_861_391_421_147_823_714,
-    88_504_934_016_337_333_378_500_625_477_300_740_379,
+    217_086_243_769_357_075_757_050_964_729_507_721_374,
+    147_556_859_725_270_294_027_880_020_698_272_123_538,
 ];
 const NULLIFIER_PREIMAGE_DOMAIN: [u128; 2] = [
     3_753_063_511_814_324_395_807_447_140_844_095_217,
@@ -160,8 +160,10 @@ pub struct SpikeCircuit {
     issuer_key_id: [CircuitField; 2],
     signature_commitment: EdwardsProjective,
     signature_response: JubjubScalar,
-    // Two little-endian u128 limbs encode the 256 revocation bits in a
-    // packed-status chunk. Zero means active; one means revoked.
+    // Two little-endian u128 limbs encode 256 activation/status bits in a
+    // packed-status chunk. Zero means allocated+active; one means
+    // unallocated or revoked, so an issuer signature alone cannot activate a
+    // slot that the canonical issuance registry never allocated.
     packed_status_chunk: [CircuitField; 2],
     registry_siblings: Vec<CircuitField>,
     expected_registry_root: [CircuitField; 2],
@@ -496,7 +498,11 @@ impl SpikeCircuit {
             credential_elements[CREDENTIAL_STATUS_ID_HIGH_INDEX],
             credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX],
         ];
-        let packed_status_chunk = [CircuitField::from(0u64); 2];
+        let packed_status_chunk = if authentication.includes_packed_status() {
+            packed_status_chunk_with_active_slot(status_id[1])
+        } else {
+            [CircuitField::from(0u64); 2]
+        };
         let (status_leaf, registry_directions) = if authentication.includes_packed_status() {
             (
                 packed_status_leaf_native(&poseidon, packed_status_chunk),
@@ -646,12 +652,12 @@ impl SpikeCircuit {
     }
 
     #[cfg(test)]
-    fn set_unrelated_packed_status_bit(&mut self) {
+    fn activate_unrelated_packed_status_bit(&mut self) {
         let status_low = self.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX].into_bigint();
         let selected_bit = (0..8).fold(0usize, |index, bit| {
             index | (usize::from(status_low.get_bit(bit)) << bit)
         });
-        self.set_packed_status_bit((selected_bit + 1) % PACKED_STATUS_BITS_PER_CHUNK);
+        self.clear_packed_status_bit((selected_bit + 1) % PACKED_STATUS_BITS_PER_CHUNK);
     }
 
     #[cfg(test)]
@@ -659,6 +665,14 @@ impl SpikeCircuit {
         let limb_index = selected_bit / BYTES32_LIMB_BITS;
         let limb_bit = selected_bit % BYTES32_LIMB_BITS;
         self.packed_status_chunk[limb_index] += CircuitField::from(1u128 << limb_bit);
+        self.recompute_registry_root();
+    }
+
+    #[cfg(test)]
+    fn clear_packed_status_bit(&mut self, selected_bit: usize) {
+        let limb_index = selected_bit / BYTES32_LIMB_BITS;
+        let limb_bit = selected_bit % BYTES32_LIMB_BITS;
+        self.packed_status_chunk[limb_index] -= CircuitField::from(1u128 << limb_bit);
         self.recompute_registry_root();
     }
 
@@ -1763,9 +1777,11 @@ fn enforce_packed_status_nonrevocation_with_public_root(
     let mut selected_bits = chunk_low_bits;
     selected_bits.extend(chunk_high_bits);
 
-    // The low eight status-slot bits select one of the 256 revocation bits.
+    // The low eight status-slot bits select one of the 256 status bits.
     // Collapse the table one selector bit at a time, rather than allocating a
-    // 256-way equality test. Zero is active; one is revoked.
+    // 256-way equality test. Zero is allocated+active; one is unallocated or
+    // revoked. Root construction, not this local bit check, enforces that
+    // allocation events are processed in order.
     for selector in status_id_low_bits.iter().take(8) {
         selected_bits = selected_bits
             .chunks_exact(2)
@@ -1807,6 +1823,16 @@ fn packed_status_leaf_native(
     packed_status_chunk: [CircuitField; 2],
 ) -> CircuitField {
     poseidon_native(config, PACKED_STATUS_LEAF_DOMAIN, &packed_status_chunk)
+}
+
+fn packed_status_chunk_with_active_slot(status_id_low: CircuitField) -> [CircuitField; 2] {
+    let status_bits = status_id_low.into_bigint();
+    let selected_bit = (0..8).fold(0usize, |index, bit| {
+        index | (usize::from(status_bits.get_bit(bit)) << bit)
+    });
+    let mut limbs = [u128::MAX; 2];
+    limbs[selected_bit / BYTES32_LIMB_BITS] &= !(1u128 << (selected_bit % BYTES32_LIMB_BITS));
+    [CircuitField::from(limbs[0]), CircuitField::from(limbs[1])]
 }
 
 fn packed_status_path_directions_native(status_id_low: CircuitField) -> Vec<bool> {
@@ -2021,12 +2047,25 @@ mod tests {
     }
 
     #[test]
-    fn packed_status_allows_an_unrelated_revocation_bit() {
+    fn packed_status_allows_an_unrelated_slot_activation() {
         let mut circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
-        circuit.set_unrelated_packed_status_bit();
+        circuit.activate_unrelated_packed_status_bit();
         let cs = ConstraintSystem::<CircuitField>::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn packed_status_fixture_fails_closed_for_every_unallocated_bit() {
+        let circuit = SpikeCircuit::fixture(Authentication::SignatureAndPackedStatus);
+        let status_low = circuit.credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX].into_bigint();
+        let selected_bit = (0..8).fold(0usize, |index, bit| {
+            index | (usize::from(status_low.get_bit(bit)) << bit)
+        });
+        for bit in 0..PACKED_STATUS_BITS_PER_CHUNK {
+            let limb = circuit.packed_status_chunk[bit / BYTES32_LIMB_BITS].into_bigint();
+            assert_eq!(limb.get_bit(bit % BYTES32_LIMB_BITS), bit != selected_bit);
+        }
     }
 
     #[test]

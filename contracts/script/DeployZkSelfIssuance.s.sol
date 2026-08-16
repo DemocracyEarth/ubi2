@@ -14,9 +14,11 @@ contract DeployZkSelfIssuance is Script {
         require(supportedTestnet(block.chainid), "unsupported chain: testnets only");
         bytes32 issuerKeyId = vm.envBytes32("ZK_ISSUER_KEY_ID");
         address verificationAuthority = vm.envAddress("ZK_SELF_VERIFICATION_AUTHORITY");
+        address statusPublisher = vm.envAddress("ZK_STATUS_PUBLISHER");
         bytes32 selfConfigId = vm.envBytes32("ZK_SELF_CONFIG_ID");
         require(issuerKeyId != bytes32(0), "ZK_ISSUER_KEY_ID unset");
         require(verificationAuthority != address(0), "ZK_SELF_VERIFICATION_AUTHORITY unset");
+        require(statusPublisher != address(0), "ZK_STATUS_PUBLISHER unset");
         require(selfConfigId != bytes32(0), "ZK_SELF_CONFIG_ID unset");
 
         vm.startBroadcast();
@@ -29,6 +31,7 @@ contract DeployZkSelfIssuance is Script {
         ZkIdentitySelfIssuanceBridge bridge =
             new ZkIdentitySelfIssuanceBridge(registry, issuerKeyId, verificationAuthority, selfConfigId);
         registry.authorizeIssuanceAuthority(issuerKeyId, address(bridge));
+        registry.authorizeStatusPublisher(issuerKeyId, statusPublisher);
         if (finalOwner != deployer) registry.transferOwnership(finalOwner);
         vm.stopBroadcast();
 
@@ -38,6 +41,7 @@ contract DeployZkSelfIssuance is Script {
         console2.log("ZkIdentitySelfIssuanceBridge:", address(bridge));
         console2.logBytes32(issuerKeyId);
         console2.log("verification authority     :", verificationAuthority);
+        console2.log("status publisher           :", statusPublisher);
         console2.logBytes32(selfConfigId);
         console2.log("registry current owner      :", registry.owner());
         console2.log("registry pending owner      :", registry.pendingOwner());

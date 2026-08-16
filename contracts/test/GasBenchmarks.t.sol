@@ -156,6 +156,7 @@ contract V2VerifierGasBenchmarkTest is Test {
 contract V2IssuanceGasBenchmarkTest is Test {
     bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-gas");
     bytes32 internal constant DUPLICATE_KEY = keccak256("issuance-duplicate-gas");
+    bytes32 internal constant STATUS_ROOT = bytes32(uint256(123_456));
     uint256 internal constant CREDENTIAL_COMMITMENT = 123_456_789;
 
     ZkIdentityIssuanceRegistry internal registry;
@@ -165,6 +166,7 @@ contract V2IssuanceGasBenchmarkTest is Test {
         registry = new ZkIdentityIssuanceRegistry(address(this));
         registry.registerIssuerKey(ISSUER_KEY_ID);
         registry.authorizeIssuanceAuthority(ISSUER_KEY_ID, address(this));
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID, address(this));
     }
 
     function test_Gas_V2AllocateCredential() public {
@@ -172,6 +174,14 @@ contract V2IssuanceGasBenchmarkTest is Test {
         uint32 epoch = registry.currentEpoch();
         vm.resumeGasMetering();
         registry.allocateCredential(ISSUER_KEY_ID, DUPLICATE_KEY, CREDENTIAL_COMMITMENT, 1, epoch);
+        vm.pauseGasMetering();
+    }
+
+    function test_Gas_V2PublishStatusSnapshot() public {
+        vm.pauseGasMetering();
+        registry.allocateCredential(ISSUER_KEY_ID, DUPLICATE_KEY, CREDENTIAL_COMMITMENT, 1, registry.currentEpoch());
+        vm.resumeGasMetering();
+        registry.publishStatusSnapshot(ISSUER_KEY_ID, 2, STATUS_ROOT);
         vm.pauseGasMetering();
     }
 }

@@ -22,6 +22,25 @@ contract IssuanceAuthorityHarness {
     }
 }
 
+contract StatusPublisherHarness {
+    function publish(
+        ZkIdentityIssuanceRegistry registry,
+        bytes32 issuerKeyId,
+        uint64 expectedNextStatusId,
+        bytes32 root
+    ) external returns (uint32) {
+        return registry.publishStatusSnapshot(issuerKeyId, expectedNextStatusId, root);
+    }
+}
+
+contract ZkIdentityIssuanceRegistryHarness is ZkIdentityIssuanceRegistry {
+    constructor(address initialOwner) ZkIdentityIssuanceRegistry(initialOwner) {}
+
+    function setLatestStatusSnapshotId(bytes32 issuerKeyId, uint32 snapshotId) external {
+        latestStatusSnapshotId[issuerKeyId] = snapshotId;
+    }
+}
+
 contract ZkIdentityIssuanceRegistryTest is Test {
     uint256 internal constant BN254_SCALAR_FIELD =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
@@ -31,22 +50,165 @@ contract ZkIdentityIssuanceRegistryTest is Test {
     bytes32 internal constant DUPLICATE_KEY_2 = keccak256("issuance-duplicate-2");
     uint256 internal constant COMMITMENT_1 = 123_456_789;
     uint256 internal constant COMMITMENT_2 = 987_654_321;
+    bytes32 internal constant STATUS_ROOT_1 = bytes32(uint256(111_111));
+    bytes32 internal constant STATUS_ROOT_2 = bytes32(uint256(222_222));
     address internal constant OTHER = address(0xBEEF);
 
-    ZkIdentityIssuanceRegistry internal registry;
+    ZkIdentityIssuanceRegistryHarness internal registry;
     IssuanceAuthorityHarness internal authority;
+    StatusPublisherHarness internal publisher;
 
     event CredentialAllocated(
         bytes32 indexed issuerKeyId, uint32 indexed statusId, uint256 indexed credentialCommitment, uint32 issuedAtEpoch
+    );
+    event StatusSnapshotPublished(
+        bytes32 indexed issuerKeyId,
+        uint32 indexed snapshotId,
+        bytes32 indexed root,
+        uint32 activatedThroughStatusId,
+        uint64 publishedAt,
+        address publisher
     );
 
     function setUp() public {
         vm.chainId(84_532);
         vm.warp(230 * 90 days + 1);
-        registry = new ZkIdentityIssuanceRegistry(address(this));
+        registry = new ZkIdentityIssuanceRegistryHarness(address(this));
         authority = new IssuanceAuthorityHarness();
+        publisher = new StatusPublisherHarness();
         registry.registerIssuerKey(ISSUER_KEY_ID);
         registry.authorizeIssuanceAuthority(ISSUER_KEY_ID, address(authority));
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID, address(publisher));
+    }
+
+    function test_PublishesAllocationBoundStatusSnapshot() public {
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit StatusSnapshotPublished(ISSUER_KEY_ID, 1, STATUS_ROOT_1, 1, uint64(block.timestamp), address(publisher));
+        uint32 snapshotId = _publish(2, STATUS_ROOT_1);
+        assertEq(snapshotId, 1);
+        assertEq(registry.latestStatusSnapshotId(ISSUER_KEY_ID), 1);
+        assertEq(registry.statusSnapshotIdForRoot(ISSUER_KEY_ID, STATUS_ROOT_1), 1);
+
+        (bytes32 root, uint32 activatedThroughStatusId, uint64 publishedAt, bool revoked) =
+            registry.statusSnapshots(ISSUER_KEY_ID, 1);
+        assertEq(root, STATUS_ROOT_1);
+        assertEq(activatedThroughStatusId, 1);
+        assertEq(publishedAt, block.timestamp);
+        assertFalse(revoked);
+        assertTrue(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 1, STATUS_ROOT_1));
+        assertFalse(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 1, STATUS_ROOT_2));
+    }
+
+    function test_AllocationRaceAndEmptyRegistryFailWithoutConsumingRoot() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.NoAllocatedCredentials.selector, ISSUER_KEY_ID)
+        );
+        _publish(1, STATUS_ROOT_1);
+
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnexpectedNextStatusId.selector, uint64(2), uint64(1))
+        );
+        _publish(1, STATUS_ROOT_1);
+        assertEq(registry.statusSnapshotIdForRoot(ISSUER_KEY_ID, STATUS_ROOT_1), 0);
+
+        _publish(2, STATUS_ROOT_1);
+    }
+
+    function test_SnapshotsOverlapUntilExactGovernanceRevocation() public {
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+        _publish(2, STATUS_ROOT_1);
+        _allocate(DUPLICATE_KEY_2, COMMITMENT_2, 2, 230);
+        _publish(3, STATUS_ROOT_2);
+
+        (bytes32 root, uint32 activatedThroughStatusId,,) = registry.statusSnapshots(ISSUER_KEY_ID, 2);
+        assertEq(root, STATUS_ROOT_2);
+        assertEq(activatedThroughStatusId, 2);
+        assertTrue(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 1, STATUS_ROOT_1));
+        assertTrue(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 2, STATUS_ROOT_2));
+
+        registry.revokeStatusSnapshot(ISSUER_KEY_ID, 1);
+        assertFalse(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 1, STATUS_ROOT_1));
+        assertTrue(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 2, STATUS_ROOT_2));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZkIdentityIssuanceRegistry.StatusSnapshotAlreadyRevoked.selector, ISSUER_KEY_ID, uint32(1)
+            )
+        );
+        registry.revokeStatusSnapshot(ISSUER_KEY_ID, 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.StatusRootAlreadyPublished.selector, STATUS_ROOT_1)
+        );
+        _publish(3, STATUS_ROOT_1);
+    }
+
+    function test_StatusPublisherAuthorizationAndCodehashFailClosed() public {
+        vm.prank(OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnknownStatusPublisher.selector, ISSUER_KEY_ID, OTHER)
+        );
+        registry.publishStatusSnapshot(ISSUER_KEY_ID, 1, STATUS_ROOT_1);
+
+        registry.retireStatusPublisher(ISSUER_KEY_ID, address(publisher));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZkIdentityIssuanceRegistry.StatusPublisherInactive.selector, ISSUER_KEY_ID, address(publisher)
+            )
+        );
+        _publish(1, STATUS_ROOT_1);
+
+        StatusPublisherHarness nextPublisher = new StatusPublisherHarness();
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID, address(nextPublisher));
+        bytes32 expected = address(nextPublisher).codehash;
+        vm.etch(address(nextPublisher), hex"00");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZkIdentityIssuanceRegistry.StatusPublisherCodehashChanged.selector,
+                expected,
+                address(nextPublisher).codehash
+            )
+        );
+        vm.prank(address(nextPublisher));
+        registry.publishStatusSnapshot(ISSUER_KEY_ID, 1, STATUS_ROOT_1);
+    }
+
+    function test_StatusSnapshotRejectsInvalidRootsAndPublicationTimeOverflow() public {
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+        vm.expectRevert(ZkIdentityIssuanceRegistry.InvalidStatusRoot.selector);
+        _publish(2, bytes32(0));
+        vm.expectRevert(ZkIdentityIssuanceRegistry.InvalidStatusRoot.selector);
+        _publish(2, bytes32(BN254_SCALAR_FIELD));
+
+        vm.warp(uint256(type(uint64).max) + 1);
+        vm.expectRevert(ZkIdentityIssuanceRegistry.StatusPublicationTimeOverflow.selector);
+        _publish(2, STATUS_ROOT_1);
+    }
+
+    function test_StatusSnapshotIdOverflowFailsWithoutConsumingRoot() public {
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+        registry.setLatestStatusSnapshotId(ISSUER_KEY_ID, type(uint32).max);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.StatusSnapshotIdOverflow.selector, ISSUER_KEY_ID)
+        );
+        _publish(2, STATUS_ROOT_1);
+        assertEq(registry.statusSnapshotIdForRoot(ISSUER_KEY_ID, STATUS_ROOT_1), 0);
+    }
+
+    function test_IssuerRetirementRejectsPublicationButStillAllowsSnapshotRevocation() public {
+        _allocate(DUPLICATE_KEY_1, COMMITMENT_1, 1, 230);
+        _publish(2, STATUS_ROOT_1);
+        registry.retireIssuerKey(ISSUER_KEY_ID);
+
+        assertFalse(registry.isStatusSnapshotAccepted(ISSUER_KEY_ID, 1, STATUS_ROOT_1));
+        vm.expectRevert(abi.encodeWithSelector(ZkIdentityIssuanceRegistry.IssuerKeyInactive.selector, ISSUER_KEY_ID));
+        _publish(2, STATUS_ROOT_2);
+        registry.revokeStatusSnapshot(ISSUER_KEY_ID, 1);
+        (,,, bool revoked) = registry.statusSnapshots(ISSUER_KEY_ID, 1);
+        assertTrue(revoked);
     }
 
     function test_ConstructorPinsOwnershipEpochAndIssuanceDomain() public view {
@@ -217,6 +379,10 @@ contract ZkIdentityIssuanceRegistryTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, OTHER));
         registry.registerIssuerKey(ISSUER_KEY_ID_2);
 
+        vm.prank(OTHER);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, OTHER));
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID, OTHER);
+
         vm.expectRevert(ZkIdentityIssuanceRegistry.InvalidIssuerKeyId.selector);
         registry.registerIssuerKey(bytes32(0));
         vm.expectRevert(ZkIdentityIssuanceRegistry.InvalidIssuanceAuthority.selector);
@@ -227,6 +393,18 @@ contract ZkIdentityIssuanceRegistryTest is Test {
             abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnknownIssuanceAuthority.selector, ISSUER_KEY_ID, OTHER)
         );
         registry.retireIssuanceAuthority(ISSUER_KEY_ID, OTHER);
+        vm.expectRevert(ZkIdentityIssuanceRegistry.InvalidStatusPublisher.selector);
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID, address(0));
+        vm.expectRevert(abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnknownIssuerKey.selector, ISSUER_KEY_ID_2));
+        registry.authorizeStatusPublisher(ISSUER_KEY_ID_2, OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnknownStatusPublisher.selector, ISSUER_KEY_ID, OTHER)
+        );
+        registry.retireStatusPublisher(ISSUER_KEY_ID, OTHER);
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkIdentityIssuanceRegistry.UnknownStatusSnapshot.selector, ISSUER_KEY_ID, uint32(1))
+        );
+        registry.revokeStatusSnapshot(ISSUER_KEY_ID, 1);
     }
 
     function test_OwnershipTransferRequiresAcceptance() public {
@@ -254,9 +432,16 @@ contract ZkIdentityIssuanceRegistryTest is Test {
         _allocate(DUPLICATE_KEY_1, COMMITMENT_1, type(uint32).max, 230);
         (,, uint64 nextStatusId) = registry.issuerKeys(ISSUER_KEY_ID);
         assertEq(nextStatusId, uint64(type(uint32).max) + 1);
+        _publish(uint64(type(uint32).max) + 1, STATUS_ROOT_1);
+        (, uint32 activatedThroughStatusId,,) = registry.statusSnapshots(ISSUER_KEY_ID, 1);
+        assertEq(activatedThroughStatusId, type(uint32).max);
 
         vm.expectRevert(abi.encodeWithSelector(ZkIdentityIssuanceRegistry.StatusSlotsExhausted.selector, ISSUER_KEY_ID));
         _allocate(DUPLICATE_KEY_2, COMMITMENT_2, type(uint32).max, 230);
+    }
+
+    function _publish(uint64 expectedNextStatusId, bytes32 root) private returns (uint32) {
+        return publisher.publish(registry, ISSUER_KEY_ID, expectedNextStatusId, root);
     }
 
     function _allocate(bytes32 duplicateKey, uint256 commitment, uint32 statusId, uint32 epoch)

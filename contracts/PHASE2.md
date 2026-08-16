@@ -153,18 +153,22 @@ until all five transcripts are green and the human separately approves that main
 
 The portable v2 credential uses one canonical issuance chain, not one registry on every presentation
 chain. Its pre-deployment rehearsal is deliberately separate from `phase2.sh` and is not included in
-`phase2-all.sh`. Select one supported testnet first, create a third isolated encrypted authority account,
-and keep only its public address in `.env.phase2`:
+`phase2-all.sh`. Select one supported testnet first, create isolated encrypted verification-authority and
+status-publisher accounts, and keep only their public addresses in `.env.phase2`:
 
 ```shell
 cast wallet import poh-v2-self-authority --interactive
 cast wallet address --account poh-v2-self-authority
+cast wallet import poh-v2-status-publisher --interactive
+cast wallet address --account poh-v2-status-publisher
 ```
 
 Compute `ZK_SELF_CONFIG_ID` with the SDK's `zkSelfVerifierConfigId(...)` from the exact public Self
 scope, callback endpoint, `staging`/`production` environment, e-passport attestation id `1`, and
 `@selfxyz/core@1.0.8`. Record the bytes32 issuer namespace in `ZK_ISSUER_KEY_ID`, the isolated public
 address in `ZK_SELF_VERIFICATION_AUTHORITY`, and the intended registry owner in `ZK_ISSUANCE_OWNER`.
+Record the separate publisher address in `ZK_STATUS_PUBLISHER`; it will later authenticate allocation-bound
+packed-status checkpoints and must not share the verification authority's production key path.
 Then simulate before the explicitly reviewed broadcast:
 
 ```shell
@@ -176,8 +180,9 @@ forge script script/DeployZkSelfIssuance.s.sol:DeployZkSelfIssuance \
 ```
 
 The script refuses every mainnet chain id. It deploys the registry and immutable bridge, registers the
-issuer key, pins the bridge codehash, and initiates two-step ownership transfer. A different final owner
+issuer key, pins the bridge and status-publisher codehashes, and initiates two-step ownership transfer. A different final owner
 must call `acceptOwnership` separately. Before enabling the web callback, record and verify both
 contracts, accept ownership, configure all six server-only `ZK_SELF_ISSUANCE_*` variables, and capture
-one live issuance plus one duplicate-passport rejection. The authority needs no gas and its private key
-must never enter this deployment environment.
+one live issuance plus one duplicate-passport rejection. The verification authority needs no gas; the status
+publisher needs gas only when a reviewed checkpoint is published. Neither private key may enter this deployment
+environment.
