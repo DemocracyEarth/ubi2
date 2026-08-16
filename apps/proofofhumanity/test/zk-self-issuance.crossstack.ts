@@ -22,9 +22,11 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import {
   encodeZkSelfIssuance,
+  zkIdentitySelfIssuanceBridgeAbi,
   zkIssuanceDomainHash,
   zkSelfIssuanceAuthorizationDigest,
   zkSelfIssuanceDuplicateKey,
+  zkSelfIssuanceRefreshableErrorName,
   zkSelfIssuanceTypedData,
   zkSelfVerifierConfigId,
   type ZkSelfIssuanceAuthorization,
@@ -241,6 +243,133 @@ async function main(): Promise<void> {
       duplicateRejected = String(error).includes("reverted");
     }
     assert(duplicateRejected, "a second authorization for the same passport-scoped key reverts");
+
+    const targetDuplicateKey = zkSelfIssuanceDuplicateKey({
+      issuanceDomain: onChainDomain,
+      selfNullifier: 222_222_222n,
+    });
+    const competingDuplicateKey = zkSelfIssuanceDuplicateKey({
+      issuanceDomain: onChainDomain,
+      selfNullifier: 333_333_333n,
+    });
+    const targetCommitment = 222_333_444n;
+    const staleTarget: ZkSelfIssuanceAuthorization = {
+      ...authorization,
+      duplicateKey: targetDuplicateKey,
+      credentialCommitment: targetCommitment,
+      expectedStatusId: 2,
+    };
+    const competitor: ZkSelfIssuanceAuthorization = {
+      ...authorization,
+      duplicateKey: competingDuplicateKey,
+      credentialCommitment: 333_444_555n,
+      expectedStatusId: 2,
+    };
+    const competitorSignature = await authority.signTypedData(
+      zkSelfIssuanceTypedData({ chainId, bridge, authorization: competitor }),
+    );
+    const competingHash = await subjectWallet.sendTransaction({
+      to: bridge,
+      data: encodeZkSelfIssuance({ authorization: competitor, signature: competitorSignature }),
+    });
+    assertEqual(
+      (await publicClient.waitForTransactionReceipt({ hash: competingHash })).status,
+      "success",
+      "a competing issuance consumes the slot observed by another verified grant",
+    );
+
+    const staleTargetSignature = await authority.signTypedData(
+      zkSelfIssuanceTypedData({ chainId, bridge, authorization: staleTarget }),
+    );
+    let staleSlotRejected = false;
+    try {
+      await publicClient.simulateContract({
+        account: subject.address,
+        address: bridge,
+        abi: zkIdentitySelfIssuanceBridgeAbi,
+        functionName: "issue",
+        args: [staleTarget, staleTargetSignature],
+      });
+    } catch (error) {
+      staleSlotRejected = zkSelfIssuanceRefreshableErrorName(error) === "UnexpectedStatusId";
+    }
+    assert(staleSlotRejected, "the SDK decodes a lost status-slot race as refreshable");
+    assertEqual(
+      await publicClient.readContract({
+        address: registry,
+        abi: registryArtifact.abi,
+        functionName: "isDuplicateKeyUsed",
+        args: [targetDuplicateKey],
+      }),
+      false,
+      "the stale authorization does not consume its proof-derived duplicate key",
+    );
+    assertEqual(
+      await publicClient.readContract({
+        address: registry,
+        abi: registryArtifact.abi,
+        functionName: "credentialCommitmentUsed",
+        args: [targetCommitment],
+      }),
+      false,
+      "the stale authorization does not consume its holder commitment",
+    );
+
+    const refreshBlock = await publicClient.getBlock();
+    const refreshedTarget: ZkSelfIssuanceAuthorization = {
+      ...staleTarget,
+      expectedStatusId: 3,
+      expectedEpoch: Number(
+        await publicClient.readContract({
+          address: registry,
+          abi: registryArtifact.abi,
+          functionName: "currentEpoch",
+        }),
+      ),
+      deadline: refreshBlock.timestamp + 600n,
+    };
+    assertEqual(refreshedTarget.subject, staleTarget.subject, "refresh preserves the proof-bound subject");
+    assertEqual(
+      refreshedTarget.duplicateKey,
+      staleTarget.duplicateKey,
+      "refresh preserves the registry-scoped passport key",
+    );
+    assertEqual(
+      refreshedTarget.credentialCommitment,
+      staleTarget.credentialCommitment,
+      "refresh preserves the holder credential commitment",
+    );
+    assertEqual(refreshedTarget.issuerKeyId, staleTarget.issuerKeyId, "refresh preserves the issuer key");
+    assertEqual(
+      refreshedTarget.selfConfigId,
+      staleTarget.selfConfigId,
+      "refresh preserves the verifier configuration",
+    );
+    const refreshedTargetSignature = await authority.signTypedData(
+      zkSelfIssuanceTypedData({ chainId, bridge, authorization: refreshedTarget }),
+    );
+    const refreshedHash = await subjectWallet.sendTransaction({
+      to: bridge,
+      data: encodeZkSelfIssuance({
+        authorization: refreshedTarget,
+        signature: refreshedTargetSignature,
+      }),
+    });
+    assertEqual(
+      (await publicClient.waitForTransactionReceipt({ hash: refreshedHash })).status,
+      "success",
+      "the same verified grant issues after refreshing only slot, epoch and deadline",
+    );
+    assertEqual(
+      await publicClient.readContract({
+        address: registry,
+        abi: registryArtifact.abi,
+        functionName: "credentialCommitmentAt",
+        args: [issuerKeyId, 3],
+      }),
+      targetCommitment,
+      "the refreshed authorization allocates the original proof-bound commitment",
+    );
   } finally {
     anvil.kill("SIGKILL");
   }

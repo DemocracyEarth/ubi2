@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add capability-authenticated v2 issuance refresh for transaction expiry and slot/epoch races. The
+  server retains no raw Self nullifier, fixes every proof-derived/trust field, preserves the original
+  ten-minute verification expiry, filters its private grant from API responses, and rejects consumed grants.
 - Add the transitional v2 Self issuance bridge: proof-bound holder commitments, registry-scoped
   duplicate keys, immutable EIP-712 verifier configuration, SDK calldata/artifact helpers, fail-closed
   server deployment checks, testnet deployment script, adversarial Foundry tests, and live Anvil parity.

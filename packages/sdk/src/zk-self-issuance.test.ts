@@ -4,11 +4,13 @@ import { keccak256, stringToBytes, toFunctionSelector } from "viem";
 import {
   deserializeZkSelfIssuanceAuthorization,
   encodeZkSelfIssuance,
+  isZkSelfIssuanceRefreshableErrorName,
   recoverZkSelfIssuanceAuthority,
   serializeZkSelfIssuanceAuthorization,
   ZK_SELF_ISSUANCE_MAX_AUTHORIZATION_LIFETIME_SECONDS,
   zkSelfIssuanceAuthorizationDigest,
   zkSelfIssuanceDuplicateKey,
+  zkSelfIssuanceRefreshableErrorName,
   zkSelfIssuanceTypedData,
   zkSelfVerifierConfigId,
   type ZkSelfIssuanceAuthorization,
@@ -96,6 +98,23 @@ assert.equal(
     "issue((address,bytes32,uint256,bytes32,uint32,uint32,uint64,bytes32),bytes)",
   ),
   "the SDK emits calldata for the exact bridge tuple layout",
+);
+assert.equal(isZkSelfIssuanceRefreshableErrorName("UnexpectedStatusId"), true);
+assert.equal(isZkSelfIssuanceRefreshableErrorName("UnexpectedIssuanceEpoch"), true);
+assert.equal(isZkSelfIssuanceRefreshableErrorName("AuthorizationExpired"), true);
+assert.equal(isZkSelfIssuanceRefreshableErrorName("UnauthorizedVerificationSigner"), false);
+assert.equal(isZkSelfIssuanceRefreshableErrorName(undefined), false);
+assert.equal(
+  zkSelfIssuanceRefreshableErrorName({
+    cause: { data: { errorName: "UnexpectedIssuanceEpoch" } },
+  }),
+  "UnexpectedIssuanceEpoch",
+  "refreshable registry errors are found in a viem-style cause chain",
+);
+assert.equal(
+  zkSelfIssuanceRefreshableErrorName({ cause: { data: { errorName: "SubjectMismatch" } } }),
+  null,
+  "non-refreshable failures remain fail-closed",
 );
 
 assert.throws(

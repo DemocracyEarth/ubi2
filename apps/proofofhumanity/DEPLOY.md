@@ -19,6 +19,9 @@ first production release therefore runs **one sticky Node replica**. Do not depl
 autoscaling/serverless multi-instance infrastructure: a phone callback and the browser poll may hit
 different workers. Before horizontal scaling, select and review a shared encrypted store; derived
 claims are sensitive data even though raw passport proofs are never stored.
+The same process-local record backs the v2 refresh endpoint. A `PATCH` may replace a stale
+slot/epoch/deadline authorization but preserves the original record expiry; it cannot make a verified
+grant live longer than ten minutes. The address plus 128-bit session header is a bearer capability.
 
 Contract deployment is a separate release step. Complete the testnet-only
 [`contracts/PHASE2.md`](../../contracts/PHASE2.md) gate before configuring any deployed addresses
@@ -89,7 +92,7 @@ testnet targets in a deployment. A malformed address also fails closed to zero.
 3. Inject `ISSUER_PRIVATE_KEY` from the host secret manager. Never put it in a build argument,
    image layer, `NEXT_PUBLIC_*`, `.env` committed to git, or deployment logs.
 4. Terminate untrusted direct traffic at a proxy that overwrites `X-Forwarded-For`; the route uses
-   that value for callback rate limiting.
+   that value for callback and v2-refresh rate limiting.
 5. Health-check `/`, `/verify`, and `/developers`; alert on restarts and 5xx responses from both API routes.
 
 Serverless and multi-replica targets become valid only after the callback handoff is moved to a
@@ -106,6 +109,9 @@ reviewed shared encrypted store. That is an application release gate, not a cont
 - Call `PredicateVerifier.check(...)` with the returned artifact and confirm consumer, context,
   subject, wrong-chain, wrong-verifier, stale, and wrong-signer failures all fail closed.
 - Verify the signing address matches both `issuer()` getters on every live chain.
+- If v2 is enabled, deliberately consume the observed next slot with a competing test issuance,
+  confirm the stale authorization fails without consuming its key/commitment, PATCH with the original
+  address/session, and confirm the refreshed authorization succeeds before the original ten-minute expiry.
 
 ## Security
 

@@ -35,14 +35,12 @@ import {
   type VerificationConfig,
 } from "@selfxyz/core";
 import type { Address } from "viem";
-import type { ZkSelfIssuanceArtifact } from "@ubi2/sdk";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   buildVoucher,
   epochNow,
   serializeVoucher,
   signVoucher,
-  type SerializedVoucher,
 } from "../../lib/voucher";
 import {
   ageFlagsFromThresholds,
@@ -50,7 +48,6 @@ import {
   serializeHumanCredential,
   signHumanCredential,
   type HumanCredential,
-  type SerializedHumanCredential,
 } from "../../lib/predicate";
 import {
   decodeDisclosureProfile,
@@ -66,47 +63,37 @@ import {
   getVerificationRecord,
   rateLimit,
   setVerificationRecord,
+  updateVerificationRecord,
+  VERIFICATION_RECORD_TTL_MS,
 } from "../../lib/server/verification-store";
-import { buildZkSelfIssuanceArtifact } from "../../lib/server/zk-self-issuance";
+import {
+  buildZkSelfIssuanceGrant,
+  refreshZkSelfIssuanceArtifact,
+  ZkSelfIssuanceAlreadyConsumedError,
+  ZkSelfIssuanceGrantExpiredError,
+} from "../../lib/server/zk-self-issuance";
+import {
+  publicRelayRecord,
+  type RelayRecord,
+  type SignedForChain,
+} from "../../lib/verification-record";
 
 // Node.js runtime: the process-local handoff must persist across requests, and @selfxyz/core pulls in
 // Node-only crypto (snarkjs, node-forge) that the edge runtime cannot run.
 export const runtime = "nodejs";
 
-/** A voucher signed for one specific chain. */
-interface SignedForChain {
-  chainId: number;
-  name: string;
-  pohAddress: Address;
-  voucher: SerializedVoucher;
-  signature: `0x${string}`;
+interface VerificationCapability {
+  address: Address;
+  session: string;
 }
 
-interface RelayRecord {
-  status: "ready" | "error";
-  /** The proof's anonymous nullifier + validity epoch, for the UI to preview before minting. */
-  proof?: {
-    nullifier: string;
-    epoch: number;
-  };
-  vouchers?: SignedForChain[];
-  /**
-   * The PRIVATE, held HumanCredential the issuer additionally signs at verification.
-   * The holder stores this off-chain (sessionStorage) and later presents it
-   * to `/api/predicate` to prove a predicate. It carries the raw predicate inputs
-   * (age flags / nationality / OFAC-clear) the issuer read out of the Self disclosures;
-   * it is NEVER put on-chain. (With an OFAC-only disclosure, only `ofacClear` is set.)
-   */
-  credential?: SerializedHumanCredential;
-  credentialSig?: `0x${string}`;
-  /**
-   * v2-only path: proof-bound, short-lived authorization for the verified
-   * subject to submit to the configured immutable issuance bridge.
-   */
-  zkIssuance?: ZkSelfIssuanceArtifact;
-  issuer?: Address;
-  error?: string;
-  receivedAt: number;
+function verificationCapability(req: NextRequest): VerificationCapability | null {
+  const address = req.nextUrl.searchParams.get("address")?.toLowerCase();
+  const session = req.headers.get("x-poh-verification-session")?.toLowerCase();
+  if (!address || !/^0x[0-9a-f]{40}$/.test(address) || !session || !/^[0-9a-f]{32}$/.test(session)) {
+    return null;
+  }
+  return { address: address as Address, session };
 }
 
 /**
@@ -259,17 +246,20 @@ export async function POST(req: NextRequest) {
       );
     }
     try {
-      const zkIssuance = await buildZkSelfIssuanceArtifact({
+      const expiresAtMs = Date.now() + VERIFICATION_RECORD_TTL_MS;
+      const { grant: zkIssuanceGrant, artifact: zkIssuance } = await buildZkSelfIssuanceGrant({
         subject: to,
         rawSelfNullifier: BigInt(result.discloseOutput.nullifier),
         credentialCommitment: BigInt(disclosureRequest.credentialCommitment),
+        expiresAtMs,
       });
       const record: RelayRecord = {
         status: "ready",
         zkIssuance,
+        zkIssuanceGrant,
         receivedAt: Date.now(),
       };
-      setVerificationRecord(to, disclosureRequest.session, record);
+      setVerificationRecord(to, disclosureRequest.session, record, expiresAtMs);
       return NextResponse.json({
         ok: true,
         to,
@@ -277,13 +267,19 @@ export async function POST(req: NextRequest) {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown v2 issuance error.";
+      const status =
+        error instanceof ZkSelfIssuanceAlreadyConsumedError
+          ? 409
+          : error instanceof ZkSelfIssuanceGrantExpiredError
+            ? 410
+            : 503;
       const record: RelayRecord = {
         status: "error",
         error: `Private-credential issuance is unavailable: ${message}`,
         receivedAt: Date.now(),
       };
       setVerificationRecord(to, disclosureRequest.session, record);
-      return NextResponse.json({ ok: false, error: record.error }, { status: 503 });
+      return NextResponse.json({ ok: false, error: record.error }, { status });
     }
   }
 
@@ -357,22 +353,110 @@ export async function POST(req: NextRequest) {
 
 /** GET /api/self-verify?address=0x… with x-poh-verification-session — both are required to poll. */
 export async function GET(req: NextRequest) {
-  const address = req.nextUrl.searchParams.get("address")?.toLowerCase();
-  const session = req.headers.get("x-poh-verification-session")?.toLowerCase();
-  if (!address || !/^0x[0-9a-f]{40}$/.test(address) || !session || !/^[0-9a-f]{32}$/.test(session)) {
+  const capability = verificationCapability(req);
+  if (!capability) {
     return NextResponse.json({ ok: false, error: "A valid `address` and 128-bit `session` are required." }, { status: 400 });
   }
-  const record = getVerificationRecord<RelayRecord>(address, session);
+  const record = getVerificationRecord<RelayRecord>(capability.address, capability.session);
   if (!record) return NextResponse.json({ status: "pending" }, { headers: { "cache-control": "no-store" } });
-  return NextResponse.json(record, { headers: { "cache-control": "no-store" } });
+  return NextResponse.json(publicRelayRecord(record), { headers: { "cache-control": "no-store" } });
+}
+
+/**
+ * PATCH the same address/session capability to recover from an expired artifact or a slot/epoch
+ * race. Only the race-prone authorization fields are re-read and re-signed; the original
+ * proof-derived subject, duplicate key, commitment and hard verification expiry remain fixed.
+ */
+export async function PATCH(req: NextRequest) {
+  const capability = verificationCapability(req);
+  if (!capability) {
+    return NextResponse.json(
+      { ok: false, error: "A valid `address` and 128-bit `session` are required." },
+      { status: 400 },
+    );
+  }
+  const contentLength = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    return NextResponse.json(
+      { ok: false, error: "Issuance refresh does not accept a request body." },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  const source = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "issuance-refresh";
+  const sourceLimit = rateLimit("self-issuance-refresh-source", source, 30, 60);
+  const capabilityLimit = rateLimit(
+    "self-issuance-refresh-capability",
+    `${capability.address}:${capability.session}`,
+    8,
+    60,
+  );
+  if (!sourceLimit.allowed || !capabilityLimit.allowed) {
+    const retryAfter = Math.max(sourceLimit.retryAfter, capabilityLimit.retryAfter);
+    return NextResponse.json(
+      { ok: false, error: "Too many issuance refresh attempts. Try again shortly." },
+      { status: 429, headers: { "retry-after": String(retryAfter), "cache-control": "no-store" } },
+    );
+  }
+
+  const record = getVerificationRecord<RelayRecord>(capability.address, capability.session);
+  if (!record) {
+    return NextResponse.json(
+      { ok: false, error: "The verified issuance session expired; scan the passport again." },
+      { status: 410, headers: { "cache-control": "no-store" } },
+    );
+  }
+  if (record.status !== "ready" || !record.zkIssuance || !record.zkIssuanceGrant) {
+    return NextResponse.json(
+      { ok: false, error: "This verification session does not contain a refreshable v2 issuance." },
+      { status: 409, headers: { "cache-control": "no-store" } },
+    );
+  }
+  if (record.zkIssuanceGrant.subject.toLowerCase() !== capability.address) {
+    return NextResponse.json(
+      { ok: false, error: "The verification capability does not match the proof-bound subject." },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  try {
+    const zkIssuance = await refreshZkSelfIssuanceArtifact(record.zkIssuanceGrant);
+    const updated: RelayRecord = { ...record, zkIssuance };
+    if (!updateVerificationRecord(capability.address, capability.session, updated)) {
+      return NextResponse.json(
+        { ok: false, error: "The verified issuance session expired; scan the passport again." },
+        { status: 410, headers: { "cache-control": "no-store" } },
+      );
+    }
+    return NextResponse.json(
+      { ok: true, zkIssuance },
+      { headers: { "cache-control": "no-store" } },
+    );
+  } catch (error) {
+    if (error instanceof ZkSelfIssuanceGrantExpiredError) {
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: 410, headers: { "cache-control": "no-store" } },
+      );
+    }
+    if (error instanceof ZkSelfIssuanceAlreadyConsumedError) {
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: 409, headers: { "cache-control": "no-store" } },
+      );
+    }
+    return NextResponse.json(
+      { ok: false, error: "Issuance authorization refresh is temporarily unavailable." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
 }
 
 /** DELETE /api/self-verify?address=0x… with the session header — drop a consumed record. */
 export async function DELETE(req: NextRequest) {
-  const address = req.nextUrl.searchParams.get("address")?.toLowerCase();
-  const session = req.headers.get("x-poh-verification-session")?.toLowerCase();
-  if (address && session && /^0x[0-9a-f]{40}$/.test(address) && /^[0-9a-f]{32}$/.test(session)) {
-    deleteVerificationRecord(address, session);
+  const capability = verificationCapability(req);
+  if (capability) {
+    deleteVerificationRecord(capability.address, capability.session);
   }
   return NextResponse.json({ ok: true });
 }

@@ -401,7 +401,10 @@ state. The duplicate key is omitted from events, and its chain/registry domain i
 EIP-712 authorization only from a pinned off-chain Self verification authority and binds the proof subject,
 registry-scoped duplicate key, proof-bound holder commitment, issuer key, exact slot/epoch and byte-exact verifier
 configuration. The app rechecks those trust inputs at one block and does not return or persist the raw Self
-nullifier in its v2 path. Bridge plus registry allocation is pinned at 140,014 local gas. This remains a
+nullifier in its v2 path. A private, proof-derived ten-minute grant can re-read and re-sign only the
+race-prone slot, epoch and deadline; the address/session capability cannot change its subject, scoped passport
+key, holder commitment or trust configuration, and refresh preserves the original expiry. Bridge plus registry
+allocation is pinned at 140,014 local gas. This remains a
 pre-deployment transitional trust root, not an on-chain Self verifier or production credential circuit. See
 [`v2-issuance-registry.md`](v2-issuance-registry.md) and
 [`v2-self-issuance-bridge.md`](v2-self-issuance-bridge.md).
