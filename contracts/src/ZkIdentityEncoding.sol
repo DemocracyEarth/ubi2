@@ -13,6 +13,7 @@ library ZkIdentityEncoding {
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
     uint16 internal constant PRIVATE_CREDENTIAL_VERSION = 1;
+    uint16 internal constant ISSUANCE_DOMAIN_VERSION = 1;
     uint16 internal constant NULLIFIER_SCOPE_VERSION = 1;
     uint16 internal constant POLICY_VERSION = 1;
     uint16 internal constant PRESENTATION_VERSION = 1;
@@ -22,6 +23,7 @@ library ZkIdentityEncoding {
     uint32 internal constant MAXIMUM_DYNAMIC_STATUS_AGE = 365 days;
 
     bytes32 internal constant PRIVATE_CREDENTIAL_DOMAIN = keccak256("org.proofofhumanity.zk-private-credential");
+    bytes32 internal constant ISSUANCE_DOMAIN = keccak256("org.proofofhumanity.zk-issuance");
     bytes32 internal constant NULLIFIER_SCOPE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope");
     bytes32 internal constant NULLIFIER_PREIMAGE_DOMAIN = keccak256("org.proofofhumanity.zk-nullifier-scope:derive");
     bytes32 internal constant POLICY_DOMAIN = keccak256("org.proofofhumanity.zk-policy");
@@ -108,6 +110,7 @@ library ZkIdentityEncoding {
     error InvalidEpoch(uint256 index);
     error InvalidPresentationBinding();
     error InvalidDynamicStatusPolicy();
+    error InvalidIssuanceDomain();
 
     /// @notice Diagnostic parity fingerprint of the private credential ABI.
     /// @dev Never publish or use this stable value as a presentation identifier.
@@ -117,6 +120,16 @@ library ZkIdentityEncoding {
         // the tuple grouped also compiles when `forge coverage` disables the
         // optimizer; the flattened 13-argument form exhausts the legacy stack.
         return keccak256(abi.encode(PRIVATE_CREDENTIAL_DOMAIN, PRIVATE_CREDENTIAL_VERSION, credential));
+    }
+
+    /// @notice Public domain a passport bridge/circuit must bind into its
+    ///         one-time duplicate key.
+    /// @dev This does not select the circuit-native hash or accept a raw Self
+    ///      nullifier. It only prevents a duplicate key from being silently
+    ///      reused across issuance registries or chains.
+    function issuanceDomainHash(uint256 chainId, address registry) internal pure returns (bytes32) {
+        if (chainId == 0 || registry == address(0)) revert InvalidIssuanceDomain();
+        return keccak256(abi.encode(ISSUANCE_DOMAIN, ISSUANCE_DOMAIN_VERSION, chainId, registry));
     }
 
     /// @notice Stable consumer scope for a scoped-nullifier derivation.

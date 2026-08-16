@@ -287,8 +287,8 @@ The country root above is a deliberately small parity fixture, not a production 
   signature + depth-32 per-credential registry. A deterministic public, unkeyed multiproof/snapshot model reduces
   the holder witness floor from 3,140 B at sparse depth 96 to 836 B and reduces the modeled 100M/1B-population
   workloads by 88.83%–95.93% versus depth-96 sparse batches. Dense updates switch to the smaller snapshot. This
-  makes signature + packed status the candidate to beat, not a protocol selection: status-slot allocation,
-  uniqueness/duplicate prevention, update authorization, checkpoint governance, availability/fork recovery,
+  makes signature + packed status the candidate to beat, not a protocol selection: production duplicate-key
+  derivation/bridge authorization, status updates, checkpoint governance, availability/fork recovery,
   mobile proving, production setup, target-chain EVM gas and privacy review remain open.
 - **Research EVM verifier and governance prototype implemented:** the harness deterministically exports the packed
   fixture proof/VK in EIP-197 order and a 2,211-byte Solidity runtime verifies the real arkworks proof through the
@@ -390,6 +390,17 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 - Define base-credential and short-lived dynamic-status lifecycles, rotation and revocation.
 - Exit: second issuance for the same passport is rejected; issuer learns only the documented transition fields.
 
+**Issuance-registry foundation implemented (2026-08-15):**
+[`ZkIdentityIssuanceRegistry.sol`](../../contracts/src/ZkIdentityIssuanceRegistry.sol) separates global one-time
+issuance from circuit-specific presentation governance. It pins active EOA/contract authorities per issuer key,
+codehash-checks contract authorities, allocates monotonic `uint32` packed-status slots, consumes registry-scoped
+duplicate keys and canonical credential commitments globally, and fails stale slot/epoch races without consuming
+state. The duplicate key is omitted from events, and its chain/registry domain is pinned across SDK/Solidity. The
+129,763-gas local allocation baseline excludes passport verification. This is a pre-deployment state-machine
+foundation, not the Self bridge: an authorized caller can still lie about passport truth or key derivation until
+the next slice verifies and binds exact Self outputs. See
+[`v2-issuance-registry.md`](v2-issuance-registry.md).
+
 ### Stage 3 — local prover and passkey product
 
 - WebAuthn PRF feature detection and user-verification ceremony; multiple passkeys and reviewed recovery.
@@ -421,7 +432,7 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 - Presentations for two consumers have no common credential identifier or nullifier.
 - A developer integrates one read-only and one stateful EVM gate from the SDK documentation.
 - The same encrypted credential is usable from two enrolled passkeys; loss/revocation/recovery are demonstrated.
-- No exact DOB, nationality, name, passport number, portrait, global nullifier or credential plaintext appears
+- No exact DOB, nationality, name, passport number, portrait, raw/global passport nullifier or credential plaintext appears
   in calldata, logs, contract storage, analytics, browser storage or server logs.
 - Revocation and dynamic sanctions freshness are independently testable and fail closed.
 - Target-chain gas and target-device proving budgets are met and recorded before mainnet values are promised.
@@ -432,7 +443,8 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 - Credential authenticity: SNARK-native issuer signature, accumulator membership, or both.
 - Revocation accumulator selection and production witness transport/checkpoint governance. The packed-status
   bakeoff is the current candidate to beat, while the operational sparse Merkle prototype still validates local
-  updates; neither ratifies an accumulator, slot-allocation authority or network service.
+  updates. The issuance registry now constrains on-chain slot allocation, but neither it nor the bakeoff ratifies
+  the production duplicate-key derivation, Self bridge, accumulator or network service.
 - Proving stack after measurement; trusted-setup and verifier-version governance.
 - Whether the public subject is an EOA, ERC-1271 account, or a scoped account key for each product flow.
 - Recovery design when neither a synced passkey nor WebAuthn PRF is available.

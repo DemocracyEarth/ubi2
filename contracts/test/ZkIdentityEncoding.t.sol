@@ -5,6 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {ZkIdentityEncoding} from "../src/ZkIdentityEncoding.sol";
 
 contract ZkIdentityEncodingHarness {
+    function issuanceDomainHash(uint256 chainId, address registry) external pure returns (bytes32) {
+        return ZkIdentityEncoding.issuanceDomainHash(chainId, registry);
+    }
+
     function privateCredentialFingerprint(ZkIdentityEncoding.PrivateCredential memory credential)
         external
         pure
@@ -113,6 +117,18 @@ contract ZkIdentityEncodingTest is Test {
             harness.privateCredentialFingerprint(credential),
             0x5f3113cae53c94a863c5362d229137c767d996e444283541f19b13aac89e7f11
         );
+    }
+
+    function test_IssuanceDomain_ParityAndValidation() public {
+        assertEq(
+            harness.issuanceDomainHash(84_532, 0x1111111111111111111111111111111111111111),
+            0x3bf5571a5fb54037b033765a46a43d150ae8ffa32cb5c72c2ec11f6a572bd998
+        );
+
+        vm.expectRevert(ZkIdentityEncoding.InvalidIssuanceDomain.selector);
+        harness.issuanceDomainHash(0, 0x1111111111111111111111111111111111111111);
+        vm.expectRevert(ZkIdentityEncoding.InvalidIssuanceDomain.selector);
+        harness.issuanceDomainHash(84_532, address(0));
     }
 
     function test_NullifierScopeAndPreimage_Parity() public view {

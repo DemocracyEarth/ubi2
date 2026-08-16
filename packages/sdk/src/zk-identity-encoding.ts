@@ -23,6 +23,8 @@ import {
 
 export const ZK_PRIVATE_CREDENTIAL_SCHEMA = "org.proofofhumanity.zk-private-credential" as const;
 export const ZK_PRIVATE_CREDENTIAL_VERSION = 1 as const;
+export const ZK_ISSUANCE_DOMAIN_SCHEMA = "org.proofofhumanity.zk-issuance" as const;
+export const ZK_ISSUANCE_DOMAIN_VERSION = 1 as const;
 export const ZK_NULLIFIER_SCOPE_SCHEMA = "org.proofofhumanity.zk-nullifier-scope" as const;
 export const ZK_NULLIFIER_SCOPE_VERSION = 1 as const;
 export const ZK_PUBLIC_SIGNALS_SCHEMA = "org.proofofhumanity.zk-public-signals" as const;
@@ -52,6 +54,11 @@ export interface ZkPrivateCredentialInput {
   documentClass: PassportDocumentClass;
   assurance: PassportAssurance;
   issuedAtEpoch: number;
+}
+
+export interface ZkIssuanceDomainInput {
+  chainId: number;
+  registry: Address;
 }
 
 export interface ZkNullifierScopeInput {
@@ -111,6 +118,7 @@ export const ZK_PUBLIC_SIGNAL_INDEX = {
 export const ZK_PUBLIC_SIGNAL_COUNT = 18 as const;
 
 const credentialDomainHash = keccak256(stringToBytes(ZK_PRIVATE_CREDENTIAL_SCHEMA));
+const issuanceDomainHash = keccak256(stringToBytes(ZK_ISSUANCE_DOMAIN_SCHEMA));
 const nullifierScopeDomainHash = keccak256(stringToBytes(ZK_NULLIFIER_SCOPE_SCHEMA));
 const nullifierPreimageDomainHash = keccak256(
   stringToBytes(`${ZK_NULLIFIER_SCOPE_SCHEMA}:derive`),
@@ -182,6 +190,26 @@ function normalizeAddress(value: Address, label: string): Address {
   const normalized = getAddress(value);
   if (BigInt(normalized) === 0n) throw new Error(`${label} must not be the zero address`);
   return normalized;
+}
+
+/**
+ * Public registry/chain domain that a passport issuance bridge or circuit must
+ * bind into its one-time duplicate key. This deliberately does not derive the
+ * key itself: the raw passport/Self nullifier must never enter application code.
+ */
+export function zkIssuanceDomainHash(input: ZkIssuanceDomainInput): Hex {
+  assertInteger(input.chainId, "issuance chain id", 1, Number.MAX_SAFE_INTEGER);
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "uint16" }, { type: "uint256" }, { type: "address" }],
+      [
+        issuanceDomainHash,
+        ZK_ISSUANCE_DOMAIN_VERSION,
+        BigInt(input.chainId),
+        normalizeAddress(input.registry, "issuance registry"),
+      ],
+    ),
+  );
 }
 
 /**

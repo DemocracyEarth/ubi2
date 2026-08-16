@@ -9,6 +9,7 @@ import {
   serializeZkIdentityPublicSignals,
   splitBytes32,
   zkNullifierScopeHash,
+  zkIssuanceDomainHash,
   zkPrivateCredentialFingerprint,
   zkScopedNullifierPreimage,
   ZK_PUBLIC_SIGNAL_COUNT,
@@ -18,6 +19,31 @@ import {
   dynamicStatusPolicyRegistration,
   zkPresentationBindingHash,
 } from "./zk-identity-policy";
+
+assert.equal(
+  zkIssuanceDomainHash({
+    chainId: 84_532,
+    registry: "0x1111111111111111111111111111111111111111",
+  }),
+  "0x3bf5571a5fb54037b033765a46a43d150ae8ffa32cb5c72c2ec11f6a572bd998",
+  "issuance domain is pinned across TypeScript and Solidity",
+);
+assert.throws(
+  () =>
+    zkIssuanceDomainHash({
+      chainId: 0,
+      registry: "0x1111111111111111111111111111111111111111",
+    }),
+  /issuance chain id/u,
+);
+assert.throws(
+  () =>
+    zkIssuanceDomainHash({
+      chainId: 84_532,
+      registry: "0x0000000000000000000000000000000000000000",
+    }),
+  /issuance registry must not be the zero address/u,
+);
 
 const issuerKeyId = keccak256(stringToBytes("issuer-key:testnet:v1"));
 const statusId = keccak256(stringToBytes("status:fixture:1"));
