@@ -221,7 +221,10 @@ and v2 proof generation are not enabled yet.
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection. A separate pre-deployment issuance registry now constrains authorized
   monotonic `uint32` slot allocation and globally consumes registry-scoped duplicate keys/credential commitments;
-  the local write is pinned at 129,763 gas. Exact Self proof binding, production duplicate-key derivation, status
+  the local write is pinned at 129,763 gas. An immutable transitional Self bridge now binds a pinned off-chain
+  proof decision to the subject, registry-scoped key, proof-bound holder commitment, issuer key, slot/epoch and
+  verifier configuration through a short-lived EIP-712 authorization; bridge plus allocation costs 140,014 local
+  gas. On-chain/native passport proof verification, the production circuit-native commitment, status
   lifecycle, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas, durable
   transport/privacy hardening, and the final ADR remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a

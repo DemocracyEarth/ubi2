@@ -93,6 +93,24 @@ const policyHash = zkIdentityPolicyHash(policy);
 // Bind policyHash to chain, verifier, consumer, subject, context,
 // challenge and epoch with zkPresentationBindingHash(...).`;
 
+const V2_ISSUANCE_EXAMPLE = `import { encodeZkSelfIssuance } from "@ubi2/sdk";
+
+// Returned only after the exact Self proof has bound the wallet and the
+// holder prover's canonical BN254 credential commitment.
+const { zkIssuance } = await pollVerificationResult();
+
+const data = encodeZkSelfIssuance({
+  authorization: zkIssuance.authorization,
+  signature: zkIssuance.signature,
+});
+
+await walletClient.sendTransaction({
+  account: connectedWallet, // must equal authorization.subject
+  chain: canonicalIssuanceChain,
+  to: zkIssuance.bridge,
+  data,
+});`;
+
 const descriptors = ["age>=18", "age>=21", "nationality=ARG", "sanctions-clear"] as const;
 
 export default function DevelopersPage() {
@@ -111,6 +129,7 @@ export default function DevelopersPage() {
           <span>Integration guide</span>
           <a href="#model">Trust model</a>
           <a href="#v2-policies">v2 policy SDK</a>
+          <a href="#v2-issuance">v2 issuance bridge</a>
           <a href="#descriptors">Descriptors</a>
           <a href="#request">Request an attestation</a>
           <a href="#contract">Consume on-chain</a>
@@ -137,7 +156,7 @@ export default function DevelopersPage() {
             <span className="doc-number">01</span><h2>Trust model</h2>
             <div className="trust-table">
               <div><b>Live v1 · issuer-attested</b><p>Self verifies passport facts. The issuer evaluates the private held credential and signs one Boolean attestation.</p></div>
-              <div><b>v2 · reusable holder-side ZK</b><p>Foundation in development. Canonical policies and encrypted vault code are available; issuance circuits, local proving, status roots and prover contracts are not deployed.</p></div>
+              <div><b>v2 · reusable holder-side ZK</b><p>Foundation in development. A transitional Self issuance bridge and SDK are implemented but not deployed; production commitment generation, local proving, status roots and prover contracts remain gated.</p></div>
             </div>
             <div className="notice warn">
               Do not describe v1 predicate attestations as trustless ZK. Consumers trust the configured issuer to
@@ -159,8 +178,24 @@ export default function DevelopersPage() {
             </div>
           </section>
 
+          <section id="v2-issuance" className="docs-section">
+            <span className="doc-number">03</span><h2>Submit a v2 issuance authorization</h2>
+            <p>
+              The developer-preview path verifies the exact configured Self e-passport proof off-chain, derives a
+              registry-scoped duplicate key, and signs a ten-minute authorization for one immutable bridge. The
+              wallet submits the transaction itself; another caller, chain, bridge, signer, verifier configuration,
+              issuer key, slot, epoch, or changed commitment fails closed.
+            </p>
+            <pre className="docs-code"><code>{V2_ISSUANCE_EXAMPLE}</code></pre>
+            <div className="notice warn">
+              This is not live user functionality yet. The holder-side production commitment circuit and vault
+              integration are still required, and the current bridge trusts a pinned off-chain Self verification
+              authority. Never generate a placeholder commitment or treat this authorization as a presentation proof.
+            </div>
+          </section>
+
           <section id="descriptors" className="docs-section">
-            <span className="doc-number">03</span><h2>Canonical v1 descriptors</h2>
+            <span className="doc-number">04</span><h2>Canonical v1 descriptors</h2>
             <p>Consumers require the hash of an exact canonical string. No spaces or aliases are accepted.</p>
             <div className="descriptor-table">
               {descriptors.map((descriptor) => (
@@ -171,7 +206,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="request" className="docs-section">
-            <span className="doc-number">04</span><h2>Request a v1 attestation</h2>
+            <span className="doc-number">05</span><h2>Request a v1 attestation</h2>
             <p>
               The holder calls the API from the verification app. Before signing, the server verifies the private
               credential signature and freshness, the subject&apos;s live SBT ownership, both contract issuer addresses,
@@ -183,7 +218,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="contract" className="docs-section">
-            <span className="doc-number">05</span><h2>Consume v1 atomically on-chain</h2>
+            <span className="doc-number">06</span><h2>Consume v1 atomically on-chain</h2>
             <p>
               A state-changing consumer must call <code>consume</code> itself. The verifier requires
               <code>att.consumer == msg.sender</code>, checks subject and freshness, and marks the
@@ -193,7 +228,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="networks" className="docs-section">
-            <span className="doc-number">06</span><h2>Configured networks</h2>
+            <span className="doc-number">07</span><h2>Configured networks</h2>
             <p>The app exposes issuance only when both contract addresses are configured. Zero addresses fail closed.</p>
             <div className="network-table">
               <div className="network-row head"><span>Network</span><span>Chain</span><span>PoH</span><span>Predicate</span><span>Status</span></div>
@@ -225,7 +260,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="security" className="docs-section">
-            <span className="doc-number">07</span><h2>Security checklist</h2>
+            <span className="doc-number">08</span><h2>Security checklist</h2>
             <ul className="docs-checks">
               <li>Require the exact descriptor hash, <code>result == true</code>, consumer, context, and subject your action expects.</li>
               <li>Use <code>consume</code> inside state-changing flows; use <code>check</code> only when replay is harmless.</li>
@@ -238,7 +273,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="release" className="docs-section release-gate">
-            <span className="doc-number">08</span><h2>Mainnet release gate</h2>
+            <span className="doc-number">09</span><h2>Mainnet release gate</h2>
             <p>
               Mainnet is intentionally not activated by code merge alone. Every target chain must pass deterministic
               CI, testnet deployment and verification, live contract probes, issuer/owner checks, app configuration,

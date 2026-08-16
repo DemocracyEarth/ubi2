@@ -167,7 +167,7 @@ jobs:
           node scripts/check-coverage.mjs lcov.info 95
       - name: Deterministic target-call gas regression
         working-directory: contracts
-        run: forge snapshot --check --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest|V2DynamicStatusVerifierGasBenchmarkTest|V2AdapterGasBenchmarkTest|V2IssuanceGasBenchmarkTest'
+        run: forge snapshot --check --match-contract 'GasBenchmarksTest|V2VerifierGasBenchmarkTest|V2DynamicStatusVerifierGasBenchmarkTest|V2AdapterGasBenchmarkTest|V2IssuanceGasBenchmarkTest|V2SelfIssuanceGasBenchmarkTest'
       - name: Solidity and TypeScript EIP-712 cross-stack parity
         run: pnpm --filter @ubi2/proofofhumanity test:contracts
       - name: Phase 2 tooling rehearsal on Anvil

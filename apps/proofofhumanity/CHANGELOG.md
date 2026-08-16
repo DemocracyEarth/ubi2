@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add the transitional v2 Self issuance bridge: proof-bound holder commitments, registry-scoped
+  duplicate keys, immutable EIP-712 verifier configuration, SDK calldata/artifact helpers, fail-closed
+  server deployment checks, testnet deployment script, adversarial Foundry tests, and live Anvil parity.
 - Add a clearly labeled v2 policy designer to `/verify` covering age ranges, nationality/issuing-state sets,
   passport validity and authenticity, scoped uniqueness, short-lived sanctions status, and consented private
   name matching. It builds canonical SDK policies and hashes but never presents a preview as a generated proof.
