@@ -194,14 +194,29 @@ exact circuit relation.
 ```bash
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --build-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-source.json
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --advance-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-snapshot.json \
+  tools/v2-crypto-bench/fixtures/packed-status-continuation.json
 ```
 
-This is a deterministic computation core, not a production indexer daemon. The caller must independently select a
-canonical RPC, enforce finality, decode and filter the registry logs, verify any revocation authorization, persist
-checkpoints, and reconcile the resulting root with a second operator. In particular, the current issuance registry
-does not emit a credential-revocation event: the fixture's nonzero `authorizationReference` makes that external
-boundary explicit but does not authenticate it. The JSON snapshot is not signed. Authenticated, durable
-distribution and strict snapshot ingestion remain the next operational slice.
+Checkpoint restore strictly decodes every field, requires sorted allocation-bounded chunks, keeps slot zero and the
+unallocated tail fail closed, rebuilds the sparse tree, and rejects unless the declared root matches. The restored
+checkpoint becomes the rollback anchor for the next bounded transcript. CI reproduces both the initial and advanced
+checkpoint byte-for-byte.
+
+The SDK now provides the operational boundary around this computation core. Its default viem reader requires the
+RPC `finalized` tag, caps one checkpoint interval at 512 blocks, includes empty blocks, and rejects chain, parent,
+block-hash, log-order, issuer or dense-allocation mismatches. Snapshot JSON is strictly normalized and content-
+addressed with Keccak. EIP-712 attestations bind the exact content hash, source block, issuer, allocation watermark
+and root to the canonical chain/registry. Reconciliation requires at least two distinct application-configured
+EOA signers to report byte-identical content before producing publication arguments. The current SDK recovers
+65-byte ECDSA signatures; ERC-1271 contract-wallet reconciliation is not yet implemented.
+
+This remains reference operator tooling, not a hosted production indexer or availability service. Operators must
+run independent RPC and storage paths, persist checkpoints atomically, authenticate the external revocation source,
+publish signed artifacts durably, monitor divergence/withholding, and keep the on-chain publisher key separate. In
+particular, the current issuance registry does not emit a credential-revocation event: the fixture's nonzero
+`authorizationReference` makes that boundary explicit but does not authenticate it.
 
 ## EVM verifier and root-governance prototype
 
@@ -269,6 +284,9 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --status-distribution
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --build-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-source.json
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --advance-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-snapshot.json \
+  tools/v2-crypto-bench/fixtures/packed-status-continuation.json
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --packed-evm-fixture
 mkdir -p /tmp/ubi2-v2-research

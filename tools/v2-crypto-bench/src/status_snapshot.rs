@@ -13,11 +13,7 @@ use super::{
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
 use ark_ff::{BigInteger, PrimeField};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    error::Error,
-    fmt,
-};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 pub const PACKED_STATUS_SOURCE_SCHEMA: &str = "org.proofofhumanity.v2-packed-status-source/1";
 pub const PACKED_STATUS_SNAPSHOT_SCHEMA: &str = "org.proofofhumanity.v2-packed-status-snapshot/1";
@@ -25,6 +21,8 @@ pub const PACKED_STATUS_WITNESS_SCHEMA: &str = "org.proofofhumanity.v2-packed-st
 
 const ZERO_HASH: [u8; 32] = [0u8; 32];
 const ZERO_ADDRESS: [u8; 20] = [0u8; 20];
+const MAX_NEXT_STATUS_ID: u64 = u32::MAX as u64 + 1;
+const MAX_CHUNK_INDEX: u32 = (1u32 << PACKED_STATUS_DEPTH) - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceBlockRef {
@@ -166,6 +164,51 @@ pub struct PackedStatusSnapshot {
 }
 
 impl PackedStatusSnapshot {
+    /// Decode a durable checkpoint using exact keys, canonical encodings and
+    /// fail-closed allocation bounds. The Poseidon root is recomputed during
+    /// builder restoration, never trusted from JSON alone.
+    pub fn from_json(json: &str) -> Result<Self, PackedStatusSnapshotError> {
+        let wire: SnapshotWire = serde_json::from_str(json)
+            .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?;
+        if wire.schema != PACKED_STATUS_SNAPSHOT_SCHEMA {
+            return Err(PackedStatusSnapshotError::InvalidSnapshotEncoding);
+        }
+        let snapshot = Self {
+            schema: PACKED_STATUS_SNAPSHOT_SCHEMA,
+            chain_id: parse_canonical_u64(&wire.chain_id)
+                .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+            issuance_registry: bytes_from_hex::<20>(&wire.issuance_registry)
+                .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+            issuer_key_id: bytes_from_hex::<32>(&wire.issuer_key_id)
+                .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+            source: SourceBlockRef {
+                number: parse_canonical_u64(&wire.source_block_number)
+                    .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+                hash: bytes_from_hex::<32>(&wire.source_block_hash)
+                    .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+                parent_hash: bytes_from_hex::<32>(&wire.source_block_parent_hash)
+                    .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?,
+            },
+            next_status_id: wire.next_status_id,
+            root: field_from_hex(&wire.root)?,
+            chunks: wire
+                .chunks
+                .into_iter()
+                .map(|chunk| {
+                    Ok(PackedStatusSnapshotChunk {
+                        index: chunk.index,
+                        value: chunk_from_hex(&chunk.value)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, PackedStatusSnapshotError>>()?,
+        };
+        validate_snapshot(&snapshot)?;
+        if wire.activated_through_status_id != snapshot.activated_through_status_id() {
+            return Err(PackedStatusSnapshotError::InvalidSnapshotEncoding);
+        }
+        Ok(snapshot)
+    }
+
     pub fn activated_through_status_id(&self) -> u32 {
         u32::try_from(self.next_status_id - 1)
             .expect("builder bounds next_status_id to uint32 maximum plus one")
@@ -202,7 +245,6 @@ impl PackedStatusSnapshot {
 struct EventUndo {
     status_id: u32,
     previous_chunk: PackedStatusChunk,
-    previously_revoked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -224,7 +266,6 @@ pub struct PackedStatusSnapshotBuilder {
     defaults: [StatusField; PACKED_STATUS_DEPTH + 1],
     chunks: BTreeMap<u32, PackedStatusChunk>,
     nodes: BTreeMap<(usize, u32), StatusField>,
-    revoked: BTreeSet<u32>,
     history: Vec<BlockUndo>,
 }
 
@@ -259,13 +300,38 @@ impl PackedStatusSnapshotBuilder {
             defaults,
             chunks: BTreeMap::new(),
             nodes: BTreeMap::new(),
-            revoked: BTreeSet::new(),
             history: Vec::new(),
         })
     }
 
     pub fn tip(&self) -> SourceBlockRef {
         self.tip
+    }
+
+    /// Restore a durable checkpoint, rebuilding every sparse Merkle node and
+    /// rejecting the checkpoint unless its canonical root matches exactly.
+    /// The restored checkpoint becomes the new rollback anchor.
+    pub fn restore(snapshot: PackedStatusSnapshot) -> Result<Self, PackedStatusSnapshotError> {
+        validate_snapshot(&snapshot)?;
+        let expected_root = snapshot.root;
+        let mut builder = Self::new(
+            snapshot.chain_id,
+            snapshot.issuance_registry,
+            snapshot.issuer_key_id,
+            snapshot.source,
+        )?;
+        builder.next_status_id = snapshot.next_status_id;
+        for chunk in snapshot.chunks {
+            builder.set_chunk(chunk.index, chunk.value);
+        }
+        if builder.root() != expected_root {
+            return Err(PackedStatusSnapshotError::SnapshotRootMismatch);
+        }
+        Ok(builder)
+    }
+
+    pub fn restore_from_json(json: &str) -> Result<Self, PackedStatusSnapshotError> {
+        Self::restore(PackedStatusSnapshot::from_json(json)?)
     }
 
     pub fn next_status_id(&self) -> u64 {
@@ -423,9 +489,6 @@ impl PackedStatusSnapshotBuilder {
                 if status_id == 0 || u64::from(status_id) >= self.next_status_id {
                     return Err(PackedStatusSnapshotError::UnallocatedStatus);
                 }
-                if self.revoked.contains(&status_id) {
-                    return Err(PackedStatusSnapshotError::StatusAlreadyRevoked);
-                }
                 (status_id, true)
             }
         };
@@ -441,31 +504,22 @@ impl PackedStatusSnapshotBuilder {
                 PackedStatusSnapshotError::StatusAlreadyAllocated
             });
         }
-        let previously_revoked = self.revoked.contains(&status_id);
         self.set_chunk(
             chunk_index,
             previous_chunk.with_fail_closed_bit(selected_bit, fail_closed),
         );
-        if fail_closed {
-            self.revoked.insert(status_id);
-        } else {
+        if !fail_closed {
             self.next_status_id += 1;
         }
         Ok(EventUndo {
             status_id,
             previous_chunk,
-            previously_revoked,
         })
     }
 
     fn rollback_events(&mut self, events: &[EventUndo], previous_next_status_id: u64) {
         for event in events.iter().rev() {
             self.set_chunk(event.status_id >> 8, event.previous_chunk);
-            if event.previously_revoked {
-                self.revoked.insert(event.status_id);
-            } else {
-                self.revoked.remove(&event.status_id);
-            }
         }
         self.next_status_id = previous_next_status_id;
     }
@@ -519,6 +573,10 @@ impl PackedStatusSnapshotBuilder {
 pub enum PackedStatusSnapshotError {
     InvalidTrustAnchor,
     InvalidSourceEncoding,
+    InvalidSnapshotEncoding,
+    InvalidSnapshotState,
+    SnapshotRootMismatch,
+    CheckpointSourceMismatch,
     BlockNumberOverflow,
     NonContiguousBlock,
     ParentHashMismatch,
@@ -539,6 +597,14 @@ impl fmt::Display for PackedStatusSnapshotError {
         formatter.write_str(match self {
             Self::InvalidTrustAnchor => "status snapshot trust anchor is invalid",
             Self::InvalidSourceEncoding => "status snapshot source encoding is invalid",
+            Self::InvalidSnapshotEncoding => "status checkpoint encoding is invalid",
+            Self::InvalidSnapshotState => {
+                "status checkpoint violates fail-closed allocation bounds"
+            }
+            Self::SnapshotRootMismatch => "status checkpoint does not reproduce its declared root",
+            Self::CheckpointSourceMismatch => {
+                "status source transcript does not continue the supplied checkpoint"
+            }
             Self::BlockNumberOverflow => "source block number overflow",
             Self::NonContiguousBlock => "source blocks must be contiguous",
             Self::ParentHashMismatch => "source block parent hash does not match the current tip",
@@ -602,8 +668,8 @@ struct EventWire {
     authorization_reference: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotWire {
     schema: String,
     chain_id: String,
@@ -618,8 +684,8 @@ struct SnapshotWire {
     chunks: Vec<SnapshotChunkWire>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotChunkWire {
     index: u32,
     value: String,
@@ -631,6 +697,52 @@ struct SnapshotChunkWire {
 pub fn build_packed_status_snapshot_from_json(
     json: &str,
 ) -> Result<String, PackedStatusSnapshotError> {
+    let source = parse_source_json(json)?;
+    let mut builder = PackedStatusSnapshotBuilder::new(
+        source.chain_id,
+        source.issuance_registry,
+        source.issuer_key_id,
+        source.anchor,
+    )?;
+    apply_source_blocks(&mut builder, source.blocks)?;
+    builder
+        .snapshot()
+        .to_json()
+        .map_err(|_| PackedStatusSnapshotError::InvalidSourceEncoding)
+}
+
+/// Restore a durable checkpoint and advance it with the next bounded finalized
+/// transcript. Chain, registry, issuer and anchor must match byte-for-byte.
+pub fn advance_packed_status_snapshot_from_json(
+    checkpoint_json: &str,
+    source_json: &str,
+) -> Result<String, PackedStatusSnapshotError> {
+    let checkpoint = PackedStatusSnapshot::from_json(checkpoint_json)?;
+    let source = parse_source_json(source_json)?;
+    if source.chain_id != checkpoint.chain_id
+        || source.issuance_registry != checkpoint.issuance_registry
+        || source.issuer_key_id != checkpoint.issuer_key_id
+        || source.anchor != checkpoint.source
+    {
+        return Err(PackedStatusSnapshotError::CheckpointSourceMismatch);
+    }
+    let mut builder = PackedStatusSnapshotBuilder::restore(checkpoint)?;
+    apply_source_blocks(&mut builder, source.blocks)?;
+    builder
+        .snapshot()
+        .to_json()
+        .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)
+}
+
+struct ParsedSource {
+    chain_id: u64,
+    issuance_registry: [u8; 20],
+    issuer_key_id: [u8; 32],
+    anchor: SourceBlockRef,
+    blocks: Vec<FinalizedStatusBlock>,
+}
+
+fn parse_source_json(json: &str) -> Result<ParsedSource, PackedStatusSnapshotError> {
     let wire: SourceWire =
         serde_json::from_str(json).map_err(|_| PackedStatusSnapshotError::InvalidSourceEncoding)?;
     if wire.schema != PACKED_STATUS_SOURCE_SCHEMA {
@@ -640,26 +752,40 @@ pub fn build_packed_status_snapshot_from_json(
     let issuance_registry = bytes_from_hex::<20>(&wire.issuance_registry)?;
     let issuer_key_id = bytes_from_hex::<32>(&wire.issuer_key_id)?;
     let anchor = parse_block_ref(wire.anchor)?;
-    let mut builder =
-        PackedStatusSnapshotBuilder::new(chain_id, issuance_registry, issuer_key_id, anchor)?;
+    let blocks = wire
+        .blocks
+        .into_iter()
+        .map(|block| {
+            let source = parse_block_ref(BlockRefWire {
+                number: block.number,
+                hash: block.hash,
+                parent_hash: block.parent_hash,
+            })?;
+            let events = block
+                .events
+                .into_iter()
+                .map(parse_event)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(FinalizedStatusBlock { source, events })
+        })
+        .collect::<Result<Vec<_>, PackedStatusSnapshotError>>()?;
+    Ok(ParsedSource {
+        chain_id,
+        issuance_registry,
+        issuer_key_id,
+        anchor,
+        blocks,
+    })
+}
 
-    for block in wire.blocks {
-        let source = parse_block_ref(BlockRefWire {
-            number: block.number,
-            hash: block.hash,
-            parent_hash: block.parent_hash,
-        })?;
-        let events = block
-            .events
-            .into_iter()
-            .map(parse_event)
-            .collect::<Result<Vec<_>, _>>()?;
-        builder.apply_finalized_block(FinalizedStatusBlock { source, events })?;
+fn apply_source_blocks(
+    builder: &mut PackedStatusSnapshotBuilder,
+    blocks: Vec<FinalizedStatusBlock>,
+) -> Result<(), PackedStatusSnapshotError> {
+    for block in blocks {
+        builder.apply_finalized_block(block)?;
     }
-    builder
-        .snapshot()
-        .to_json()
-        .map_err(|_| PackedStatusSnapshotError::InvalidSourceEncoding)
+    Ok(())
 }
 
 fn parse_event(event: EventWire) -> Result<PackedStatusSourceEvent, PackedStatusSnapshotError> {
@@ -696,6 +822,64 @@ fn parse_canonical_u64(value: &str) -> Result<u64, PackedStatusSnapshotError> {
         return Err(PackedStatusSnapshotError::InvalidSourceEncoding);
     }
     Ok(parsed)
+}
+
+fn validate_snapshot(snapshot: &PackedStatusSnapshot) -> Result<(), PackedStatusSnapshotError> {
+    if snapshot.schema != PACKED_STATUS_SNAPSHOT_SCHEMA
+        || snapshot.chain_id == 0
+        || snapshot.issuance_registry == ZERO_ADDRESS
+        || snapshot.issuer_key_id == ZERO_HASH
+        || snapshot.source.hash == ZERO_HASH
+        || snapshot.next_status_id == 0
+        || snapshot.next_status_id > MAX_NEXT_STATUS_ID
+        || snapshot.root == StatusField::from(0u64)
+    {
+        return Err(PackedStatusSnapshotError::InvalidSnapshotState);
+    }
+
+    if snapshot.next_status_id == 1 && !snapshot.chunks.is_empty() {
+        return Err(PackedStatusSnapshotError::InvalidSnapshotState);
+    }
+    let last_allocated = snapshot.next_status_id - 1;
+    let last_chunk = u32::try_from(last_allocated >> 8)
+        .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotState)?;
+    let last_bit = (last_allocated & 0xff) as usize;
+    let mut previous_index = None;
+    for chunk in &snapshot.chunks {
+        if chunk.index > MAX_CHUNK_INDEX
+            || previous_index.is_some_and(|previous| chunk.index <= previous)
+            || chunk.value == PackedStatusChunk::FAIL_CLOSED
+            || chunk.index > last_chunk
+        {
+            return Err(PackedStatusSnapshotError::InvalidSnapshotState);
+        }
+        if chunk.index == 0 && !chunk.value.is_revoked_or_unallocated(0) {
+            return Err(PackedStatusSnapshotError::InvalidSnapshotState);
+        }
+        if chunk.index == last_chunk && !unallocated_tail_is_fail_closed(chunk.value, last_bit) {
+            return Err(PackedStatusSnapshotError::InvalidSnapshotState);
+        }
+        previous_index = Some(chunk.index);
+    }
+    Ok(())
+}
+
+fn unallocated_tail_is_fail_closed(chunk: PackedStatusChunk, last_allocated_bit: usize) -> bool {
+    if last_allocated_bit < 128 {
+        let allocated_low = low_bits_mask(last_allocated_bit + 1);
+        chunk.low & !allocated_low == !allocated_low && chunk.high == u128::MAX
+    } else {
+        let allocated_high = low_bits_mask(last_allocated_bit - 127);
+        chunk.high & !allocated_high == !allocated_high
+    }
+}
+
+fn low_bits_mask(count: usize) -> u128 {
+    if count >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << count) - 1
+    }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -738,8 +922,34 @@ fn field_to_hex(value: StatusField) -> String {
     bytes_to_hex(&padded)
 }
 
+fn field_from_hex(encoded: &str) -> Result<StatusField, PackedStatusSnapshotError> {
+    let bytes = bytes_from_hex::<32>(encoded)
+        .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?;
+    let field = StatusField::from_be_bytes_mod_order(&bytes);
+    if field_to_hex(field) != encoded {
+        return Err(PackedStatusSnapshotError::InvalidSnapshotEncoding);
+    }
+    Ok(field)
+}
+
 fn chunk_to_hex(chunk: PackedStatusChunk) -> String {
     format!("0x{:032x}{:032x}", chunk.high, chunk.low)
+}
+
+fn chunk_from_hex(encoded: &str) -> Result<PackedStatusChunk, PackedStatusSnapshotError> {
+    let bytes = bytes_from_hex::<32>(encoded)
+        .map_err(|_| PackedStatusSnapshotError::InvalidSnapshotEncoding)?;
+    let high = u128::from_be_bytes(
+        bytes[..16]
+            .try_into()
+            .expect("fixed bytes32 prefix is exactly 16 bytes"),
+    );
+    let low = u128::from_be_bytes(
+        bytes[16..]
+            .try_into()
+            .expect("fixed bytes32 suffix is exactly 16 bytes"),
+    );
+    Ok(PackedStatusChunk { low, high })
 }
 
 fn registry_node(
@@ -992,6 +1202,119 @@ mod tests {
             PackedStatusSnapshotError::NonCanonicalLogOrder
         );
         assert_eq!(builder.snapshot().to_json().unwrap(), initial);
+    }
+
+    #[test]
+    fn durable_checkpoint_restores_and_advances_deterministically() {
+        let mut initial = builder();
+        initial
+            .apply_finalized_block(block(
+                101,
+                0x02,
+                0x01,
+                vec![allocation(0, 1), allocation(1, 2)],
+            ))
+            .unwrap();
+        let checkpoint = initial.snapshot().to_json().unwrap();
+        let continuation = serde_json::json!({
+            "schema": PACKED_STATUS_SOURCE_SCHEMA,
+            "chainId": "84532",
+            "issuanceRegistry": bytes_to_hex(&REGISTRY),
+            "issuerKeyId": bytes_to_hex(&ISSUER),
+            "anchor": {
+                "number": "101",
+                "hash": bytes_to_hex(&[0x02; 32]),
+                "parentHash": bytes_to_hex(&[0x01; 32]),
+            },
+            "blocks": [{
+                "number": "102",
+                "hash": bytes_to_hex(&[0x03; 32]),
+                "parentHash": bytes_to_hex(&[0x02; 32]),
+                "events": [{
+                    "kind": "credential-allocated",
+                    "logIndex": 4,
+                    "issuerKeyId": bytes_to_hex(&ISSUER),
+                    "statusId": 3,
+                }],
+            }],
+        })
+        .to_string();
+        let advanced =
+            advance_packed_status_snapshot_from_json(&checkpoint, &continuation).unwrap();
+
+        let mut replayed = builder();
+        replayed
+            .apply_finalized_block(block(
+                101,
+                0x02,
+                0x01,
+                vec![allocation(0, 1), allocation(1, 2)],
+            ))
+            .unwrap();
+        replayed
+            .apply_finalized_block(block(102, 0x03, 0x02, vec![allocation(4, 3)]))
+            .unwrap();
+        assert_eq!(advanced, replayed.snapshot().to_json().unwrap());
+
+        let restored = PackedStatusSnapshotBuilder::restore_from_json(&advanced).unwrap();
+        assert_eq!(restored.snapshot().to_json().unwrap(), advanced);
+
+        let mismatched_source = continuation.replace("\"chainId\":\"84532\"", "\"chainId\":\"1\"");
+        assert_eq!(
+            advance_packed_status_snapshot_from_json(&checkpoint, &mismatched_source).unwrap_err(),
+            PackedStatusSnapshotError::CheckpointSourceMismatch
+        );
+    }
+
+    #[test]
+    fn checkpoint_rejects_root_tampering_unallocated_bits_and_unknown_fields() {
+        let mut builder = builder();
+        builder
+            .apply_finalized_block(block(101, 0x02, 0x01, vec![allocation(0, 1)]))
+            .unwrap();
+        let checkpoint = builder.snapshot().to_json().unwrap();
+        let root = field_to_hex(builder.root());
+        let wrong_root = checkpoint.replace(
+            &root,
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+        );
+        assert_eq!(
+            PackedStatusSnapshotBuilder::restore_from_json(&wrong_root).err(),
+            Some(PackedStatusSnapshotError::SnapshotRootMismatch)
+        );
+
+        let cleared_unallocated_bit = checkpoint.replace(
+            "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd",
+            "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff9",
+        );
+        assert_eq!(
+            PackedStatusSnapshot::from_json(&cleared_unallocated_bit).unwrap_err(),
+            PackedStatusSnapshotError::InvalidSnapshotState
+        );
+
+        let unknown_field = checkpoint.replacen('{', "{\"injected\":true,", 1);
+        assert_eq!(
+            PackedStatusSnapshot::from_json(&unknown_field).unwrap_err(),
+            PackedStatusSnapshotError::InvalidSnapshotEncoding
+        );
+    }
+
+    #[test]
+    fn restored_revocation_remains_fail_closed() {
+        let mut builder = builder();
+        builder
+            .apply_finalized_block(block(101, 0x02, 0x01, vec![allocation(0, 1)]))
+            .unwrap();
+        builder
+            .apply_finalized_block(block(102, 0x03, 0x02, vec![revocation(0, 1)]))
+            .unwrap();
+        let mut restored = PackedStatusSnapshotBuilder::restore(builder.snapshot()).unwrap();
+        assert_eq!(
+            restored
+                .apply_finalized_block(block(103, 0x04, 0x03, vec![revocation(0, 1)]))
+                .unwrap_err(),
+            PackedStatusSnapshotError::StatusAlreadyRevoked
+        );
     }
 
     #[test]
