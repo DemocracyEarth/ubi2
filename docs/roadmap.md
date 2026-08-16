@@ -249,10 +249,11 @@ and v2 proof generation are not enabled yet.
   mutations reject. This is reproducible research evidence, not a production circuit or setup. Independent circuit
   ratification, production ceremony, mobile and target-chain measurements, corrected-host testnet redeploy and
   audits remain.
-- **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, bounded race recovery, and
-  allocation-bound packed-status publication/revocation transition are implemented with adversarial tests and
-  cross-stack parity. A deterministic public snapshot builder/distributor, circuit-native holder commitment, and
-  canonical testnet evidence remain.
+- **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, bounded race recovery,
+  allocation-bound packed-status publication/revocation transition, and deterministic fork-recoverable snapshot
+  computation core are implemented with adversarial tests and circuit parity. Finalized RPC ingestion,
+  authenticated durable distribution/root reconciliation, circuit-native holder commitment, and canonical testnet
+  evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

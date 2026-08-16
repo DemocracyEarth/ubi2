@@ -135,7 +135,8 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   EIP-712 Self bridge now binds a byte-exact configured off-chain verification decision to the proof subject,
   proof-bound holder commitment, registry-scoped key, issuer key and expected slot/epoch; bridge plus allocation is
   pinned at 140,108 local gas. Remaining: on-chain/native passport proof verification, production credential
-  commitment generation, the public snapshot builder/distribution lifecycle, mobile, alternate hash/proof-system,
+  commitment generation, authenticated snapshot ingestion/distribution and root reconciliation, mobile,
+  alternate hash/proof-system,
   production ceremony/target-chain gas,
   transport/privacy hardening, and the measured ADR. The raw five-input arkworks fixture verifies through EIP-196/197 at a pinned
   230,657 gas with 2,211-byte runtime code, and a pre-deployment governance registry pins verifier codehashes plus

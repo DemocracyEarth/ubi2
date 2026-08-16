@@ -177,6 +177,32 @@ uses a 24-level path. The result makes signature + packed status the candidate t
 revocation, not a selection: issuer slot allocation, duplicate prevention, authorization, checkpoint availability,
 privacy metadata, mobile proving and EVM verification still need production design and measurement.
 
+## Deterministic packed-status snapshot builder
+
+The harness now contains an executable reference builder for the exact depth-24 packed-status relation. It consumes
+a strict JSON transcript for one issuer namespace, requires contiguous source blocks and parent hashes, processes
+events in increasing EVM log order, and requires allocation IDs to be dense from slot 1. Every omitted chunk starts
+as 256 one-bits (unallocated/revoked); allocation clears exactly one bit, while an authorized revocation sets it
+back to one. The output includes the finalized source block, allocation high-water mark, non-default chunks in
+sorted order, and the canonical BN254 Poseidon root.
+
+The builder journals each applied block and can rewind to a known ancestor before replaying an alternate finalized
+fork. A failed block is atomic. Its holder witness uses the same low/high 128-bit chunk limbs, bottom-up sibling
+order, Poseidon parameters and domains as the research circuit; a test feeds a generated builder witness into the
+exact circuit relation.
+
+```bash
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --build-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-source.json
+```
+
+This is a deterministic computation core, not a production indexer daemon. The caller must independently select a
+canonical RPC, enforce finality, decode and filter the registry logs, verify any revocation authorization, persist
+checkpoints, and reconcile the resulting root with a second operator. In particular, the current issuance registry
+does not emit a credential-revocation event: the fixture's nonzero `authorizationReference` makes that external
+boundary explicit but does not authenticate it. The JSON snapshot is not signed. Authenticated, durable
+distribution and strict snapshot ingestion remain the next operational slice.
+
 ## EVM verifier and root-governance prototype
 
 The harness now exports the packed-status verifying key, one deterministic verified proof and its five public
@@ -241,6 +267,8 @@ cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked --
   --transport-estimates
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --status-distribution
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --build-status-snapshot tools/v2-crypto-bench/fixtures/packed-status-source.json
 cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
   --packed-evm-fixture
 mkdir -p /tmp/ubi2-v2-research

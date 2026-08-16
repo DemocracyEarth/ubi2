@@ -112,12 +112,17 @@ No production deployment is authorized by this pre-deployment implementation.
 - TypeScript and Solidity pin the issuance-domain vector and reject zero chain/registry trust domains.
 - The SDK exposes strict canonical-root validation and exact publication calldata; the research circuit fixture now
   starts every unallocated packed bit at `1` and clears only its allocated slot.
+- The deterministic reference builder consumes strict finalized block transcripts, enforces chain/parent/log
+  continuity and dense allocation order, rolls failed blocks back atomically, rewinds known forks, emits sorted
+  sparse snapshots, and produces witnesses accepted by the exact depth-24 research circuit. It intentionally has
+  no RPC, finality oracle, persistence or signer.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Implement the deterministic public snapshot builder/indexer and authenticated fork-recoverable distribution, then
-run the bridge, grant-preserving refresh and publisher on one canonical testnet with isolated authority/publisher
-keys. Connect the holder-side circuit-native credential commitment and capture one live issuance, slot-race
-refresh, duplicate rejection, activation, revocation, stale-root overlap and target-chain acceptance transcript.
+Add finalized EVM log ingestion, durable checkpoints and an authenticated, content-addressed distribution envelope
+around the deterministic builder, including independent root reconciliation. Then run the bridge, grant-preserving
+refresh and publisher on one canonical testnet with isolated authority/publisher keys. Connect the holder-side
+circuit-native credential commitment and capture one live issuance, slot-race refresh, duplicate rejection,
+activation, revocation, stale-root overlap and target-chain acceptance transcript.
