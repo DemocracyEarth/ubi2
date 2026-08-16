@@ -126,8 +126,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   depth 96; mobile remains unmeasured. The depth-24 packed-status relation is pinned at 27,157 constraints and its
   deterministic public
   multiproof/snapshot model reduces holder witness size to 836 B and the modeled global update workloads by
-  88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. Remaining: issuer
-  slot/uniqueness design, mobile, alternate hash/proof-system, production ceremony/target-chain gas,
+  88.83%–95.93% versus depth-96 sparse batches. It is the candidate to beat, not a selection. A separate
+  pre-deployment issuance registry now constrains authenticated monotonic status-slot allocation and globally
+  consumes registry-scoped duplicate keys/credential commitments at a pinned 129,763 local gas. Remaining: exact
+  Self proof/key binding, status lifecycle, mobile, alternate hash/proof-system, production ceremony/target-chain gas,
   transport/privacy hardening, and the measured ADR. The raw five-input arkworks fixture verifies through EIP-196/197 at a pinned
   230,657 gas with 2,211-byte runtime code, and a pre-deployment governance registry pins verifier codehashes plus
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. The fixture setup is
@@ -145,6 +147,15 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   categorically non-deployable. The security boundary, constraint-audit plan and ceremony gates are recorded.
   Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
   target-chain measurements, production ceremony and audits remain.
+- **ZKID-V2-T2 · architect/protocol/security** — one-time issuance and uniqueness foundation. *Accepts:* issuance
+  keys and authorities are additive/retirable; contract authorities are codehash-pinned; status slots are assigned
+  monotonically and never reused; duplicate keys are global across issuer-key rotation; duplicate credential
+  commitments, stale slot/epoch races, unauthorized callers and exhaustion fail closed; duplicate keys are omitted
+  from events; SDK/Solidity pin the chain/registry issuance domain. Foundation complete
+  with adversarial tests and local gas baseline. Remaining before Done: bind an exact supported Self proof to the
+  registry-scoped duplicate key and holder commitment so a raw/invented nullifier cannot enter calldata, define
+  revocation/rotation, deploy on testnet and complete independent security review.
+  [Spec](specs/v2-issuance-registry.md).
 
 ## 👀 Review (awaiting gates)
 _(none)_

@@ -219,9 +219,11 @@ and v2 proof generation are not enabled yet.
   depth-32 registry. Deterministic public multiproof/snapshot modeling cuts the holder witness floor from 3,140 B at
   depth 96 to 836 B and reduces
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
-  candidate to beat, not a selection; issuer slot allocation, uniqueness separation, mobile proving, alternate
-  hash/proof-system, production ceremony and target-chain gas, durable transport/privacy hardening, and the final ADR
-  remain. The raw
+  candidate to beat, not a selection. A separate pre-deployment issuance registry now constrains authorized
+  monotonic `uint32` slot allocation and globally consumes registry-scoped duplicate keys/credential commitments;
+  the local write is pinned at 129,763 gas. Exact Self proof binding, production duplicate-key derivation, status
+  lifecycle, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas, durable
+  transport/privacy hardening, and the final ADR remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
   2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. Both remain
@@ -242,7 +244,8 @@ and v2 proof generation are not enabled yet.
   mutations reject. This is reproducible research evidence, not a production circuit or setup. Independent circuit
   ratification, production ceremony, mobile and target-chain measurements, corrected-host testnet redeploy and
   audits remain.
-- **Stage 2 ⬜** — one-time Self issuance bridge + duplicate/status registry on testnet.
+- **Stage 2 🚧** — the one-time duplicate/slot registry foundation is implemented with adversarial tests and
+  cross-stack issuance-domain parity; the Self proof bridge, status lifecycle and testnet deployment remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

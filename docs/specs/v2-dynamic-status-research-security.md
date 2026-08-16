@@ -44,8 +44,10 @@ policy or presentation Keccak preimages.
 - The deterministic setup is fully compromised by design; anyone can forge proofs for this research verifier.
 - Poseidon parameters, signature construction, nonce derivation, Baby-Jubjub subgroup handling and field encodings
   have not received an independent cryptographic audit.
-- A malicious or compromised issuer can issue duplicate credentials, allocate the same status slot twice, publish
-  dishonest roots or encode false passport attributes. Stage 2 governance and uniqueness rules must constrain it.
+- The Stage 2 issuance registry prevents reuse of one correctly derived duplicate key or status slot, but a
+  malicious or compromised authorized bridge can still invent a different key for the same passport, submit a raw
+  Self nullifier, publish dishonest roots or encode false attributes. The Self bridge/circuit must bind passport
+  truth and the private derivation to that transition.
 - Packed-status snapshots expose update metadata and require authenticated, available, fork-recoverable distribution.
 - This circuit demonstrates sanctions-clear only. Age, country-set, document-validity and assurance relations need
   separate reviewed circuits or one explicitly selected policy VM; they must not reuse this circuit ID.

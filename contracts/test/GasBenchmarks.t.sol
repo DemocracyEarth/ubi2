@@ -13,6 +13,7 @@ import {V2PackedStatusGroth16Verifier} from "../src/research/V2PackedStatusGroth
 import {V2DynamicStatusGroth16Verifier} from "../src/research/V2DynamicStatusGroth16Verifier.sol";
 import {IZkIdentityGroth16Verifier, ZkIdentityPredicateProver} from "../src/ZkIdentityPredicateProver.sol";
 import {ZkIdentityEncoding} from "../src/ZkIdentityEncoding.sol";
+import {ZkIdentityIssuanceRegistry} from "../src/ZkIdentityIssuanceRegistry.sol";
 import {ZkIdentityVersionRegistry} from "../src/ZkIdentityVersionRegistry.sol";
 import {V2PackedStatusFixture} from "./fixtures/V2PackedStatusFixture.sol";
 import {V2DynamicStatusFixture} from "./fixtures/V2DynamicStatusFixture.sol";
@@ -146,6 +147,31 @@ contract V2VerifierGasBenchmarkTest is Test {
         bool verified = verifier.verifyProof(proof, publicInputs);
         vm.pauseGasMetering();
         assertTrue(verified);
+    }
+}
+
+/// @notice Measures the one-time registry write separately from passport-proof
+///         verification and off-chain credential signing.
+contract V2IssuanceGasBenchmarkTest is Test {
+    bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-gas");
+    bytes32 internal constant DUPLICATE_KEY = keccak256("issuance-duplicate-gas");
+    uint256 internal constant CREDENTIAL_COMMITMENT = 123_456_789;
+
+    ZkIdentityIssuanceRegistry internal registry;
+
+    function setUp() public {
+        vm.warp(230 * 90 days + 1);
+        registry = new ZkIdentityIssuanceRegistry(address(this));
+        registry.registerIssuerKey(ISSUER_KEY_ID);
+        registry.authorizeIssuanceAuthority(ISSUER_KEY_ID, address(this));
+    }
+
+    function test_Gas_V2AllocateCredential() public {
+        vm.pauseGasMetering();
+        uint32 epoch = registry.currentEpoch();
+        vm.resumeGasMetering();
+        registry.allocateCredential(ISSUER_KEY_ID, DUPLICATE_KEY, CREDENTIAL_COMMITMENT, 1, epoch);
+        vm.pauseGasMetering();
     }
 }
 
