@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ubi2 v2 packed-status fleet gate every minute (%i)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=ubi2-status-fleet@%i.service
+
+[Install]
+WantedBy=timers.target

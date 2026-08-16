@@ -1,0 +1,23 @@
+{
+  "schema": "org.proofofhumanity.v2-packed-status-fleet-config/1",
+  "referenceRpcUrl": "https://independent-reference-rpc.example/v1/project-id",
+  "chainId": 84532,
+  "issuanceRegistry": "0x1111111111111111111111111111111111111111",
+  "issuerKeyId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "threshold": 2,
+  "maxHeartbeatAgeSeconds": 120,
+  "maxBlockLag": 3,
+  "requestTimeoutMs": 5000,
+  "operators": [
+    {
+      "operatorId": "reconciler-a",
+      "signerAddress": "0x71979D0dd71F7Fd505D73eC11133b9e21c339216",
+      "baseUrl": "https://status-a.example"
+    },
+    {
+      "operatorId": "reconciler-b",
+      "signerAddress": "0x15eCe74bc7C691A4023d4eFDF57d94A76051e72f",
+      "baseUrl": "https://status-b.example"
+    }
+  ]
+}

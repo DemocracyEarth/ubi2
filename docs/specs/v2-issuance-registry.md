@@ -121,12 +121,16 @@ No production deployment is authorized by this pre-deployment implementation.
   require at least two distinct application-configured reconcilers to agree on identical content before deriving
   publisher calldata. Split roots, duplicate/unknown signers and malformed checkpoints fail closed. The reference
   reconciler currently supports 65-byte ECDSA signatures from EOAs; ERC-1271 validation remains production work.
+- The deployable status-operator package runs that flow as a single-writer daemon with fsync-and-rename checkpoints,
+  immutable signed artifacts, encrypted Foundry-keystore signing, loopback-only read endpoints and a separate fleet
+  gate. The fleet gate uses a third finalized RPC and blocks publication on unavailability, staleness, withholding,
+  wrong signers or split content. Systemd hardening templates are included; no canonical testnet host is claimed yet.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Run independent reconciler instances and durable artifact distribution on one canonical testnet, with isolated
-authority/reconciler/publisher keys and divergence/withholding alerting. Then connect the holder-side circuit-native
-credential commitment and capture one live issuance, slot-race refresh, duplicate rejection, activation,
-revocation, stale-root overlap and target-chain acceptance transcript.
+Run the packaged reconciler instances and fleet gate on three independent canonical-testnet trust paths, connect
+real paging to non-ready fleet reports, and capture restart/withholding/divergence drills. Then connect the holder-
+side circuit-native credential commitment and capture one live issuance, slot-race refresh, duplicate rejection,
+activation, revocation, stale-root overlap and target-chain acceptance transcript.

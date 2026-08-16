@@ -1,0 +1,33 @@
+[Unit]
+Description=ubi2 v2 packed-status operator (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubi2-status
+Group=ubi2-status
+WorkingDirectory=/opt/ubi2
+UMask=0077
+StateDirectory=ubi2-status-operator-%i
+StateDirectoryMode=0700
+ExecStart=/usr/bin/pnpm --filter @ubi2/status-operator start -- run --config /etc/ubi2/status-operator/%i.json
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

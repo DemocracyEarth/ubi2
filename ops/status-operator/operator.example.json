@@ -1,0 +1,20 @@
+{
+  "schema": "org.proofofhumanity.v2-packed-status-operator-config/1",
+  "operatorId": "reconciler-a",
+  "rpcUrl": "https://rpc-provider-a.example/v1/project-id",
+  "chainId": 84532,
+  "issuanceRegistry": "0x1111111111111111111111111111111111111111",
+  "issuerKeyId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "signerAddress": "0x71979D0dd71F7Fd505D73eC11133b9e21c339216",
+  "initialCheckpointPath": "/etc/ubi2/status-operator/initial-checkpoint.json",
+  "stateDirectory": "/var/lib/ubi2-status-operator-reconciler-a",
+  "builderPath": "/opt/ubi2/tools/v2-crypto-bench/target/release/ubi2-v2-crypto-bench",
+  "builderSha256": "0x3333333333333333333333333333333333333333333333333333333333333333",
+  "castPath": "/usr/local/bin/cast",
+  "castSha256": "0x4444444444444444444444444444444444444444444444444444444444444444",
+  "keystorePath": "/etc/ubi2/status-operator/keystores/reconciler-a",
+  "passwordFile": "/etc/ubi2/status-operator/secrets/reconciler-a.password",
+  "pollIntervalSeconds": 30,
+  "listenHost": "127.0.0.1",
+  "listenPort": 8787
+}

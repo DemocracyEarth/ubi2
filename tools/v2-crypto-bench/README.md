@@ -218,6 +218,11 @@ publish signed artifacts durably, monitor divergence/withholding, and keep the o
 particular, the current issuance registry does not emit a credential-revocation event: the fixture's nonzero
 `authorizationReference` makes that boundary explicit but does not authenticate it.
 
+The deployable orchestration layer is in [`packages/status-operator`](../../packages/status-operator) with its
+testnet runbook and hardened systemd templates in [`ops/status-operator`](../../ops/status-operator). It invokes this
+prebuilt binary without a shell, stores checkpoints atomically, serves immutable signed artifacts, and requires a
+third-RPC fleet check before returning publisher arguments. It has not yet been hosted on a canonical testnet.
+
 ## EVM verifier and root-governance prototype
 
 The harness now exports the packed-status verifying key, one deterministic verified proof and its five public

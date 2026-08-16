@@ -1,0 +1,26 @@
+[Unit]
+Description=ubi2 v2 packed-status fleet gate (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubi2-status
+Group=ubi2-status
+WorkingDirectory=/opt/ubi2
+UMask=0077
+ExecStart=/usr/bin/pnpm --filter @ubi2/status-operator start -- fleet --config /etc/ubi2/status-operator/%i.json
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
