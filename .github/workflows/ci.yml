@@ -119,6 +119,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Reject build-time remote fonts
+        run: |
+          if git grep -n 'next/font/google' -- 'apps/**/*.ts' 'apps/**/*.tsx'; then
+            echo '::error::Next builds must not download Google fonts; use system or checked-in local fonts.'
+            exit 1
+          fi
       - run: pnpm -r build
       - run: pnpm -r typecheck
       - name: TypeScript SDK tests

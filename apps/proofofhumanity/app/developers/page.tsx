@@ -93,23 +93,49 @@ const policyHash = zkIdentityPolicyHash(policy);
 // Bind policyHash to chain, verifier, consumer, subject, context,
 // challenge and epoch with zkPresentationBindingHash(...).`;
 
-const V2_ISSUANCE_EXAMPLE = `import { encodeZkSelfIssuance } from "@ubi2/sdk";
+const V2_ISSUANCE_EXAMPLE = `import {
+  deserializeZkSelfIssuanceAuthorization,
+  zkIdentitySelfIssuanceBridgeAbi,
+  zkSelfIssuanceRefreshableErrorName,
+} from "@ubi2/sdk";
 
 // Returned only after the exact Self proof has bound the wallet and the
 // holder prover's canonical BN254 credential commitment.
-const { zkIssuance } = await pollVerificationResult();
+let { zkIssuance } = await pollVerificationResult();
 
-const data = encodeZkSelfIssuance({
-  authorization: zkIssuance.authorization,
-  signature: zkIssuance.signature,
-});
+async function submit() {
+  // Simulation with the SDK ABI decodes the three refreshable custom errors.
+  const { request } = await publicClient.simulateContract({
+    account: connectedWallet, // must equal authorization.subject
+    chain: canonicalIssuanceChain,
+    address: zkIssuance.bridge,
+    abi: zkIdentitySelfIssuanceBridgeAbi,
+    functionName: "issue",
+    args: [
+      deserializeZkSelfIssuanceAuthorization(zkIssuance.authorization),
+      zkIssuance.signature,
+    ],
+  });
+  return walletClient.writeContract(request);
+}
 
-await walletClient.sendTransaction({
-  account: connectedWallet, // must equal authorization.subject
-  chain: canonicalIssuanceChain,
-  to: zkIssuance.bridge,
-  data,
-});`;
+try {
+  await submit();
+} catch (error) {
+  if (!zkSelfIssuanceRefreshableErrorName(error)) throw error;
+
+  const response = await fetch(
+    "/api/self-verify?address=" + connectedWallet,
+    {
+      method: "PATCH",
+      headers: { "x-poh-verification-session": session },
+    },
+  );
+  const refreshed = await response.json();
+  if (!response.ok) throw new Error(refreshed.error);
+  zkIssuance = refreshed.zkIssuance;
+  await submit();
+}`;
 
 const descriptors = ["age>=18", "age>=21", "nationality=ARG", "sanctions-clear"] as const;
 
@@ -187,6 +213,13 @@ export default function DevelopersPage() {
               issuer key, slot, epoch, or changed commitment fails closed.
             </p>
             <pre className="docs-code"><code>{V2_ISSUANCE_EXAMPLE}</code></pre>
+            <p className="muted small">
+              A slot race, epoch rollover, or expired transaction authorization can be refreshed with the same
+              address and 128-bit browser-session capability. Refresh never changes the subject, scoped passport
+              key, credential commitment, issuer, bridge, or verifier configuration, and never extends the original
+              ten-minute passport-verification window. HTTP 410 requires a new passport scan; 409 means the grant is
+              not refreshable or was already consumed; 429 should honor <code>Retry-After</code>.
+            </p>
             <div className="notice warn">
               This is not live user functionality yet. The holder-side production commitment circuit and vault
               integration are still required, and the current bridge trusts a pinned off-chain Self verification

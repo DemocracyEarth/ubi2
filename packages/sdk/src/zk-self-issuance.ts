@@ -90,6 +90,30 @@ export const zkSelfIssuanceTypes = {
 
 export const zkIdentitySelfIssuanceBridgeAbi = [
   {
+    type: "error",
+    name: "AuthorizationExpired",
+    inputs: [
+      { name: "deadline", type: "uint64" },
+      { name: "currentTimestamp", type: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "UnexpectedStatusId",
+    inputs: [
+      { name: "expected", type: "uint32" },
+      { name: "provided", type: "uint32" },
+    ],
+  },
+  {
+    type: "error",
+    name: "UnexpectedIssuanceEpoch",
+    inputs: [
+      { name: "expected", type: "uint32" },
+      { name: "provided", type: "uint32" },
+    ],
+  },
+  {
     type: "function",
     name: "issue",
     stateMutability: "nonpayable",
@@ -116,6 +140,37 @@ export const zkIdentitySelfIssuanceBridgeAbi = [
     ],
   },
 ] as const;
+
+const refreshableIssuanceErrors = new Set([
+  "AuthorizationExpired",
+  "UnexpectedStatusId",
+  "UnexpectedIssuanceEpoch",
+]);
+
+/** True only for bridge/registry failures that a grant-preserving API refresh can repair. */
+export function isZkSelfIssuanceRefreshableErrorName(errorName: unknown): boolean {
+  return typeof errorName === "string" && refreshableIssuanceErrors.has(errorName);
+}
+
+/** Walk a viem-style `cause` chain without accepting error-message substring guesses. */
+export function zkSelfIssuanceRefreshableErrorName(error: unknown): string | null {
+  const seen = new Set<object>();
+  let current = error;
+  for (let depth = 0; depth < 12 && current && typeof current === "object"; depth++) {
+    if (seen.has(current)) return null;
+    seen.add(current);
+    const candidate = current as { errorName?: unknown; data?: unknown; cause?: unknown };
+    if (isZkSelfIssuanceRefreshableErrorName(candidate.errorName)) {
+      return candidate.errorName as string;
+    }
+    if (candidate.data && typeof candidate.data === "object") {
+      const dataErrorName = (candidate.data as { errorName?: unknown }).errorName;
+      if (isZkSelfIssuanceRefreshableErrorName(dataErrorName)) return dataErrorName as string;
+    }
+    current = candidate.cause;
+  }
+  return null;
+}
 
 const verifierConfigDomainHash = keccak256(stringToBytes(ZK_SELF_VERIFIER_CONFIG_SCHEMA));
 const duplicateKeyDomainHash = keccak256(stringToBytes(ZK_SELF_DUPLICATE_KEY_SCHEMA));

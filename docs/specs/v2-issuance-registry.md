@@ -96,7 +96,7 @@ No production deployment is authorized by this pre-deployment implementation.
 
 ## Next implementation slice
 
-Run the bridge on one canonical testnet with an isolated authority, connect the holder-side circuit-native
-credential commitment, and capture one live issuance plus duplicate rejection. Then implement authorization
-refresh after slot/epoch races and the packed-status activation/publication transition without storing private
-credential material.
+Run the bridge and its grant-preserving authorization refresh on one canonical testnet with an isolated
+authority, connect the holder-side circuit-native credential commitment, and capture one live issuance,
+slot-race refresh and duplicate rejection. Then implement the packed-status activation/publication transition
+without storing private credential material.

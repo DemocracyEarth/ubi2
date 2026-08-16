@@ -223,7 +223,9 @@ and v2 proof generation are not enabled yet.
   monotonic `uint32` slot allocation and globally consumes registry-scoped duplicate keys/credential commitments;
   the local write is pinned at 129,763 gas. An immutable transitional Self bridge now binds a pinned off-chain
   proof decision to the subject, registry-scoped key, proof-bound holder commitment, issuer key, slot/epoch and
-  verifier configuration through a short-lived EIP-712 authorization; bridge plus allocation costs 140,014 local
+  verifier configuration through a short-lived EIP-712 authorization. A capability-authenticated refresh now
+  recovers slot/epoch/expiry races without retaining the raw Self nullifier, changing proof-derived fields, or
+  extending the original ten-minute verification window; bridge plus allocation costs 140,014 local
   gas. On-chain/native passport proof verification, the production circuit-native commitment, status
   lifecycle, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas, durable
   transport/privacy hardening, and the final ADR remain. The raw
@@ -247,8 +249,9 @@ and v2 proof generation are not enabled yet.
   mutations reject. This is reproducible research evidence, not a production circuit or setup. Independent circuit
   ratification, production ceremony, mobile and target-chain measurements, corrected-host testnet redeploy and
   audits remain.
-- **Stage 2 🚧** — the one-time duplicate/slot registry foundation is implemented with adversarial tests and
-  cross-stack issuance-domain parity; the Self proof bridge, status lifecycle and testnet deployment remain.
+- **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, and bounded
+  race-recovery lifecycle are implemented with adversarial tests and cross-stack parity; packed-status lifecycle,
+  circuit-native holder commitment, and canonical testnet evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

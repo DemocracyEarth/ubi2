@@ -19,7 +19,8 @@ subject, disclosure policy, and a random browser capability into the proof. The 
    issuance domain;
 3. reads the registry issuer slot, epoch, bridge authorization/codehash and all immutable bridge
    trust inputs at one block;
-4. signs a ten-minute EIP-712 authorization binding the subject, duplicate key, credential
+4. retains a private ten-minute refresh grant containing only those registry-scoped transition
+   fields—never the raw Self nullifier or proof—and signs an EIP-712 authorization binding the subject, duplicate key, credential
    commitment, issuer key, expected slot, expected epoch and exact Self verifier configuration; and
 5. returns only the serialized authorization and signature. The raw Self nullifier is neither
    stored nor returned in the v2 path.
@@ -97,9 +98,37 @@ await walletClient.sendTransaction({
 });
 ```
 
-The connected account must equal the proof-bound `subject`. An `UnexpectedStatusId` or
-`UnexpectedIssuanceEpoch` means the short-lived authorization lost a race and must be refreshed by
-the verified issuance service; it is not permission to change the signed values locally.
+The connected account must equal the proof-bound `subject`. `AuthorizationExpired`,
+`UnexpectedStatusId`, and `UnexpectedIssuanceEpoch` are the only SDK-classified refreshable errors.
+They mean the short-lived transaction authorization expired or lost a slot/epoch race; they are not
+permission to change signed values locally. Simulate `issue` with the exported
+`zkIdentitySelfIssuanceBridgeAbi` before calling `writeContract`; this lets viem and
+`zkSelfIssuanceRefreshableErrorName` decode the bridge and bubbled registry custom errors without
+unsafe error-message matching. Refresh with the original address and secret browser
+session capability, with no request body:
+
+```ts
+const response = await fetch(`/api/self-verify?address=${account.address}`, {
+  method: "PATCH",
+  headers: { "x-poh-verification-session": session },
+});
+const body = await response.json();
+if (!response.ok) throw new Error(body.error);
+const refreshedArtifact = body.zkIssuance;
+```
+
+The service rechecks the RPC chain, registry domain, unused duplicate key/commitment, issuer slot,
+epoch, bridge authorization/codehash and every immutable bridge input at one pinned block. It then
+signs only a fresh slot, epoch and bounded deadline. The grant fixes the original subject,
+registry-scoped duplicate key, commitment, chain, registry, bridge, issuer key and Self configuration.
+It is stored only in the process-local handoff, explicitly omitted from GET responses, and deleted
+with the verification record. Updating the record preserves its original expiry, so repeated PATCH
+requests cannot extend the ten-minute proof-verification window or recover an already consumed grant.
+
+Refresh responses are `410` after the verification grant expires (scan again), `409` for a non-v2 or
+already consumed grant, `429` after bounded source/capability attempts, and `503` when live trust
+checks cannot complete. The 128-bit session is a bearer capability: keep it in the browser session,
+send it only over TLS, and never log it.
 
 The server path is disabled unless all six `ZK_SELF_ISSUANCE_*` variables documented in
 [`apps/proofofhumanity/DEPLOY.md`](../../apps/proofofhumanity/DEPLOY.md) are present. Partial or
@@ -142,7 +171,11 @@ prover are connected. No random or EVM-keccak placeholder is promoted as a real 
 - Foundry covers valid issuance, subject binding, expiry, signer/field/domain tampering, immutable
   trust inputs, duplicate rejection, slot-race rollback and event privacy.
 - SDK tests pin the verifier configuration id, scoped duplicate key, EIP-712 digest, signer
-  recovery, JSON serialization and exact calldata selector.
+  recovery, JSON serialization, exact calldata selector, and strict refreshable-error classification.
 - The product test pins the proof-bound request grammar and rejects zero/non-canonical commitments.
+- The handoff-store test proves that refreshing replaces only the value, retains the original hard
+  expiry, cannot revive an expired grant and remains bounded. The live Anvil integration consumes a
+  competing slot, observes the stale authorization revert without consuming its key/commitment, and
+  issues after changing only the expected slot, epoch and deadline.
 - The local Cancun bridge-plus-registry write is pinned at **140,014 gas**. Self verification is
   off-chain and excluded; this is not target-chain evidence.
