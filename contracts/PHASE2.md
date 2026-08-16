@@ -148,3 +148,36 @@ Once all deployments exist, the repeatable aggregate live gate is:
 After each chain, confirm all three contracts show verified source in the explorer and record contract
 addresses plus deployment/mint transaction hashes in `DEPLOYMENTS.md`. Do not proceed to any mainnet
 until all five transcripts are green and the human separately approves that mainnet chain.
+
+## 6. Separate v2 Self issuance rehearsal
+
+The portable v2 credential uses one canonical issuance chain, not one registry on every presentation
+chain. Its pre-deployment rehearsal is deliberately separate from `phase2.sh` and is not included in
+`phase2-all.sh`. Select one supported testnet first, create a third isolated encrypted authority account,
+and keep only its public address in `.env.phase2`:
+
+```shell
+cast wallet import poh-v2-self-authority --interactive
+cast wallet address --account poh-v2-self-authority
+```
+
+Compute `ZK_SELF_CONFIG_ID` with the SDK's `zkSelfVerifierConfigId(...)` from the exact public Self
+scope, callback endpoint, `staging`/`production` environment, e-passport attestation id `1`, and
+`@selfxyz/core@1.0.8`. Record the bytes32 issuer namespace in `ZK_ISSUER_KEY_ID`, the isolated public
+address in `ZK_SELF_VERIFICATION_AUTHORITY`, and the intended registry owner in `ZK_ISSUANCE_OWNER`.
+Then simulate before the explicitly reviewed broadcast:
+
+```shell
+forge script script/DeployZkSelfIssuance.s.sol:DeployZkSelfIssuance \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" --account poh-testnet-deployer
+
+forge script script/DeployZkSelfIssuance.s.sol:DeployZkSelfIssuance \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" --account poh-testnet-deployer --broadcast --verify
+```
+
+The script refuses every mainnet chain id. It deploys the registry and immutable bridge, registers the
+issuer key, pins the bridge codehash, and initiates two-step ownership transfer. A different final owner
+must call `acceptOwnership` separately. Before enabling the web callback, record and verify both
+contracts, accept ownership, configure all six server-only `ZK_SELF_ISSUANCE_*` variables, and capture
+one live issuance plus one duplicate-passport rejection. The authority needs no gas and its private key
+must never enter this deployment environment.

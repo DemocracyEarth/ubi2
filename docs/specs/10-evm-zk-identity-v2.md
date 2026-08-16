@@ -390,16 +390,21 @@ limbs, zero identifiers, non-canonical fields, invalid subjects/results, and ove
 - Define base-credential and short-lived dynamic-status lifecycles, rotation and revocation.
 - Exit: second issuance for the same passport is rejected; issuer learns only the documented transition fields.
 
-**Issuance-registry foundation implemented (2026-08-15):**
+**Issuance-registry and transitional Self bridge implemented (2026-08-15):**
 [`ZkIdentityIssuanceRegistry.sol`](../../contracts/src/ZkIdentityIssuanceRegistry.sol) separates global one-time
 issuance from circuit-specific presentation governance. It pins active EOA/contract authorities per issuer key,
 codehash-checks contract authorities, allocates monotonic `uint32` packed-status slots, consumes registry-scoped
 duplicate keys and canonical credential commitments globally, and fails stale slot/epoch races without consuming
 state. The duplicate key is omitted from events, and its chain/registry domain is pinned across SDK/Solidity. The
-129,763-gas local allocation baseline excludes passport verification. This is a pre-deployment state-machine
-foundation, not the Self bridge: an authorized caller can still lie about passport truth or key derivation until
-the next slice verifies and binds exact Self outputs. See
-[`v2-issuance-registry.md`](v2-issuance-registry.md).
+129,763-gas local allocation baseline excludes passport verification. The immutable
+[`ZkIdentitySelfIssuanceBridge`](../../contracts/src/ZkIdentitySelfIssuanceBridge.sol) now accepts a short-lived
+EIP-712 authorization only from a pinned off-chain Self verification authority and binds the proof subject,
+registry-scoped duplicate key, proof-bound holder commitment, issuer key, exact slot/epoch and byte-exact verifier
+configuration. The app rechecks those trust inputs at one block and does not return or persist the raw Self
+nullifier in its v2 path. Bridge plus registry allocation is pinned at 140,014 local gas. This remains a
+pre-deployment transitional trust root, not an on-chain Self verifier or production credential circuit. See
+[`v2-issuance-registry.md`](v2-issuance-registry.md) and
+[`v2-self-issuance-bridge.md`](v2-self-issuance-bridge.md).
 
 ### Stage 3 — local prover and passkey product
 

@@ -10,14 +10,13 @@
  *   1. runs `@selfxyz/core`'s `SelfBackendVerifier.verify(...)` — Groth16 pairing + Self identity
  *      registry membership (against the Celo hub) + scope/endpoint binding + OFAC config. This is
  *      what proves a UNIQUE HUMAN and yields the nullifier;
- *   2. on `isValidDetails.isValid`, builds a MINIMAL `HumanityVoucher` = { to, nullifier, epoch }
- *      bound to the proof's `userIdentifier` address (`lib/voucher.ts::buildVoucher`). NO attributes
- *      (nationality / gender / age) are mapped in — the credential carries no personal data;
- *   3. signs ONE voucher per configured chain with the issuer key (each chain has its own EIP-712
- *      domain), and stores the set keyed by the lowercased recipient address for the client to poll.
+ *   2. for the existing v1 request, builds and signs the minimal multi-chain humanity voucher plus
+ *      the holder's private issuer-attested predicate credential;
+ *   3. for an explicit v2 request carrying a proof-bound holder commitment, derives a registry-scoped
+ *      duplicate key in memory and returns only a short-lived authorization for the immutable bridge.
  *
- * TRUST BOUNDARY: this route DECIDES validity (it is the issuer). Its signature is what
- * `mintWithVoucher` recovers and requires `== issuer`. Guard `ISSUER_PRIVATE_KEY` accordingly.
+ * TRUST BOUNDARY: this route DECIDES validity. V1 trusts `ISSUER_PRIVATE_KEY`; transitional v2
+ * trusts the separate immutable bridge authority key. Guard and isolate both roles accordingly.
  *
  * STORAGE BOUNDARY: the callback handoff is process-local, bounded, and expires after ten minutes.
  * The first production release must use one sticky Node worker. Horizontal scaling requires a
@@ -36,6 +35,7 @@ import {
   type VerificationConfig,
 } from "@selfxyz/core";
 import type { Address } from "viem";
+import type { ZkSelfIssuanceArtifact } from "@ubi2/sdk";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   buildVoucher,
@@ -67,6 +67,7 @@ import {
   rateLimit,
   setVerificationRecord,
 } from "../../lib/server/verification-store";
+import { buildZkSelfIssuanceArtifact } from "../../lib/server/zk-self-issuance";
 
 // Node.js runtime: the process-local handoff must persist across requests, and @selfxyz/core pulls in
 // Node-only crypto (snarkjs, node-forge) that the edge runtime cannot run.
@@ -98,6 +99,11 @@ interface RelayRecord {
    */
   credential?: SerializedHumanCredential;
   credentialSig?: `0x${string}`;
+  /**
+   * v2-only path: proof-bound, short-lived authorization for the verified
+   * subject to submit to the configured immutable issuance bridge.
+   */
+  zkIssuance?: ZkSelfIssuanceArtifact;
   issuer?: Address;
   error?: string;
   receivedAt: number;
@@ -240,6 +246,45 @@ export async function POST(req: NextRequest) {
       { ok: false, error: "Proof did not carry a valid hex userIdentifier (the recipient address)." },
       { status: 400 },
     );
+  }
+
+  // The v2 request is intentionally disjoint from legacy voucher issuance. It
+  // returns no raw Self nullifier, public NFT voucher or attribute credential;
+  // only the registry-scoped duplicate key inside a bridge authorization.
+  if (disclosureRequest.credentialCommitment) {
+    if (body.attestationId !== 1) {
+      return NextResponse.json(
+        { ok: false, error: "V2 private-credential issuance currently requires a Self e-passport proof." },
+        { status: 400 },
+      );
+    }
+    try {
+      const zkIssuance = await buildZkSelfIssuanceArtifact({
+        subject: to,
+        rawSelfNullifier: BigInt(result.discloseOutput.nullifier),
+        credentialCommitment: BigInt(disclosureRequest.credentialCommitment),
+      });
+      const record: RelayRecord = {
+        status: "ready",
+        zkIssuance,
+        receivedAt: Date.now(),
+      };
+      setVerificationRecord(to, disclosureRequest.session, record);
+      return NextResponse.json({
+        ok: true,
+        to,
+        zkIssuanceChainId: zkIssuance.chainId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown v2 issuance error.";
+      const record: RelayRecord = {
+        status: "error",
+        error: `Private-credential issuance is unavailable: ${message}`,
+        receivedAt: Date.now(),
+      };
+      setVerificationRecord(to, disclosureRequest.session, record);
+      return NextResponse.json({ ok: false, error: record.error }, { status: 503 });
+    }
   }
 
   const epoch = epochNow();

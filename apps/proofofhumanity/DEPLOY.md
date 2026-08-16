@@ -7,6 +7,13 @@ Node host (a container or `next start`). A pure static
 host (S3/CloudFront-only, IPFS/Pinata) can **not** serve the issuer — that only becomes an
 option after a holder-side ZK prover removes the v1 server signer.
 
+The optional v2 Self issuance path uses a separate `ZK_SELF_ISSUANCE_AUTHORITY_PRIVATE_KEY`.
+It authenticates a short-lived, proof-bound authorization for an immutable bridge; it is not the
+deployer, v1 voucher issuer, private-credential issuer key, or registry owner. The raw Self
+nullifier is transformed in memory into a registry-scoped duplicate key and is never returned in
+the v2 response, logged, stored, or sent on-chain. This remains a transitional off-chain Self trust
+boundary until the exact production passport proof can be verified on-chain.
+
 The current Self callback handoff is an intentionally bounded, 10-minute, process-local store. A
 first production release therefore runs **one sticky Node replica**. Do not deploy this version to
 autoscaling/serverless multi-instance infrastructure: a phone callback and the browser poll may hit
@@ -36,6 +43,9 @@ unavailable. See the public
       roles have been recorded and checked independently.
 - [ ] `NEXT_PUBLIC_SELF_ENDPOINT` = the public HTTPS origin (Self rejects `localhost`).
 - [ ] `NEXT_PUBLIC_SELF_ENV=production` once testing on real passports.
+- [ ] If v2 issuance is enabled, all six `ZK_SELF_ISSUANCE_*` values are set; the RPC chain,
+      registry domain, active issuer key, bridge codehash/configuration, and isolated authority key
+      are checked live by the callback before every signature.
 - [ ] Paired `ProofOfHumanity` + `PredicateVerifier` addresses set for each enabled chain.
 - [ ] One sticky Node replica, TLS, trusted proxy headers, restart monitoring, log redaction, and
       secrets injection are configured. Horizontal scaling is blocked until the shared-store design is approved.
@@ -50,6 +60,12 @@ Client vars (`NEXT_PUBLIC_*`) are inlined into the browser bundle; server vars a
 | Variable | Scope | Required | Default (dev) | Notes |
 |---|---|---|---|---|
 | `ISSUER_PRIVATE_KEY` | server | **yes** (prod) | Anvil acct #1 (not secret) | Voucher/attestation signer; address must equal both contract issuers. Inject from a secret manager; never paste into chat or commit it. |
+| `ZK_SELF_ISSUANCE_CHAIN_ID` | server | v2 only | disabled | One canonical issuance chain. All six v2 variables must be present together. |
+| `ZK_SELF_ISSUANCE_RPC_URL` | server | v2 only | disabled | Server RPC used to read one pinned block before authorizing a slot/epoch. |
+| `ZK_SELF_ISSUANCE_REGISTRY` | server | v2 only | disabled | `ZkIdentityIssuanceRegistry` address. |
+| `ZK_SELF_ISSUANCE_BRIDGE` | server | v2 only | disabled | Immutable `ZkIdentitySelfIssuanceBridge` authorized by the registry. |
+| `ZK_SELF_ISSUER_KEY_ID` | server | v2 only | disabled | Active bytes32 issuer-key namespace; not a private key. |
+| `ZK_SELF_ISSUANCE_AUTHORITY_PRIVATE_KEY` | server secret | v2 only | disabled | Separate EIP-712 Self-verification authority. Never reuse the deployer or v1 issuer. |
 | `NEXT_PUBLIC_SITE_URL` | client | recommended | `https://proofofhumanity.org` | Canonical origin for OG/Twitter absolute image URLs. |
 | `NEXT_PUBLIC_SELF_ENDPOINT` | client | **yes** (real proofs) | `""` (QR disabled) | Public HTTPS URL of `/api/self-verify` as the Self app sees it. |
 | `NEXT_PUBLIC_SELF_ENV` | client | no | `staging` | `staging` (mock passports) or `production` (real). Flips frontend `endpointType` **and** backend `mockPassport` in lockstep. |
@@ -95,6 +111,10 @@ reviewed shared encrypted store. That is an application release gate, not a cont
 
 - The issuer key is the mint's trust anchor for v1 — treat it as a signing HSM/secret, rotate
   via `setIssuer(...)` on-chain if exposed. Never ship it with a `NEXT_PUBLIC_` prefix.
+- The v2 Self authority is a temporary issuance trust root. Its immutable bridge cannot rotate in
+  place: deploy and governance-authorize a new bridge, retire the old authority, then update the
+  server configuration. A production HSM adapter and independently reviewed proof service remain
+  release gates; the current server variable is suitable for isolated testnet rehearsal.
 - The routes use bounded, process-local rate limits and a 10-minute callback handoff. They limit
   abuse on a single replica but are not distributed controls. Put edge rate limits at the trusted
   proxy and require a shared, reviewed limiter before horizontal scaling.

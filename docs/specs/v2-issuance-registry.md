@@ -1,6 +1,6 @@
 # V2 one-time issuance and packed-status slot registry
 
-- **Status:** pre-deployment Stage 2 foundation; Self bridge and production cryptography not implemented
+- **Status:** pre-deployment Stage 2 foundation; transitional Self bridge implemented, production cryptography not implemented
 - **Contract:** [`ZkIdentityIssuanceRegistry.sol`](../../contracts/src/ZkIdentityIssuanceRegistry.sol)
 - **Parent:** [`10-evm-zk-identity-v2.md`](10-evm-zk-identity-v2.md)
 
@@ -11,9 +11,12 @@ issuance key or credential commitment from being registered twice. This registry
 `ZkIdentityVersionRegistry`: issuance uniqueness is global to one canonical issuance registry, while presentation
 circuit/root acceptance remains additive and circuit-specific.
 
-This slice does **not** verify an e-passport, Self proof, issuer signature or credential attributes. An authorized
-issuance authority supplies the transition after performing that verification. The next bridge slice must make the
-passport proof, holder commitment and duplicate-key derivation one atomic verified relation.
+This registry does **not** verify an e-passport, Self proof, issuer signature or credential attributes. The
+transitional [`ZkIdentitySelfIssuanceBridge`](../../contracts/src/ZkIdentitySelfIssuanceBridge.sol) now authenticates
+an exact off-chain Self verifier decision and binds its subject, holder commitment, scoped duplicate key, issuer
+key, slot, epoch and immutable verifier configuration. A production circuit must eventually make those relations
+cryptographically verifiable without trusting that service. See
+[`v2-self-issuance-bridge.md`](v2-self-issuance-bridge.md).
 
 ## Public issuance domain
 
@@ -93,6 +96,7 @@ No production deployment is authorized by this pre-deployment implementation.
 
 ## Next implementation slice
 
-Build the Self testnet issuance bridge against this interface. It must verify the exact supported Self proof,
-derive/bind the registry-scoped duplicate key, bind the holder-generated commitment and assigned slot/epoch, return
-only the documented transition fields, and prove that a second proof for the same passport fails atomically.
+Run the bridge on one canonical testnet with an isolated authority, connect the holder-side circuit-native
+credential commitment, and capture one live issuance plus duplicate rejection. Then implement authorization
+refresh after slot/epoch races and the packed-status activation/publication transition without storing private
+credential material.

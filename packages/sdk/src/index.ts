@@ -21,6 +21,7 @@ export * from "./credential-vault";
 export * from "./zk-identity-policy";
 export * from "./zk-identity-status-manifest";
 export * from "./zk-identity-encoding";
+export * from "./zk-self-issuance";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;

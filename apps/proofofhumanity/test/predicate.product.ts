@@ -4,6 +4,7 @@ import {
   decodeDisclosureRequest,
   encodeDisclosureProfile,
   encodeDisclosureRequest,
+  encodeV2IssuanceRequest,
   verificationConfigFor,
   type DisclosureProfile,
 } from "../app/lib/disclosure-profile";
@@ -42,6 +43,30 @@ for (const profile of [
 
 assert.equal(decodeDisclosureProfile("poh-predicates-v1:19:1"), null);
 assert.equal(decodeDisclosureRequest("poh-predicates-v1:18:1:guessable"), null);
+
+const commitment = "0x00000000000000000000000000000000000000000000000000000000075bcd15" as const;
+const v2Profile = { age: 21, nationality: true } satisfies DisclosureProfile;
+const issuanceRequest = encodeV2IssuanceRequest(
+  v2Profile,
+  "0123456789abcdef0123456789abcdef",
+  commitment,
+);
+assert.deepEqual(decodeDisclosureRequest(issuanceRequest), {
+  profile: v2Profile,
+  session: "0123456789abcdef0123456789abcdef",
+  credentialCommitment: commitment,
+});
+assert.deepEqual(decodeDisclosureRequest(Buffer.from(issuanceRequest).toString("hex")), {
+  profile: v2Profile,
+  session: "0123456789abcdef0123456789abcdef",
+  credentialCommitment: commitment,
+});
+assert.equal(
+  decodeDisclosureRequest(
+    "poh-v2-issuance:18:1:0123456789abcdef0123456789abcdef:0000000000000000000000000000000000000000000000000000000000000000",
+  ),
+  null,
+);
 assert.deepEqual(verificationConfigFor({ age: 21, nationality: true }), { minimumAge: 21, ofac: true });
 assert.deepEqual(verificationConfigFor({ age: null, nationality: false }), { ofac: true });
 

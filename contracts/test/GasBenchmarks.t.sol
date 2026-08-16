@@ -14,6 +14,7 @@ import {V2DynamicStatusGroth16Verifier} from "../src/research/V2DynamicStatusGro
 import {IZkIdentityGroth16Verifier, ZkIdentityPredicateProver} from "../src/ZkIdentityPredicateProver.sol";
 import {ZkIdentityEncoding} from "../src/ZkIdentityEncoding.sol";
 import {ZkIdentityIssuanceRegistry} from "../src/ZkIdentityIssuanceRegistry.sol";
+import {ZkIdentitySelfIssuanceBridge} from "../src/ZkIdentitySelfIssuanceBridge.sol";
 import {ZkIdentityVersionRegistry} from "../src/ZkIdentityVersionRegistry.sol";
 import {V2PackedStatusFixture} from "./fixtures/V2PackedStatusFixture.sol";
 import {V2DynamicStatusFixture} from "./fixtures/V2DynamicStatusFixture.sol";
@@ -171,6 +172,52 @@ contract V2IssuanceGasBenchmarkTest is Test {
         uint32 epoch = registry.currentEpoch();
         vm.resumeGasMetering();
         registry.allocateCredential(ISSUER_KEY_ID, DUPLICATE_KEY, CREDENTIAL_COMMITMENT, 1, epoch);
+        vm.pauseGasMetering();
+    }
+}
+
+/// @notice Measures EIP-712 authority recovery plus the one-time registry write.
+///         Self proof verification and duplicate-key derivation remain off-chain.
+contract V2SelfIssuanceGasBenchmarkTest is Test {
+    bytes32 internal constant ISSUER_KEY_ID = keccak256("issuer-key-self-gas");
+    bytes32 internal constant SELF_CONFIG_ID = keccak256("self-config-gas");
+    bytes32 internal constant DUPLICATE_KEY = keccak256("self-duplicate-gas");
+    uint256 internal constant CREDENTIAL_COMMITMENT = 123_456_789;
+    uint256 internal constant AUTHORITY_KEY = 0xA11CE;
+    uint256 internal constant SUBJECT_KEY = 0xCAFE;
+
+    ZkIdentityIssuanceRegistry internal registry;
+    ZkIdentitySelfIssuanceBridge internal bridge;
+    address internal subject;
+
+    function setUp() public {
+        vm.chainId(84_532);
+        vm.warp(230 * 90 days + 1);
+        subject = vm.addr(SUBJECT_KEY);
+        registry = new ZkIdentityIssuanceRegistry(address(this));
+        registry.registerIssuerKey(ISSUER_KEY_ID);
+        bridge = new ZkIdentitySelfIssuanceBridge(registry, ISSUER_KEY_ID, vm.addr(AUTHORITY_KEY), SELF_CONFIG_ID);
+        registry.authorizeIssuanceAuthority(ISSUER_KEY_ID, address(bridge));
+    }
+
+    function test_Gas_V2SelfIssueCredential() public {
+        vm.pauseGasMetering();
+        ZkIdentitySelfIssuanceBridge.SelfIssuanceAuthorization memory authorization =
+            ZkIdentitySelfIssuanceBridge.SelfIssuanceAuthorization({
+                subject: subject,
+                duplicateKey: DUPLICATE_KEY,
+                credentialCommitment: CREDENTIAL_COMMITMENT,
+                issuerKeyId: ISSUER_KEY_ID,
+                expectedStatusId: 1,
+                expectedEpoch: registry.currentEpoch(),
+                deadline: uint64(block.timestamp + 10 minutes),
+                selfConfigId: SELF_CONFIG_ID
+            });
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORITY_KEY, bridge.hashAuthorization(authorization));
+        bytes memory signature = abi.encodePacked(r, s, v);
+        vm.prank(subject);
+        vm.resumeGasMetering();
+        bridge.issue(authorization, signature);
         vm.pauseGasMetering();
     }
 }
