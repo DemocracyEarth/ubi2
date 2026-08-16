@@ -92,6 +92,8 @@ jobs:
         run: |
           cargo run --release --locked -- --build-status-snapshot fixtures/packed-status-source.json > "$RUNNER_TEMP/packed-status-snapshot.json"
           diff -u fixtures/packed-status-snapshot.json "$RUNNER_TEMP/packed-status-snapshot.json"
+          cargo run --release --locked -- --advance-status-snapshot fixtures/packed-status-snapshot.json fixtures/packed-status-continuation.json > "$RUNNER_TEMP/packed-status-advanced-snapshot.json"
+          diff -u fixtures/packed-status-advanced-snapshot.json "$RUNNER_TEMP/packed-status-advanced-snapshot.json"
 
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)

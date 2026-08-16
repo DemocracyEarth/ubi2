@@ -48,10 +48,11 @@ pub use status_registry::{
     STATUS_REGISTRY_DELTA_SCHEMA,
 };
 pub use status_snapshot::{
-    build_packed_status_snapshot_from_json, FinalizedStatusBlock, PackedStatusChunk,
-    PackedStatusSnapshot, PackedStatusSnapshotBuilder, PackedStatusSnapshotChunk,
-    PackedStatusSnapshotError, PackedStatusSourceEvent, PackedStatusWitness, SourceBlockRef,
-    PACKED_STATUS_SNAPSHOT_SCHEMA, PACKED_STATUS_SOURCE_SCHEMA, PACKED_STATUS_WITNESS_SCHEMA,
+    advance_packed_status_snapshot_from_json, build_packed_status_snapshot_from_json,
+    FinalizedStatusBlock, PackedStatusChunk, PackedStatusSnapshot, PackedStatusSnapshotBuilder,
+    PackedStatusSnapshotChunk, PackedStatusSnapshotError, PackedStatusSourceEvent,
+    PackedStatusWitness, SourceBlockRef, PACKED_STATUS_SNAPSHOT_SCHEMA,
+    PACKED_STATUS_SOURCE_SCHEMA, PACKED_STATUS_WITNESS_SCHEMA,
 };
 
 /// Native field used by the Stage-1 status-registry prototype.

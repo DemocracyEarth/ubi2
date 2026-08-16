@@ -114,15 +114,19 @@ No production deployment is authorized by this pre-deployment implementation.
   starts every unallocated packed bit at `1` and clears only its allocated slot.
 - The deterministic reference builder consumes strict finalized block transcripts, enforces chain/parent/log
   continuity and dense allocation order, rolls failed blocks back atomically, rewinds known forks, emits sorted
-  sparse snapshots, and produces witnesses accepted by the exact depth-24 research circuit. It intentionally has
-  no RPC, finality oracle, persistence or signer.
+  sparse snapshots, restores durable checkpoints only after recomputing their exact root, and produces witnesses
+  accepted by the depth-24 research circuit.
+- The SDK finalized reader requires the RPC `finalized` tag, bounded 512-block batches and byte-exact branch/log
+  continuity. Canonical snapshot JSON has a pinned Keccak content hash; chain/registry-bound EIP-712 attestations
+  require at least two distinct application-configured reconcilers to agree on identical content before deriving
+  publisher calldata. Split roots, duplicate/unknown signers and malformed checkpoints fail closed. The reference
+  reconciler currently supports 65-byte ECDSA signatures from EOAs; ERC-1271 validation remains production work.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Add finalized EVM log ingestion, durable checkpoints and an authenticated, content-addressed distribution envelope
-around the deterministic builder, including independent root reconciliation. Then run the bridge, grant-preserving
-refresh and publisher on one canonical testnet with isolated authority/publisher keys. Connect the holder-side
-circuit-native credential commitment and capture one live issuance, slot-race refresh, duplicate rejection,
-activation, revocation, stale-root overlap and target-chain acceptance transcript.
+Run independent reconciler instances and durable artifact distribution on one canonical testnet, with isolated
+authority/reconciler/publisher keys and divergence/withholding alerting. Then connect the holder-side circuit-native
+credential commitment and capture one live issuance, slot-race refresh, duplicate rejection, activation,
+revocation, stale-root overlap and target-chain acceptance transcript.

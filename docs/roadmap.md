@@ -251,9 +251,10 @@ and v2 proof generation are not enabled yet.
   audits remain.
 - **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, bounded race recovery,
   allocation-bound packed-status publication/revocation transition, and deterministic fork-recoverable snapshot
-  computation core are implemented with adversarial tests and circuit parity. Finalized RPC ingestion,
-  authenticated durable distribution/root reconciliation, circuit-native holder commitment, and canonical testnet
-  evidence remain.
+  computation core are implemented with adversarial tests and circuit parity. Strict durable restore, bounded
+  finalized-RPC ingestion, content-addressed EIP-712 envelopes and two-party root reconciliation are now implemented
+  as reference tooling. Independent hosted operators/availability/alerting, circuit-native holder commitment, and
+  canonical testnet evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

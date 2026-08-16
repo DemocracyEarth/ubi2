@@ -169,6 +169,15 @@ scope, callback endpoint, `staging`/`production` environment, e-passport attesta
 address in `ZK_SELF_VERIFICATION_AUTHORITY`, and the intended registry owner in `ZK_ISSUANCE_OWNER`.
 Record the separate publisher address in `ZK_STATUS_PUBLISHER`; it will later authenticate allocation-bound
 packed-status checkpoints and must not share the verification authority's production key path.
+Before any checkpoint transaction, two independently configured operators must ingest only their independently
+configured RPC's `finalized` range with `collectZkIdentityFinalizedStatusTranscript`, advance and durably store the
+deterministic checkpoint with `--advance-status-snapshot`, then sign its exact SDK content hash using
+`zkIdentityPackedStatusAttestationTypedData`. The publication process must call
+`reconcileZkIdentityPackedStatusSnapshots` with trusted reconciler addresses and use only the returned
+`reconciledZkIdentityStatusPublication` arguments. The on-chain publisher key is separate from both reconcilers.
+The current SDK recovers 65-byte ECDSA signatures from EOA reconcilers; ERC-1271 contract-wallet validation is a
+separate production hardening item.
+This reference flow is not a production availability/alerting service and does not authorize mainnet deployment.
 Then simulate before the explicitly reviewed broadcast:
 
 ```shell
