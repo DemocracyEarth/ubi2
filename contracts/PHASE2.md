@@ -177,7 +177,9 @@ deterministic checkpoint with `--advance-status-snapshot`, then sign its exact S
 `reconciledZkIdentityStatusPublication` arguments. The on-chain publisher key is separate from both reconcilers.
 The current SDK recovers 65-byte ECDSA signatures from EOA reconcilers; ERC-1271 contract-wallet validation is a
 separate production hardening item.
-This reference flow is not a production availability/alerting service and does not authorize mainnet deployment.
+The deployable reference daemon and fleet gate live in `packages/status-operator` and `ops/status-operator`. They
+must still be installed on independent hosts, connected to real paging and exercised through restart, withholding
+and divergence drills. Committed templates are not evidence that this happened and do not authorize mainnet.
 Then simulate before the explicitly reviewed broadcast:
 
 ```shell
