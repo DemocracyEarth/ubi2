@@ -11,8 +11,8 @@ public inputs in the v1 product layout. It enforces:
 
 - a Baby-Jubjub issuer signature over the complete 16-field circuit credential encoding;
 - lossless binding of the signed issuer key identifier and credential epoch to public signals 3–4 and 16;
-- a canonical signed `uint32` status slot whose selected revocation bit is zero under the depth-24 packed Poseidon
-  root exposed at signals 5–6;
+- a canonical signed `uint32` status slot whose selected packed bit is zero (allocated and active) under the
+  depth-24 Poseidon root exposed at signals 5–6; root construction uses `1` for every unallocated or revoked slot;
 - the fixed research circuit identifier, canonical nonzero two-limb identifiers, a nonzero `uint160` subject,
   `result == true`, a `uint32` credential epoch and a nonzero `uint32` snapshot publication time;
 - a Poseidon scoped nullifier derived from the signed holder secret and public scope hash at signals 11–12; and
@@ -29,7 +29,7 @@ observations, not target-chain or mainnet budgets.
 | Boundary | Enforced here | Deliberately outside the circuit |
 |---|---|---|
 | Credential | issuer signature, signed issuer ID/status slot/epoch | passport ingestion, duplicate issuance, issuer key ceremony |
-| Status | selected packed bit is clear under the public root | truth of the sanctions source, slot allocation, root publication authorization and availability |
+| Status | selected packed bit is clear under the public root | correct allocation/revocation feed processing, root publication authorization and availability |
 | Policy | circuit ID fixes sanctions-clear semantics; result is true | Keccak policy hash and exact policy-root registration, checked by adapter + registry |
 | Presentation | public subject/ranges and proof input binding | chain, host, consumer, subject, context, challenge and policy Keccak binding, recomputed by the adapter |
 | Replay | holder-secret + public-scope Poseidon nullifier | scope Keccak derivation and replay storage, checked by SDK/adapter/host |

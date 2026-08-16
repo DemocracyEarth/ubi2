@@ -24,7 +24,7 @@ The authentication delta is then:
 | Issuer signature | Baby-Jubjub Schnorr/EdDSA-style equation with a Poseidon challenge | Authenticates issuance without a membership witness; revocation/status still needs a separate mechanism. |
 | Active registry | Depth-32 Poseidon Merkle membership of the credential commitment | Combines issuance authorization and active status, but requires root governance and holder witness updates. |
 | Signature + registry | Both relations | Defense in depth and explicit separation of authenticity/status at the highest circuit cost. |
-| Signature + packed status | Issuer signature plus a non-revoked bit in a 256-status chunk under a depth-24 Poseidon root | Separates authenticity from status, avoids hashed-leaf collisions for a canonical 32-bit assigned slot, and amortizes public updates across a chunk. Uniqueness remains a separate registry concern. |
+| Signature + packed status | Issuer signature plus an allocated, active bit in a 256-status chunk under a depth-24 Poseidon root | Separates authenticity from status, avoids hashed-leaf collisions for a canonical 32-bit assigned slot, and amortizes public updates across a chunk. Duplicate-key enforcement remains a separate registry concern. |
 
 The signature model keeps issuer public-key coordinates private, enforces prime-subgroup membership, derives a
 domain-separated Poseidon key digest, and binds that digest losslessly to the two public 128-bit `issuerKeyId`
@@ -35,13 +35,14 @@ bytes32 reconstruction also rejects values at or above the BN254 field modulus b
 aliases.
 
 The packed-status candidate treats the signed `statusId` as one canonical issuer-assigned `uint32` slot. The low
-eight bits select one of 256 revocation bits and the next 24 bits select that chunk's Merkle path, covering up to
-2^32 slots. Each chunk is encoded losslessly as two little-endian 128-bit field limbs; zero means active and one
-means revoked. The circuit authenticates the complete credential with the issuer signature, proves the selected
-bit is zero, binds the depth-24 path to the slot, and binds the public root losslessly. Tests reject a set target
-bit, changed path/root, non-canonical slot or chunk limbs, and root modular aliases. This assigned-slot convention,
-status authority, checkpoint governance and wire encoding are research inputs, not a migration of the operational
-depth-32 registry or a ratified ABI.
+eight bits select one of 256 status bits and the next 24 bits select that chunk's Merkle path, covering up to 2^32
+slots. Each chunk is encoded losslessly as two little-endian 128-bit field limbs; one means unallocated or revoked,
+and allocation clears exactly one bit to active zero. The circuit authenticates the complete credential with the
+issuer signature, proves the selected bit is zero, binds the depth-24 path to the slot, and binds the public root
+losslessly. Tests reject a set target bit, changed path/root, non-canonical slot or chunk limbs, and root modular
+aliases, and pin every fixture's other bits to the fail-closed state. This assigned-slot convention, status
+authority, checkpoint governance and wire encoding are research inputs, not a migration of the operational depth-32
+registry or a ratified ABI.
 
 The active-registry model binds the credential commitment and private two-limb `statusId` into the active leaf.
 It derives the depth-32 path from `Poseidon(statusId)` inside the circuit and binds the root losslessly to the two

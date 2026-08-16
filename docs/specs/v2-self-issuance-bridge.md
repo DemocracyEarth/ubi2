@@ -137,7 +137,8 @@ on-chain-mismatched configuration fails closed.
 ## Deployment and rotation
 
 For a testnet rehearsal, compute `ZK_SELF_CONFIG_ID` with `zkSelfVerifierConfigId`, record only the
-verification authority's public address in the deployment environment, and run:
+verification authority's public address in the deployment environment, set a separate explicit
+`ZK_STATUS_PUBLISHER` address, and run:
 
 ```shell
 forge script script/DeployZkSelfIssuance.s.sol:DeployZkSelfIssuance \
@@ -145,7 +146,8 @@ forge script script/DeployZkSelfIssuance.s.sol:DeployZkSelfIssuance \
 ```
 
 The script deploys a new registry, registers the issuer namespace, deploys the immutable bridge,
-authorizes its codehash, and initiates two-step ownership transfer when a different owner is set.
+authorizes its codehash and the status publisher's codehash, and initiates two-step ownership transfer when a
+different owner is set.
 The final owner must separately call `acceptOwnership`. Testnet source verification, bytecode,
 configuration and one live duplicate-rejection transcript must be recorded before mainnet review.
 
@@ -177,5 +179,5 @@ prover are connected. No random or EVM-keccak placeholder is promoted as a real 
   expiry, cannot revive an expired grant and remains bounded. The live Anvil integration consumes a
   competing slot, observes the stale authorization revert without consuming its key/commitment, and
   issues after changing only the expected slot, epoch and deadline.
-- The local Cancun bridge-plus-registry write is pinned at **140,014 gas**. Self verification is
+- The local Cancun bridge-plus-registry write is pinned at **140,108 gas**. Self verification is
   off-chain and excluded; this is not target-chain evidence.

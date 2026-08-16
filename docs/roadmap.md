@@ -221,13 +221,13 @@ and v2 proof generation are not enabled yet.
   three 100M/1B-population update workloads by 88.83%–95.93% versus depth-96 sparse batches. It is the status
   candidate to beat, not a selection. A separate pre-deployment issuance registry now constrains authorized
   monotonic `uint32` slot allocation and globally consumes registry-scoped duplicate keys/credential commitments;
-  the local write is pinned at 129,763 gas. An immutable transitional Self bridge now binds a pinned off-chain
+  the local write is pinned at 129,886 gas. An immutable transitional Self bridge now binds a pinned off-chain
   proof decision to the subject, registry-scoped key, proof-bound holder commitment, issuer key, slot/epoch and
   verifier configuration through a short-lived EIP-712 authorization. A capability-authenticated refresh now
   recovers slot/epoch/expiry races without retaining the raw Self nullifier, changing proof-derived fields, or
-  extending the original ten-minute verification window; bridge plus allocation costs 140,014 local
-  gas. On-chain/native passport proof verification, the production circuit-native commitment, status
-  lifecycle, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas, durable
+  extending the original ten-minute verification window; bridge plus allocation costs 140,108 local
+  gas. On-chain/native passport proof verification, the production circuit-native commitment, public snapshot
+  builder/distribution, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas,
   transport/privacy hardening, and the final ADR remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
   2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
@@ -249,9 +249,10 @@ and v2 proof generation are not enabled yet.
   mutations reject. This is reproducible research evidence, not a production circuit or setup. Independent circuit
   ratification, production ceremony, mobile and target-chain measurements, corrected-host testnet redeploy and
   audits remain.
-- **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, and bounded
-  race-recovery lifecycle are implemented with adversarial tests and cross-stack parity; packed-status lifecycle,
-  circuit-native holder commitment, and canonical testnet evidence remain.
+- **Stage 2 🚧** — the one-time duplicate/slot registry, transitional Self bridge, bounded race recovery, and
+  allocation-bound packed-status publication/revocation transition are implemented with adversarial tests and
+  cross-stack parity. A deterministic public snapshot builder/distributor, circuit-native holder commitment, and
+  canonical testnet evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
@@ -259,6 +260,14 @@ and v2 proof generation are not enabled yet.
 **Mainnet gate:** no open Critical/High; circuit, Solidity and browser/vault reviews complete; reproducible
 verifier bytecode; recovery/revocation/key-rotation drills; measured mobile proving and EVM gas budgets. L2s
 ship before Ethereum L1 unless the recorded gas gate supports simultaneous release.
+
+**Planning estimate (2026-08-16):** a canonical-testnet alpha is approximately **2–4 weeks**. A full v2 mainnet
+release is approximately **14–20 focused engineering weeks**, or **4–6 calendar months** once independent audit and
+ceremony scheduling are included: 1–2 weeks to close Stage 2, 3–5 weeks for holder prover/vault/recovery, 4–6 weeks
+for production circuits/verifiers and all-target testnets, and 3–5 weeks for audits, remediation, ceremony and an
+adversarial soak. Work can overlap, but the audit/ceremony and recovery/mobile gates cannot safely be compressed.
+Audit availability and material findings can add roughly four weeks. This estimate is for the private portable v2
+product, not a transitional trusted-bridge-only launch.
 
 **Relationship to M6:** M6 proves passport uniqueness and attributes on the ubi2 native chain. This track
 provides the portable holder credential and cross-EVM presentation layer. They should share passport roots,

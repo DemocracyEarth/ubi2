@@ -53,8 +53,14 @@ canonical production issuance registry issues the portable credential; consumers
 4. The registry atomically consumes the duplicate key globally, consumes the canonical nonzero BN254 credential
    commitment globally, assigns the expected slot in the issuer-key namespace and emits the opaque commitment,
    slot and epoch. Slots are never chosen by the authority and never reused.
-5. The event stream is input to the future packed-status publisher. Revocation, root publication, bridge proof
-   verification and credential rotation are later transitions and are not implied by allocation.
+5. A separately authorized, codehash-pinned status publisher consumes the finalized allocation stream in exact
+   slot order. Packed bits fail closed: `1` means unallocated or revoked and `0` means allocated and active. Each
+   allocation therefore clears exactly one bit from the all-ones default; a revocation sets it back to `1`.
+6. The publisher submits the nonzero canonical BN254 Poseidon root with the exact observed `nextStatusId`. A raced
+   allocation rejects the publication. The registry assigns a monotonic snapshot id and records the root,
+   `activatedThroughStatusId`, publication time and publisher without copying duplicate keys or credential fields.
+7. Snapshots overlap until governance irreversibly revokes an exact snapshot. Issuer retirement makes every
+   snapshot fail closed, while governance can still revoke old snapshots after retirement.
 
 ## Invariants and required failures
 
@@ -68,6 +74,12 @@ canonical production issuance registry issues the portable credential; consumers
 - The duplicate key is omitted from events. It is necessarily present in issuance calldata and queryable by a
   party that already knows it, so it must be registry-scoped and unlinkable to presentations.
 - Credential commitments are opaque one-time issuance values and are absent from the 18 presentation signals.
+- A status root is never valid merely because a publisher can submit it. The publisher must prove operationally
+  that every finalized `CredentialAllocated` event through the declared watermark was processed once and in order,
+  that no unallocated bit was cleared, and that every revocation was authorized. Reusing a root is rejected because
+  every valid allocation or revocation changes at least one fail-closed bit.
+- Target EVMs cannot synchronously read the canonical issuance chain. Their version-registry governance accepts a
+  source snapshot only after independently reconciling its event range, finality and publisher authorization.
 
 ## Security boundary
 
@@ -77,6 +89,12 @@ withhold a credential after allocation. The registry cannot distinguish those va
 authorization is therefore not proof of passport truth or privacy. Testnet integration must pin the Self
 verifier/attestation version and extract the duplicate key and holder commitment from verified outputs rather than
 accepting application-provided values.
+
+The contract authenticates a root and its allocation watermark but cannot recompute an off-chain Poseidon tree.
+A compromised status publisher can clear an unallocated/revoked bit or omit an activation. Production therefore
+requires an independently reproducible public indexer, at least two-party root reconciliation before target-chain
+acceptance, finalized source blocks, fork rollback/replay, signed snapshot artifacts, durable public distribution
+and alerting. The issuance authority and status publisher must use separate production key paths.
 
 An authority address's codehash does not pin an upgradeable proxy's implementation. Production governance must
 authorize immutable bridge bytecode or separately constrain and timelock the proxy implementation; the codehash
@@ -88,15 +106,18 @@ No production deployment is authorized by this pre-deployment implementation.
 
 ## Verification in this slice
 
-- Foundry covers global duplicate rejection, commitment replay, authority/key retirement, codehash drift, race
-  rollback, invalid/canonical fields, event privacy and both `uint32`/epoch exhaustion boundaries.
+- Foundry covers global duplicate rejection, commitment replay, authority/key/publisher retirement, codehash drift,
+  allocation/publication race rollback, canonical roots, overlapping/exact snapshot revocation, post-retirement
+  incident response, event privacy and both `uint32`/epoch exhaustion boundaries.
 - TypeScript and Solidity pin the issuance-domain vector and reject zero chain/registry trust domains.
-- The local Cancun allocation write is pinned at 129,763 gas. It excludes passport-proof verification and is not a
-  target-chain budget.
+- The SDK exposes strict canonical-root validation and exact publication calldata; the research circuit fixture now
+  starts every unallocated packed bit at `1` and clears only its allocated slot.
+- The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
+  exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Run the bridge and its grant-preserving authorization refresh on one canonical testnet with an isolated
-authority, connect the holder-side circuit-native credential commitment, and capture one live issuance,
-slot-race refresh and duplicate rejection. Then implement the packed-status activation/publication transition
-without storing private credential material.
+Implement the deterministic public snapshot builder/indexer and authenticated fork-recoverable distribution, then
+run the bridge, grant-preserving refresh and publisher on one canonical testnet with isolated authority/publisher
+keys. Connect the holder-side circuit-native credential commitment and capture one live issuance, slot-race
+refresh, duplicate rejection, activation, revocation, stale-root overlap and target-chain acceptance transcript.
