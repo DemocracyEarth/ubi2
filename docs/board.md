@@ -158,8 +158,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   the stateful path costs 419,219 gas locally; every signal mutation rejects. The setup toxic waste is public and
   categorically non-deployable. The security boundary, constraint-audit plan and ceremony gates are recorded.
   The status fleet now verifies the content-addressed immutable endpoint itself and can archive a non-overwriting,
-  secretless bundle whose checksum, signatures and fleet decision reproduce offline; no hosted canonical-testnet
-  bundle, real page acknowledgement or completed drill is claimed yet.
+  secretless bundle whose checksum, signatures and fleet decision reproduce offline. Verification binds every
+  bundle to a separately reviewed fleet config, and a strict manifest checks internally ordered non-regressing
+  restart, withholding, divergence and recovery relationships while keeping authoritative timestamps, host actions
+  and page acknowledgements external. No hosted canonical-testnet bundle, real page acknowledgement or completed
+  drill is claimed yet.
   Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
   target-chain measurements, production ceremony and audits remain.
 - **ZKID-V2-T2 · architect/protocol/security** — one-time issuance and uniqueness foundation. *Accepts:* issuance

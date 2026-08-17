@@ -12,8 +12,13 @@ import {
   readStrictJsonFile,
 } from "./config";
 import {
+  readZkIdentityStatusTestnetDrillManifest,
+  verifyZkIdentityStatusTestnetDrillEvidence,
+} from "./drills";
+import {
+  assertZkIdentityStatusSupportedTestnetChainId,
   createZkIdentityStatusTestnetEvidence,
-  readZkIdentityStatusTestnetEvidence,
+  readZkIdentityStatusTestnetEvidenceAgainstFleet,
   writeZkIdentityStatusTestnetEvidence,
 } from "./evidence";
 import { fetchZkIdentityStatusOperatorFleet } from "./fleet";
@@ -51,6 +56,7 @@ async function closeServer(server: Awaited<ReturnType<typeof startZkIdentityStat
 
 async function runOperator(path: string): Promise<void> {
   const config = parseZkIdentityStatusOperatorConfig(await readStrictJsonFile(path));
+  assertZkIdentityStatusSupportedTestnetChainId(config.chainId);
   await assertStatusOperatorSecretPaths(config);
   const store = new ZkIdentityStatusOperatorStore(config.stateDirectory);
   const releaseLock = await store.acquireLock();
@@ -120,6 +126,7 @@ async function runOperator(path: string): Promise<void> {
 
 async function runFleet(path: string, evidencePath?: string): Promise<void> {
   const config = parseZkIdentityStatusFleetConfig(await readStrictJsonFile(path));
+  assertZkIdentityStatusSupportedTestnetChainId(config.chainId);
   const referenceReader = createZkIdentityFinalizedViemReader(config.referenceRpcUrl);
   const [referenceFinalizedBlock, fetched] = await Promise.all([
     Promise.all([referenceReader.getChainId(), referenceReader.getFinalizedBlock()])
@@ -140,8 +147,9 @@ async function runFleet(path: string, evidencePath?: string): Promise<void> {
   if (!report.ready) process.exitCode = 2;
 }
 
-async function verifyEvidence(path: string): Promise<void> {
-  const evidence = await readZkIdentityStatusTestnetEvidence(path);
+async function verifyEvidence(path: string, configPath: string): Promise<void> {
+  const config = parseZkIdentityStatusFleetConfig(await readStrictJsonFile(configPath));
+  const evidence = await readZkIdentityStatusTestnetEvidenceAgainstFleet(path, config);
   process.stdout.write(
     `${JSON.stringify({
       event: "status_testnet_evidence_verified",
@@ -150,6 +158,18 @@ async function verifyEvidence(path: string): Promise<void> {
       alerts: evidence.report.alerts,
     })}\n`,
   );
+}
+
+async function verifyDrillEvidence(manifestPath: string, configPath: string): Promise<void> {
+  const [configValue, manifest] = await Promise.all([
+    readStrictJsonFile(configPath),
+    readZkIdentityStatusTestnetDrillManifest(manifestPath),
+  ]);
+  const report = await verifyZkIdentityStatusTestnetDrillEvidence({
+    config: parseZkIdentityStatusFleetConfig(configValue),
+    manifest,
+  });
+  process.stdout.write(`${JSON.stringify(report)}\n`);
 }
 
 async function main(): Promise<void> {
@@ -161,10 +181,21 @@ async function main(): Promise<void> {
     const parsed = options(arguments_, ["--config", "--evidence"]);
     await runFleet(requiredOption(parsed, "--config"), parsed.get("--evidence"));
   } else if (command === "verify-evidence") {
-    const parsed = options(arguments_, ["--input"]);
-    await verifyEvidence(requiredOption(parsed, "--input"));
+    const parsed = options(arguments_, ["--input", "--config"]);
+    await verifyEvidence(
+      requiredOption(parsed, "--input"),
+      requiredOption(parsed, "--config"),
+    );
+  } else if (command === "verify-drill-evidence") {
+    const parsed = options(arguments_, ["--manifest", "--config"]);
+    await verifyDrillEvidence(
+      requiredOption(parsed, "--manifest"),
+      requiredOption(parsed, "--config"),
+    );
   } else {
-    throw new Error("status operator command must be run, fleet, or verify-evidence");
+    throw new Error(
+      "status operator command must be run, fleet, verify-evidence, or verify-drill-evidence",
+    );
   }
 }
 

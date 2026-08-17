@@ -256,12 +256,13 @@ and v2 proof generation are not enabled yet.
   computation core are implemented with adversarial tests and circuit parity. Strict durable restore, bounded
   finalized-RPC ingestion, content-addressed EIP-712 envelopes and two-party root reconciliation are now implemented
   as reference tooling. A deployable single-writer operator, immutable artifact server, third-RPC fleet gate,
-  end-to-end immutable retrieval check, non-overwriting offline-verifiable evidence bundle and systemd/drill
-  runbooks are implemented. The versioned holder-commitment candidate, Rust/WASM reference generator and sanitized
-  SDK issuance transcript are pinned without changing public signals, ABI or status format and without promoting
-  the measured Poseidon profile to production. Independent hosting, observed real paging/drills, production
-  commitment and issuer-authentication ratification, the slot/epoch race decision and canonical testnet evidence
-  remain.
+  end-to-end immutable retrieval check, non-overwriting offline-verifiable evidence bundle, reviewed-config trust
+  binding, intrinsic restart/withholding/divergence evidence gate and systemd/drill runbooks are implemented. The
+  versioned holder-commitment candidate, Rust/WASM reference generator and sanitized SDK issuance transcript are
+  pinned without changing public signals, ABI or status format and without promoting the measured Poseidon profile
+  to production. Independent hosting, externally anchored timestamps, observed host actions and real paging/drills,
+  production commitment and issuer-authentication ratification, the slot/epoch race decision and canonical testnet
+  evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
