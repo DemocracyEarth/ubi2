@@ -8,6 +8,7 @@ import { getAddress, isHex, size, type Address, type Hex } from "viem";
 import {
   parseZkIdentityStatusOperatorArtifact,
   parseZkIdentityStatusOperatorHealth,
+  serializeZkIdentityStatusOperatorArtifact,
   type ZkIdentityStatusOperatorArtifact,
   type ZkIdentityStatusOperatorHealth,
 } from "./artifact";
@@ -26,6 +27,8 @@ export type ZkIdentityStatusFleetAlertCode =
   | "OPERATOR_CLOCK_SKEW"
   | "OPERATOR_DEGRADED"
   | "LATEST_HEALTH_MISMATCH"
+  | "IMMUTABLE_ARTIFACT_UNAVAILABLE"
+  | "IMMUTABLE_ARTIFACT_MISMATCH"
   | "WITHHOLDING_SUSPECTED"
   | "SNAPSHOT_DIVERGENCE"
   | "QUORUM_UNAVAILABLE"
@@ -59,6 +62,8 @@ export interface FetchedZkIdentityStatusOperator {
   operatorId: string;
   health?: unknown;
   latest?: unknown;
+  immutableArtifact?: unknown;
+  immutableCacheControl?: string;
 }
 
 interface AcceptedOperator {
@@ -126,6 +131,30 @@ export async function evaluateZkIdentityStatusOperatorFleet(input: {
       artifact = parseZkIdentityStatusOperatorArtifact(fetched.latest);
     } catch {
       alerts.push(alert("MALFORMED_OPERATOR_RESPONSE", expected.operatorId));
+      continue;
+    }
+    if (
+      fetched.immutableArtifact === undefined ||
+      fetched.immutableCacheControl === undefined ||
+      !fetched.immutableCacheControl
+        .split(",")
+        .map((directive) => directive.trim().toLowerCase())
+        .includes("immutable")
+    ) {
+      alerts.push(alert("IMMUTABLE_ARTIFACT_UNAVAILABLE", expected.operatorId));
+      continue;
+    }
+    try {
+      const immutable = parseZkIdentityStatusOperatorArtifact(fetched.immutableArtifact);
+      if (
+        serializeZkIdentityStatusOperatorArtifact(immutable) !==
+        serializeZkIdentityStatusOperatorArtifact(artifact)
+      ) {
+        alerts.push(alert("IMMUTABLE_ARTIFACT_MISMATCH", expected.operatorId));
+        continue;
+      }
+    } catch {
+      alerts.push(alert("IMMUTABLE_ARTIFACT_MISMATCH", expected.operatorId));
       continue;
     }
     if (
@@ -289,7 +318,7 @@ async function fetchBoundedJson(
   url: string,
   timeoutMs: number,
   acceptedStatuses: readonly number[],
-): Promise<unknown> {
+): Promise<{ value: unknown; cacheControl: string }> {
   const response = await fetch(url, {
     method: "GET",
     headers: { accept: "application/json" },
@@ -326,7 +355,10 @@ async function fetchBoundedJson(
     body.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  return {
+    value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)),
+    cacheControl: response.headers.get("cache-control") ?? "",
+  };
 }
 
 export async function fetchZkIdentityStatusOperatorFleet(
@@ -335,11 +367,29 @@ export async function fetchZkIdentityStatusOperatorFleet(
   return Promise.all(
     config.operators.map(async (operator) => {
       try {
-        const [health, latest] = await Promise.all([
+        const [healthResponse, latestResponse] = await Promise.all([
           fetchBoundedJson(`${operator.baseUrl}/healthz`, config.requestTimeoutMs, [200, 503]),
           fetchBoundedJson(`${operator.baseUrl}/latest`, config.requestTimeoutMs, [200]),
         ]);
-        return { operatorId: operator.operatorId, health, latest };
+        const result: FetchedZkIdentityStatusOperator = {
+          operatorId: operator.operatorId,
+          health: healthResponse.value,
+          latest: latestResponse.value,
+        };
+        try {
+          const latest = parseZkIdentityStatusOperatorArtifact(latestResponse.value);
+          const immutableResponse = await fetchBoundedJson(
+            `${operator.baseUrl}/artifacts/${latest.attestation.snapshotHash}`,
+            config.requestTimeoutMs,
+            [200],
+          );
+          result.immutableArtifact = immutableResponse.value;
+          result.immutableCacheControl = immutableResponse.cacheControl;
+        } catch {
+          // Preserve health/latest so evaluation emits the specific immutable
+          // artifact failure without trusting transport error text.
+        }
+        return result;
       } catch {
         return { operatorId: operator.operatorId };
       }

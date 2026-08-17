@@ -16,9 +16,10 @@ error text. A failed cycle keeps the last signed artifact, writes degraded healt
 never derives publisher calldata.
 
 `evaluateZkIdentityStatusOperatorFleet` is a separate consumer. Give it strict fleet configuration, both untrusted
-operator documents, and the finalized header from a third RPC. It validates every envelope and signer, detects
-staleness/lag/split views, calls the SDK threshold reconciler, and returns `publication` only when `ready` is true.
-Do not construct calldata from `/latest` directly.
+operator documents, their content-addressed immutable artifacts, and the finalized header from a third RPC. It
+validates every envelope and signer, requires `/latest` to equal the immutable artifact byte-for-byte after
+canonical parsing, detects staleness/lag/split views, calls the SDK threshold reconciler, and returns `publication`
+only when `ready` is true. Do not construct calldata from `/latest` directly.
 
 ```ts
 const report = await evaluateZkIdentityStatusOperatorFleet({
@@ -30,6 +31,24 @@ const report = await evaluateZkIdentityStatusOperatorFleet({
 if (!report.ready) throw new Error("packed-status publication blocked");
 // report.publication is now normalized for ZkIdentityIssuanceRegistry.
 ```
+
+The CLI can atomically archive a secretless evidence bundle while running the live fleet gate. It refuses to
+overwrite an existing file and still writes a blocked observation before exiting `2`:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- fleet \
+  --config /etc/ubi2/status-operator/fleet.json \
+  --evidence /var/lib/ubi2-status-evidence/2026-08-16T210000Z-baseline.json
+
+pnpm --filter @ubi2/status-operator start -- verify-evidence \
+  --input /var/lib/ubi2-status-evidence/2026-08-16T210000Z-baseline.json
+```
+
+Evidence contains public trust metadata, health, signed artifacts, immutable cache metadata, the third-RPC
+finalized header, and the reproduced fleet report. RPC URLs are deliberately excluded because their paths may be
+service credentials. Verification recomputes the checksum, signatures, immutable equality, freshness, quorum and
+publication decision offline. The bundle is not a trust anchor: compare its public fleet metadata and SHA-256 to
+the independently reviewed deployment record before using it as transaction evidence.
 
 See [`ops/status-operator`](../../ops/status-operator) for strict configuration examples, systemd units, key
 isolation and the canonical-testnet evidence checklist.

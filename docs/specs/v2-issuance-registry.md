@@ -124,7 +124,9 @@ No production deployment is authorized by this pre-deployment implementation.
 - The deployable status-operator package runs that flow as a single-writer daemon with fsync-and-rename checkpoints,
   immutable signed artifacts, encrypted Foundry-keystore signing, loopback-only read endpoints and a separate fleet
   gate. The fleet gate uses a third finalized RPC and blocks publication on unavailability, staleness, withholding,
-  wrong signers or split content. Systemd hardening templates are included; no canonical testnet host is claimed yet.
+  wrong signers, split content, or an unavailable/mismatched content-addressed artifact. It can atomically archive a
+  secretless bundle whose checksum, signatures, immutable artifacts and fleet decision reproduce offline. Systemd
+  hardening and drill templates are included; no canonical testnet host or completed drill is claimed yet.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
