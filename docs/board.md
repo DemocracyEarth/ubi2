@@ -168,6 +168,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   publisher at each of three finalized RPC views before archiving a secretless non-overwriting report. Physical
   independence, host-local hashes, keystore inspection and authoritative timestamps remain external. No hosted
   canonical-testnet bundle, real page acknowledgement or completed drill is claimed yet.
+  A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
+  per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
+  circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.
   Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
   target-chain measurements, production ceremony and audits remain.
 - **ZKID-V2-T2 · architect/protocol/security** — one-time issuance and uniqueness foundation. *Accepts:* issuance
