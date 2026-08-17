@@ -19,6 +19,8 @@ Before provisioning, record the selected testnet name and chain ID, issuance-reg
 registry deployment transaction, public deployer, current owner, on-chain status publisher, reconciler signer
 addresses, reviewed source commit, executable SHA-256 values, three provider names and three host/volume IDs. Never
 record RPC project URLs, private keys, passwords, seed phrases or environment-file contents in the evidence store.
+Use the strict [`trust-record.example.json`](trust-record.example.json) schema, add the independently reviewed
+registry runtime code hash, replace every fixture value, and keep the completed record under change control.
 
 The deployment helper currently permits only Base Sepolia `84532`, Ethereum Sepolia `11155111`, Celo Sepolia
 `11142220`, Robinhood Chain Testnet `46630`, and World Chain Sepolia `4801`. The release lane must name exactly one
@@ -26,9 +28,42 @@ as the canonical issuance testnet. Any other chain ID, including every mainnet, 
 
 ## Transaction-free trust preflight
 
-Run these checks independently against RPC providers A, B and C before starting an operator and again before any
-publication simulation. Load RPC URLs from the host secret manager without printing them. Replace only the public
-placeholders below; do not paste a secret into the command history.
+From a controlled administration host, first bind the public trust record to both operator configs and the fleet
+config and capture one non-overwriting preflight observation:
+
+```shell
+PREFLIGHT_EVIDENCE=/var/lib/ubi2-status-evidence/canonical-testnet/preflight-YYYYMMDDTHHMMSSZ.json
+
+pnpm --filter @ubi2/status-operator start -- preflight \
+  --trust-record /etc/ubi2/status-operator/canonical-testnet-trust.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --fleet /etc/ubi2/status-operator/fleet.json \
+  --evidence "$PREFLIGHT_EVIDENCE"
+
+pnpm --filter @ubi2/status-operator start -- verify-preflight \
+  --input "$PREFLIGHT_EVIDENCE" \
+  --trust-record /etc/ubi2/status-operator/canonical-testnet-trust.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --fleet /etc/ubi2/status-operator/fleet.json
+```
+
+The capture uses each provider's `finalized` block and requires all three paths to agree on the reviewed registry
+bytecode, successful direct deployment, the recorded owner with no pending transfer, issuance domain, active issuer key and active
+status publisher/codehash. It also rejects reused RPC URLs, provider labels, hosts, volumes, signers or origins and
+requires the operator executable hashes to match the trust record. It never initializes a signer or submits a
+transaction. A blocked network observation is still written and exits `2`; the evidence contains no RPC URL,
+secret path or provider error text.
+
+The report always lists four facts that remain externally observed: actual host/volume/provider independence,
+on-host source/executable hashes, encrypted-keystore public-address/file-permission checks, and an authoritative
+archive timestamp. Do not mark those complete from the JSON alone.
+
+The following commands are the independent human spot-check and incident fallback. Run them separately against
+providers A, B and C before starting an operator and again before any publication simulation. Load RPC URLs from
+the host secret manager without printing them. Replace only the public placeholders below; do not paste a secret
+into the command history.
 
 ```shell
 test "$(cast chain-id --rpc-url "$RPC_URL")" = "$EXPECTED_TESTNET_CHAIN_ID"
@@ -185,6 +220,8 @@ acknowledgements. Attach those records from their authoritative systems before c
 
 - [ ] One permitted testnet is explicitly selected; chain ID, registry, deployment transaction and public deployer
       agree through providers A, B and C.
+- [ ] A non-overwriting `ready: true` preflight evidence file verifies offline against the reviewed trust record,
+      both operator configs and the fleet config; its SHA-256 and authoritative capture time are externally anchored.
 - [ ] Registry owner, issuance domain, active issuer key and active separate status publisher agree through all
       three providers.
 - [ ] Two hosts, volumes, RPC providers, reconciler signers, encrypted keystores and password-file paths are

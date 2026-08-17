@@ -129,7 +129,11 @@ No production deployment is authorized by this pre-deployment implementation.
   Verification pins the bundle's public trust metadata to a separately reviewed fleet config; a strict manifest
   checks the intrinsic restart, withholding, divergence and recovery evidence relationships without treating
   embedded timestamps, host actions or paging acknowledgements as self-attested proof. Systemd hardening and drill
-  templates are included; no canonical testnet host or completed drill is claimed yet.
+  templates are included. A transaction-free readiness gate now binds two operator configs and the third-RPC fleet
+  config to a strict public trust record, checks finalized registry bytecode/deployment/ownership/issuer/publisher
+  state across all three RPC paths, and archives a secretless non-overwriting report. Physical independence,
+  on-host hashes, keystore inspection and authoritative timestamps remain external; no canonical testnet host or
+  completed drill is claimed yet.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 

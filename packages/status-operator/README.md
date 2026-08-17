@@ -48,6 +48,26 @@ pnpm --filter @ubi2/status-operator start -- verify-evidence \
   --config /etc/ubi2/status-operator/fleet.json
 ```
 
+Before starting a canonical-testnet fleet, the separate transaction-free preflight binds two strict operator
+configs and the third-RPC fleet config to one public trust record, then reads finalized registry state through all
+three RPC paths. It checks the recorded chain/deployment transaction/runtime code hash, owner and absence of a pending transfer,
+issuance domain, issuer key, publisher authorization/codehash, signer/origin topology and executable hashes. It
+never reads a keystore, signs, simulates or sends a transaction:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- preflight \
+  --trust-record /etc/ubi2/status-operator/canonical-testnet-trust.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --fleet /etc/ubi2/status-operator/fleet.json \
+  --evidence /var/lib/ubi2-status-evidence/canonical-testnet/preflight-YYYYMMDDTHHMMSSZ.json
+```
+
+Blocked observations are still written and return exit `2`. `verify-preflight` recomputes the checksum, report,
+embedded trust binding and separately supplied topology offline. RPC URLs, secret paths and provider error text are
+excluded from the evidence. Host independence, local executable hashes, encrypted-keystore checks and an
+authoritative archive timestamp remain external observations.
+
 Evidence contains public trust metadata, health, signed artifacts, immutable cache metadata, the third-RPC
 finalized header, and the reproduced fleet report. RPC URLs are deliberately excluded because their paths may be
 service credentials. Verification recomputes the checksum, signatures, immutable equality, freshness, quorum and

@@ -1,0 +1,35 @@
+{
+  "schema": "org.proofofhumanity.v2-canonical-testnet-trust-record/1",
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "issuanceRegistry": "0x1111111111111111111111111111111111111111",
+  "registryDeploymentTransaction": "0x6666666666666666666666666666666666666666666666666666666666666666",
+  "registryRuntimeCodeHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+  "deployerAddress": "0x4444444444444444444444444444444444444444",
+  "ownerAddress": "0x4444444444444444444444444444444444444444",
+  "issuerKeyId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "statusPublisherAddress": "0x5555555555555555555555555555555555555555",
+  "reviewedSourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "builderSha256": "0x3333333333333333333333333333333333333333333333333333333333333333",
+  "castSha256": "0x4444444444444444444444444444444444444444444444444444444444444444",
+  "operators": [
+    {
+      "operatorId": "reconciler-a",
+      "hostId": "status-host-a",
+      "volumeId": "status-volume-a",
+      "rpcProviderId": "rpc-provider-a",
+      "signerAddress": "0x71979D0dd71F7Fd505D73eC11133b9e21c339216",
+      "baseUrl": "https://status-a.example"
+    },
+    {
+      "operatorId": "reconciler-b",
+      "hostId": "status-host-b",
+      "volumeId": "status-volume-b",
+      "rpcProviderId": "rpc-provider-b",
+      "signerAddress": "0x15eCe74bc7C691A4023d4eFDF57d94A76051e72f",
+      "baseUrl": "https://status-b.example"
+    }
+  ],
+  "fleetHostId": "status-fleet-host-c",
+  "referenceRpcProviderId": "rpc-provider-c"
+}
