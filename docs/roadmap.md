@@ -260,9 +260,11 @@ and v2 proof generation are not enabled yet.
   binding, intrinsic restart/withholding/divergence evidence gate and systemd/drill runbooks are implemented. The
   versioned holder-commitment candidate, Rust/WASM reference generator and sanitized SDK issuance transcript are
   pinned without changing public signals, ABI or status format and without promoting the measured Poseidon profile
-  to production. Independent hosting, externally anchored timestamps, observed host actions and real paging/drills,
-  production commitment and issuer-authentication ratification, the slot/epoch race decision and canonical testnet
-  evidence remain.
+  to production. An expiring one-shot SDK handoff now generates holder material,
+  binds synthetic issuance evidence and seals an explicitly non-presentable reference payload through the
+  encrypted vault; live persistence remains disabled. Independent hosting, externally anchored timestamps, observed
+  host actions and real paging/drills, production commitment and issuer-authentication ratification, the slot/epoch
+  race decision and canonical testnet evidence remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
