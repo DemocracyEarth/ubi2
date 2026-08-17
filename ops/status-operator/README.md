@@ -83,10 +83,17 @@ signer, malformed content and unavailable quorum all fail closed. Route failed s
 production paging system; journald alone is not a page.
 
 Before a testnet checkpoint transaction, archive a non-overwriting evidence bundle with `fleet --evidence`, verify
-it offline with `verify-evidence`, then archive the transaction simulation and final receipt beside it. The bundle
-contains both immutable artifacts, their URLs/cache metadata, the fleet report and the reference finalized block;
-it never contains the configured RPC URLs. The on-chain publisher must consume only the fleet report's
-`publication` fields and must remain a separate key path.
+it offline with `verify-evidence --config` against the separately reviewed fleet config, then archive the
+transaction simulation and final receipt beside it. The bundle contains both immutable artifacts, their URLs/cache
+metadata, the fleet report and the reference finalized block; it never contains the configured RPC URLs. The
+on-chain publisher must consume only the fleet report's `publication` fields and must remain a separate key path.
+
+After the restart, withholding and divergence observations exist, copy
+[`drill-manifest.example.json`](drill-manifest.example.json), replace every evidence path, and run
+`verify-drill-evidence --manifest ... --config ...`. That verifies only the trust-pinned, internally ordered,
+non-regressing and fail-closed evidence relationships. Authoritative archive timestamps, systemd results,
+single-writer inspection, isolated fault injection and external page acknowledgements remain separately observed
+requirements.
 
 The exact deployment, paging, evidence and restart/withholding/divergence drill procedure is in
 [`TESTNET_RUNBOOK.md`](TESTNET_RUNBOOK.md). That runbook is a procedure, not evidence that any host or network has

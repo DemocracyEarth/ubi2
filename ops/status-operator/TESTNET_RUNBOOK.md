@@ -111,15 +111,17 @@ pnpm --filter @ubi2/status-operator start -- fleet \
   --evidence "$EVIDENCE_PATH"
 
 pnpm --filter @ubi2/status-operator start -- verify-evidence \
-  --input "$EVIDENCE_PATH"
+  --input "$EVIDENCE_PATH" \
+  --config /etc/ubi2/status-operator/fleet.json
 ```
 
 `ready: true` means the two live `/latest` documents matched their content-addressed immutable endpoints, both
 signatures and configured identities were valid, the third-RPC finalized header was compatible, and the quorum
-produced publication arguments. The evidence verifier recomputes that decision offline. It does not prove that a
-page reached a human, authenticate its own embedded trust configuration, or prove that a later publication
-transaction used those arguments. Compare the embedded chain, registry, issuer key, operator origins and signer
-addresses to the independently reviewed public trust record, then record the bundle SHA-256 there.
+produced publication arguments. The evidence verifier recomputes that decision offline and requires its public
+fleet metadata to equal the separately supplied fleet config. It does not prove that a page reached a human or
+that a later publication transaction used those arguments. First compare the supplied config's chain, registry,
+issuer key, operator origins and signer addresses to the independently reviewed public trust record, then record
+the bundle SHA-256 there.
 
 Archive beside each bundle: source commit, systemd unit hashes, executable hashes, host/volume/provider IDs, and—if
 a transaction is separately authorized—the simulation plus final receipt. Keep the external paging incident ID
@@ -142,10 +144,10 @@ root during a drill.
 ### Publication withholding
 
 1. Capture and verify a ready baseline.
-2. Freeze Host B's last complete public directory behind a temporary drill-only HTTPS origin, or stop its reverse
-   proxy. Do not alter the signed files and do not point the on-chain publisher at the drill configuration.
-3. Run a temporary fleet config that differs only in Host B's drill origin. Once provider C advances beyond
-   `maxBlockLag`, capture the blocked report. It must contain `WITHHOLDING_SUSPECTED`, `HEARTBEAT_STALE`, or
+2. In the approved testnet drill window, stop Host B's reverse proxy while keeping the reviewed origin and fleet
+   config unchanged. Do not alter the signed files and do not point the on-chain publisher at drill output.
+3. Run the canonical fleet config. Once the endpoint is unavailable or provider C advances beyond `maxBlockLag`,
+   capture the blocked report. It must contain `WITHHOLDING_SUSPECTED`, `HEARTBEAT_STALE`, or
    `OPERATOR_UNAVAILABLE`, and `publication` must be `null`.
 4. Confirm the real paging connector produced an incident and a human acknowledged it.
 5. Restore the canonical origin, capture a new ready bundle, and close the incident only after recovery is
@@ -159,6 +161,26 @@ hash conflicts with the signed operator view, capture `SNAPSHOT_DIVERGENCE`, a n
 and the subsequent ready recovery bundle. The repository test suite separately proves that two differently signed
 roots at the same source block also fail closed.
 
+## Offline drill-evidence gate
+
+After all observations are captured, copy [`drill-manifest.example.json`](drill-manifest.example.json) into the
+evidence directory and replace every path with the corresponding immutable bundle. The manifest must contain one
+restart pair for every operator in the reviewed fleet config and distinct before/blocked/after files for each fault:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- verify-drill-evidence \
+  --manifest /var/lib/ubi2-status-evidence/canonical-testnet/drill-manifest.json \
+  --config /etc/ubi2/status-operator/fleet.json
+```
+
+`intrinsicEvidenceValid: true` means every bundle passed checksum, signature, immutable-artifact, fleet-decision
+and reviewed-config binding; embedded restart/recovery observation times are ordered and the snapshots cannot
+regress or equivocate; withholding contains an allowed fail-closed alert; and divergence contains
+`SNAPSHOT_DIVERGENCE`. It is not a completed-drill claim. The report always returns six
+`externalChecksRequired` values covering authoritative archive timestamps, restart service results/single-writer
+inspection, the withholding action, divergence fault isolation, and real withholding/divergence page
+acknowledgements. Attach those records from their authoritative systems before checking any completion item.
+
 ## Canonical-testnet completion checklist
 
 - [ ] One permitted testnet is explicitly selected; chain ID, registry, deployment transaction and public deployer
@@ -171,6 +193,7 @@ roots at the same source block also fail closed.
 - [ ] Fleet provider C is independent; the systemd timer is active.
 - [ ] A real paging connector is wired, fires on exit `2`, and has an observed acknowledgement.
 - [ ] Restart, publication-withholding and divergence bundles verify offline; recovery bundles are ready.
+- [ ] Every bundle SHA-256 and capture time is anchored in the independent evidence store or incident system.
 - [ ] No root publication is claimed without its reviewed evidence, separate simulation and observed receipt.
 
 If any item is missing, report it as a blocker. Committed templates, local tests, screenshots, or an unacknowledged

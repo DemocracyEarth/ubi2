@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,9 +25,17 @@ import {
   ZK_IDENTITY_STATUS_FLEET_CONFIG_SCHEMA,
 } from "./config";
 import {
+  parseZkIdentityStatusTestnetDrillManifest,
+  readZkIdentityStatusTestnetDrillManifest,
+  verifyZkIdentityStatusTestnetDrillEvidence,
+  ZK_IDENTITY_STATUS_TESTNET_DRILL_MANIFEST_SCHEMA,
+} from "./drills";
+import {
+  assertZkIdentityStatusSupportedTestnetChainId,
   createZkIdentityStatusTestnetEvidence,
   readZkIdentityStatusTestnetEvidence,
   verifyZkIdentityStatusTestnetEvidence,
+  verifyZkIdentityStatusTestnetEvidenceAgainstFleet,
   writeZkIdentityStatusTestnetEvidence,
 } from "./evidence";
 import {
@@ -80,8 +88,22 @@ const fleetExample = parseZkIdentityStatusFleetConfig(
     ),
   ),
 );
+const drillManifestExample = parseZkIdentityStatusTestnetDrillManifest(
+  JSON.parse(
+    await readFile(
+      new URL("../../../ops/status-operator/drill-manifest.example.json", import.meta.url),
+      "utf8",
+    ),
+  ),
+);
 assert.equal(operatorExample.operatorId, "reconciler-a");
 assert.equal(fleetExample.operators.length, 2);
+assert.doesNotThrow(() => assertZkIdentityStatusSupportedTestnetChainId(84_532));
+assert.throws(() => assertZkIdentityStatusSupportedTestnetChainId(1), /supported testnet/u);
+assert.deepEqual(
+  drillManifestExample.restarts.map(({ operatorId }) => operatorId),
+  ["reconciler-a", "reconciler-b"],
+);
 assert.throws(
   () => parseZkIdentityStatusOperatorConfig({ ...operatorExample, privateKey: "forbidden" }),
   /unknown fields/u,
@@ -348,8 +370,42 @@ try {
     observedAt: now(),
   });
   assert.equal(evidence.report.ready, true);
+  await assert.rejects(
+    createZkIdentityStatusTestnetEvidence({
+      config: { ...config, chainId: 1 },
+      fetched: [
+        operatorFetch("reconciler-a", healthA, latestA),
+        operatorFetch("reconciler-b", healthB, latestB),
+      ],
+      referenceFinalizedBlock: block103,
+      observedAt: now(),
+    }),
+    /requires a supported testnet chain id/u,
+  );
   await writeZkIdentityStatusTestnetEvidence(evidencePath, evidence);
   assert.equal((await readZkIdentityStatusTestnetEvidence(evidencePath)).report.ready, true);
+  assert.equal(
+    (await verifyZkIdentityStatusTestnetEvidenceAgainstFleet(evidence, config)).report.ready,
+    true,
+  );
+  assert.equal(
+    (
+      await verifyZkIdentityStatusTestnetEvidenceAgainstFleet(evidence, {
+        ...config,
+        referenceRpcUrl: "https://independent-review-rpc.example",
+        requestTimeoutMs: config.requestTimeoutMs + 1,
+      })
+    ).report.ready,
+    true,
+    "RPC credentials and local timeout policy are not embedded trust metadata",
+  );
+  await assert.rejects(
+    verifyZkIdentityStatusTestnetEvidenceAgainstFleet(evidence, {
+      ...config,
+      maxBlockLag: config.maxBlockLag + 1,
+    }),
+    /does not match the reviewed fleet configuration/u,
+  );
   await assert.rejects(
     writeZkIdentityStatusTestnetEvidence(evidencePath, evidence),
     { message: /already exists/u, code: "EVIDENCE_ALREADY_EXISTS" },
@@ -563,6 +619,129 @@ try {
   assert.equal(divergence.ready, false);
   assert.ok(divergence.alerts.some(({ code }) => code === "SNAPSHOT_DIVERGENCE"));
   assert.equal(divergence.publication, null);
+
+  const readyEvidenceAt = (observedAt: string) =>
+    createZkIdentityStatusTestnetEvidence({
+      config,
+      fetched: [
+        operatorFetch("reconciler-a", healthA, latestA),
+        operatorFetch("reconciler-b", healthB, latestB),
+      ],
+      referenceFinalizedBlock: block103,
+      observedAt: new Date(observedAt),
+    });
+  const [ready10, ready20, ready40, ready60, withholding30, withholding50, divergence50] =
+    await Promise.all([
+      readyEvidenceAt("2026-08-16T12:00:10.000Z"),
+      readyEvidenceAt("2026-08-16T12:00:20.000Z"),
+      readyEvidenceAt("2026-08-16T12:00:40.000Z"),
+      readyEvidenceAt("2026-08-16T12:01:00.000Z"),
+      createZkIdentityStatusTestnetEvidence({
+        config,
+        fetched: [
+          operatorFetch("reconciler-a", healthA, latestA),
+          operatorFetch("reconciler-b", behindHealth, behindArtifact),
+        ],
+        referenceFinalizedBlock: block103,
+        observedAt: new Date("2026-08-16T12:00:30.000Z"),
+      }),
+      createZkIdentityStatusTestnetEvidence({
+        config,
+        fetched: [
+          operatorFetch("reconciler-a", healthA, latestA),
+          operatorFetch("reconciler-b", behindHealth, behindArtifact),
+        ],
+        referenceFinalizedBlock: block103,
+        observedAt: new Date("2026-08-16T12:00:50.000Z"),
+      }),
+      createZkIdentityStatusTestnetEvidence({
+        config,
+        fetched: [
+          operatorFetch("reconciler-a", healthA, latestA),
+          operatorFetch("reconciler-b", await splitStore.readHealth(), splitArtifact),
+        ],
+        referenceFinalizedBlock: block103,
+        observedAt: new Date("2026-08-16T12:00:50.000Z"),
+      }),
+    ]);
+  const drillEvidenceDirectory = join(root, "drill-evidence");
+  const archive = async (
+    name: string,
+    value: Awaited<ReturnType<typeof createZkIdentityStatusTestnetEvidence>>,
+  ) => {
+    const path = join(drillEvidenceDirectory, `${name}.json`);
+    await writeZkIdentityStatusTestnetEvidence(path, value);
+    return path;
+  };
+  const [ready10Path, ready20Path, ready40Path, ready60Path, withholding30Path, withholding50Path, divergence50Path] =
+    await Promise.all([
+      archive("ready-10", ready10),
+      archive("ready-20", ready20),
+      archive("ready-40", ready40),
+      archive("ready-60", ready60),
+      archive("withholding-30", withholding30),
+      archive("withholding-50", withholding50),
+      archive("divergence-50", divergence50),
+    ]);
+  const drillManifest = parseZkIdentityStatusTestnetDrillManifest({
+    schema: ZK_IDENTITY_STATUS_TESTNET_DRILL_MANIFEST_SCHEMA,
+    restarts: [
+      { operatorId: "reconciler-a", before: evidencePath, after: ready10Path },
+      { operatorId: "reconciler-b", before: ready10Path, after: ready20Path },
+    ],
+    withholding: {
+      before: ready20Path,
+      blocked: withholding30Path,
+      after: ready40Path,
+    },
+    divergence: {
+      before: ready40Path,
+      blocked: divergence50Path,
+      after: ready60Path,
+    },
+  });
+  const drillManifestPath = join(root, "drill-manifest.json");
+  await writeFile(drillManifestPath, `${JSON.stringify(drillManifest)}\n`, "utf8");
+  const drillReport = await verifyZkIdentityStatusTestnetDrillEvidence({
+    config,
+    manifest: await readZkIdentityStatusTestnetDrillManifest(drillManifestPath),
+  });
+  assert.equal(drillReport.intrinsicEvidenceValid, true);
+  assert.deepEqual(
+    drillReport.restarts.map(({ operatorId }) => operatorId),
+    ["reconciler-a", "reconciler-b"],
+  );
+  assert.ok(drillReport.withholding.observedAlertCodes.includes("WITHHOLDING_SUSPECTED"));
+  assert.ok(drillReport.divergence.observedAlertCodes.includes("SNAPSHOT_DIVERGENCE"));
+  assert.ok(
+    drillReport.externalChecksRequired.includes("WITHHOLDING_PAGE_ACKNOWLEDGEMENT"),
+  );
+  await assert.rejects(
+    verifyZkIdentityStatusTestnetDrillEvidence({
+      config,
+      manifest: {
+        ...drillManifest,
+        restarts: [
+          { operatorId: "reconciler-a", before: ready10Path, after: evidencePath },
+          drillManifest.restarts[1]!,
+        ],
+      },
+    }),
+    /must be observed later/u,
+  );
+  await assert.rejects(
+    verifyZkIdentityStatusTestnetDrillEvidence({
+      config,
+      manifest: {
+        ...drillManifest,
+        divergence: {
+          ...drillManifest.divergence,
+          blocked: withholding50Path,
+        },
+      },
+    }),
+    /does not contain the required alert/u,
+  );
 
   console.log("v2 status operators: atomic checkpoints + strict fleet reconciliation PASS");
 } finally {

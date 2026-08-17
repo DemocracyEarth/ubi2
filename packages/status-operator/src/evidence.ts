@@ -15,6 +15,19 @@ import {
 
 export const ZK_IDENTITY_STATUS_TESTNET_EVIDENCE_SCHEMA =
   "org.proofofhumanity.v2-packed-status-testnet-evidence/1" as const;
+export const ZK_IDENTITY_STATUS_SUPPORTED_TESTNET_CHAIN_IDS = [
+  84_532,
+  11_155_111,
+  11_142_220,
+  46_630,
+  4_801,
+] as const;
+
+export function assertZkIdentityStatusSupportedTestnetChainId(chainId: number): void {
+  if (!(ZK_IDENTITY_STATUS_SUPPORTED_TESTNET_CHAIN_IDS as readonly number[]).includes(chainId)) {
+    throw new Error("status operator requires a supported testnet chain id");
+  }
+}
 
 interface PublicFleetConfig {
   schema: ZkIdentityStatusFleetConfig["schema"];
@@ -103,8 +116,14 @@ function sha256(value: unknown): Hex {
   return `0x${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
-function publicFleet(config: ZkIdentityStatusFleetConfig): PublicFleetConfig {
+function testnetFleet(config: unknown): ZkIdentityStatusFleetConfig {
   const parsed = parseZkIdentityStatusFleetConfig(config);
+  assertZkIdentityStatusSupportedTestnetChainId(parsed.chainId);
+  return parsed;
+}
+
+function publicFleet(config: ZkIdentityStatusFleetConfig): PublicFleetConfig {
+  const parsed = testnetFleet(config);
   return {
     schema: parsed.schema,
     chainId: parsed.chainId,
@@ -120,7 +139,7 @@ function publicFleet(config: ZkIdentityStatusFleetConfig): PublicFleetConfig {
 function evaluationConfig(value: unknown): ZkIdentityStatusFleetConfig {
   const candidate = object(value, "status evidence fleet trust");
   exactKeys(candidate, fleetKeys, "status evidence fleet trust");
-  return parseZkIdentityStatusFleetConfig({
+  return testnetFleet({
     ...candidate,
     // RPC credentials and project paths are intentionally excluded from the
     // public evidence bundle. The captured finalized header is the evidence.
@@ -283,6 +302,22 @@ export async function verifyZkIdentityStatusTestnetEvidence(
   return candidate as unknown as ZkIdentityStatusTestnetEvidence;
 }
 
+/**
+ * Verify an evidence bundle and bind its public trust metadata to an
+ * independently supplied, reviewed fleet configuration. RPC URLs and request
+ * timeouts are intentionally not part of that public comparison.
+ */
+export async function verifyZkIdentityStatusTestnetEvidenceAgainstFleet(
+  value: unknown,
+  expectedConfig: ZkIdentityStatusFleetConfig,
+): Promise<ZkIdentityStatusTestnetEvidence> {
+  const verified = await verifyZkIdentityStatusTestnetEvidence(value);
+  if (canonicalJson(verified.fleet) !== canonicalJson(publicFleet(expectedConfig))) {
+    throw new Error("status testnet evidence does not match the reviewed fleet configuration");
+  }
+  return verified;
+}
+
 async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY);
   try {
@@ -341,4 +376,15 @@ export async function readZkIdentityStatusTestnetEvidence(
 ): Promise<ZkIdentityStatusTestnetEvidence> {
   if (!isAbsolute(path)) throw new Error("status testnet evidence path must be absolute");
   return verifyZkIdentityStatusTestnetEvidence(JSON.parse(await readFile(path, "utf8")));
+}
+
+export async function readZkIdentityStatusTestnetEvidenceAgainstFleet(
+  path: string,
+  expectedConfig: ZkIdentityStatusFleetConfig,
+): Promise<ZkIdentityStatusTestnetEvidence> {
+  if (!isAbsolute(path)) throw new Error("status testnet evidence path must be absolute");
+  return verifyZkIdentityStatusTestnetEvidenceAgainstFleet(
+    JSON.parse(await readFile(path, "utf8")),
+    expectedConfig,
+  );
 }
