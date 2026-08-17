@@ -261,7 +261,9 @@ and v2 proof generation are not enabled yet.
   SDK issuance transcript are pinned without changing public signals, ABI or status format and without promoting
   the measured Poseidon profile to production. Independent hosting, observed real paging/drills, production
   commitment and issuer-authentication ratification, the slot/epoch race decision and canonical testnet evidence
-  remain.
+  remain. A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain
+  evidence required for production, verifies exact live codehashes plus timelocked ownership, and emits only
+  unsubmitted governance calldata; no current candidate satisfies that admission gate.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

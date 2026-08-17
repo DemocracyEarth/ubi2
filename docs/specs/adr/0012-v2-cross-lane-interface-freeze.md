@@ -127,3 +127,8 @@ local Cancun research values are not release budgets.
 CI must run the shared vector in TypeScript, Rust and Solidity. A worker PR that changes a frozen field, index,
 scope, status convention or verifier ABI must update this ADR with a versioned migration, add positive and negative
 vectors, and state which lanes must rebase. Updating only one language is a release-blocking failure.
+
+Production activation is additionally governed by the
+[`org.proofofhumanity.zk-production-profile/1`](../v2-production-profile-admission.md) admission manifest. Freezing
+the wire layout does not satisfy that gate: audited artifact/setup provenance, live runtime codehashes, independent
+reports, mobile measurements and target-chain evidence remain mandatory.
