@@ -25,8 +25,15 @@ import {
   ZK_IDENTITY_STATUS_FLEET_CONFIG_SCHEMA,
 } from "./config";
 import {
+  createZkIdentityStatusTestnetEvidence,
+  readZkIdentityStatusTestnetEvidence,
+  verifyZkIdentityStatusTestnetEvidence,
+  writeZkIdentityStatusTestnetEvidence,
+} from "./evidence";
+import {
   evaluateZkIdentityStatusOperatorFleet,
   fetchZkIdentityStatusOperatorFleet,
+  type FetchedZkIdentityStatusOperator,
 } from "./fleet";
 import {
   runZkIdentityStatusOperatorCycle,
@@ -152,6 +159,17 @@ const signedArtifact = async (
     snapshot,
     await account.sign!({ hash: zkIdentityPackedStatusAttestationDigest(snapshot) }),
   ),
+});
+const operatorFetch = (
+  operatorId: string,
+  health: unknown,
+  latest: unknown,
+): FetchedZkIdentityStatusOperator => ({
+  operatorId,
+  health,
+  latest,
+  immutableArtifact: latest,
+  immutableCacheControl: "public, max-age=31536000, immutable",
 });
 
 const root = await mkdtemp(join(tmpdir(), "ubi2-status-operator-test-"));
@@ -288,8 +306,8 @@ try {
   const fleet = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      { operatorId: "reconciler-a", health: healthA, latest: latestA },
-      { operatorId: "reconciler-b", health: healthB, latest: latestB },
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", healthB, latestB),
     ],
     referenceFinalizedBlock: block103,
     observedAt: now(),
@@ -298,11 +316,58 @@ try {
   assert.deepEqual(fleet.alerts, []);
   assert.equal(fleet.publication?.expectedNextStatusId, "4");
 
+  const immutableMismatch = await evaluateZkIdentityStatusOperatorFleet({
+    config,
+    fetched: [
+      {
+        ...operatorFetch("reconciler-a", healthA, latestA),
+        immutableArtifact: latestB,
+      },
+      operatorFetch("reconciler-b", healthB, latestB),
+    ],
+    referenceFinalizedBlock: block103,
+    observedAt: now(),
+  });
+  assert.equal(immutableMismatch.ready, false);
+  assert.ok(
+    immutableMismatch.alerts.some(
+      ({ code, operatorId }) =>
+        code === "IMMUTABLE_ARTIFACT_MISMATCH" && operatorId === "reconciler-a",
+    ),
+  );
+  assert.equal(immutableMismatch.publication, null);
+
+  const evidencePath = join(root, "evidence", "ready.json");
+  const evidence = await createZkIdentityStatusTestnetEvidence({
+    config,
+    fetched: [
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", healthB, latestB),
+    ],
+    referenceFinalizedBlock: block103,
+    observedAt: now(),
+  });
+  assert.equal(evidence.report.ready, true);
+  await writeZkIdentityStatusTestnetEvidence(evidencePath, evidence);
+  assert.equal((await readZkIdentityStatusTestnetEvidence(evidencePath)).report.ready, true);
+  await assert.rejects(
+    writeZkIdentityStatusTestnetEvidence(evidencePath, evidence),
+    { message: /already exists/u, code: "EVIDENCE_ALREADY_EXISTS" },
+  );
+  const tamperedEvidence = structuredClone(evidence) as unknown as {
+    report: { ready: boolean };
+  };
+  tamperedEvidence.report.ready = false;
+  await assert.rejects(
+    verifyZkIdentityStatusTestnetEvidence(tamperedEvidence),
+    /SHA-256 mismatch/u,
+  );
+
   const missingReference = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      { operatorId: "reconciler-a", health: healthA, latest: latestA },
-      { operatorId: "reconciler-b", health: healthB, latest: latestB },
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", healthB, latestB),
     ],
     observedAt: now(),
   });
@@ -354,8 +419,8 @@ try {
   const stale = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      { operatorId: "reconciler-a", health: healthA, latest: latestA },
-      { operatorId: "reconciler-b", health: healthB, latest: latestB },
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", healthB, latestB),
     ],
     referenceFinalizedBlock: block103,
     observedAt: new Date("2026-08-16T12:03:00.000Z"),
@@ -391,8 +456,8 @@ try {
   const withholding = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      { operatorId: "reconciler-a", health: healthA, latest: latestA },
-      { operatorId: "reconciler-b", health: behindHealth, latest: behindArtifact },
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", behindHealth, behindArtifact),
     ],
     referenceFinalizedBlock: block103,
     observedAt: now(),
@@ -400,15 +465,27 @@ try {
   assert.equal(withholding.ready, false);
   assert.ok(withholding.alerts.some(({ code }) => code === "WITHHOLDING_SUSPECTED"));
   assert.equal(withholding.publication, null);
+  const withholdingEvidence = await createZkIdentityStatusTestnetEvidence({
+    config,
+    fetched: [
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", behindHealth, behindArtifact),
+    ],
+    referenceFinalizedBlock: block103,
+    observedAt: now(),
+  });
+  assert.equal(
+    (await verifyZkIdentityStatusTestnetEvidence(withholdingEvidence)).report.ready,
+    false,
+  );
 
   const behindAArtifact = await signedArtifact(initial, "reconciler-a", reconcilerA);
   const allBehind = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      {
-        operatorId: "reconciler-a",
-        latest: behindAArtifact,
-        health: {
+      operatorFetch(
+        "reconciler-a",
+        {
           ...behindHealth,
           operatorId: "reconciler-a",
           signerAddress: reconcilerA.address,
@@ -417,8 +494,9 @@ try {
             snapshotHash: behindAArtifact.attestation.snapshotHash,
           },
         },
-      },
-      { operatorId: "reconciler-b", health: behindHealth, latest: behindArtifact },
+        behindAArtifact,
+      ),
+      operatorFetch("reconciler-b", behindHealth, behindArtifact),
     ],
     referenceFinalizedBlock: block103,
     observedAt: now(),
@@ -476,12 +554,8 @@ try {
   const divergence = await evaluateZkIdentityStatusOperatorFleet({
     config,
     fetched: [
-      { operatorId: "reconciler-a", health: healthA, latest: latestA },
-      {
-        operatorId: "reconciler-b",
-        health: await splitStore.readHealth(),
-        latest: splitArtifact,
-      },
+      operatorFetch("reconciler-a", healthA, latestA),
+      operatorFetch("reconciler-b", await splitStore.readHealth(), splitArtifact),
     ],
     referenceFinalizedBlock: block103,
     observedAt: now(),

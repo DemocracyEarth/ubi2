@@ -225,10 +225,10 @@ and v2 proof generation are not enabled yet.
   proof decision to the subject, registry-scoped key, proof-bound holder commitment, issuer key, slot/epoch and
   verifier configuration through a short-lived EIP-712 authorization. A capability-authenticated refresh now
   recovers slot/epoch/expiry races for the transitional pre-commitment flow without retaining the raw Self
-  nullifier or extending the original ten-minute verification window; the pinned circuit-native commitment binds
-  slot/epoch and therefore requires a separate recorded race-resolution decision. Bridge plus allocation costs
-  140,108 local gas. On-chain/native passport proof verification, the production issuer-authentication envelope,
-  public snapshot
+  nullifier or extending the original ten-minute verification window; the pinned holder-reference commitment
+  candidate binds slot/epoch and therefore requires a separate recorded race-resolution decision. Bridge plus
+  allocation costs 140,108 local gas. On-chain/native passport proof verification, the production
+  issuer-authentication envelope, public snapshot
   builder/distribution, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas,
   transport/privacy hardening, and the final ADR remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
@@ -255,11 +255,13 @@ and v2 proof generation are not enabled yet.
   allocation-bound packed-status publication/revocation transition, and deterministic fork-recoverable snapshot
   computation core are implemented with adversarial tests and circuit parity. Strict durable restore, bounded
   finalized-RPC ingestion, content-addressed EIP-712 envelopes and two-party root reconciliation are now implemented
-  as reference tooling. A deployable single-writer operator, immutable artifact server, third-RPC fleet gate and
-  systemd hardening templates are implemented. The versioned circuit-native holder commitment, Rust/WASM reference
-  generator and sanitized SDK issuance transcript are now pinned without changing public signals, ABI or status
-  format. Independent hosting, real paging, issuer-authentication integration, the slot/epoch race decision and
-  canonical testnet evidence remain.
+  as reference tooling. A deployable single-writer operator, immutable artifact server, third-RPC fleet gate,
+  end-to-end immutable retrieval check, non-overwriting offline-verifiable evidence bundle and systemd/drill
+  runbooks are implemented. The versioned holder-commitment candidate, Rust/WASM reference generator and sanitized
+  SDK issuance transcript are pinned without changing public signals, ABI or status format and without promoting
+  the measured Poseidon profile to production. Independent hosting, observed real paging/drills, production
+  commitment and issuer-authentication ratification, the slot/epoch race decision and canonical testnet evidence
+  remain.
 - **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.

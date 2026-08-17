@@ -164,8 +164,9 @@ still requires either an audited on-chain verifier for the exact Self proof/vers
 passport-to-commitment circuit, plus an HSM/threshold service, durable private handoff, monitoring,
 rate limits and incident/rotation drills.
 
-The holder reference lane now generates the versioned circuit-native commitment in Rust/WASM and the SDK can
-finalize a sanitized allocation/snapshot transcript. The current UI still does not invoke that local module or
+The holder reference lane now generates a versioned circuit-native commitment candidate in Rust/WASM and the SDK
+can finalize a sanitized allocation/snapshot transcript. ADR-0012 leaves the production commitment/hash profile
+unratified. The current UI still does not invoke that local module or
 persist the credential. Only developer/prover integrations can enter this v2 path until the Stage 3 holder vault
 and isolated prover are connected. No random or EVM-keccak placeholder is promoted as a real credential. Because
 the commitment binds slot and epoch, the existing grant-preserving refresh is not valid for this path after a

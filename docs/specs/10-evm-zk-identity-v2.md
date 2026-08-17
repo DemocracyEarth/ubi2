@@ -2,8 +2,9 @@
 
 - **Status:** proposed; foundation implementation started
 - **Owner:** architect → cryptography engineer → protocol engineer → interface engineer → security auditor
-- **Decisions:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md) and the proposed
-  [ADR-0011 dynamic-status freshness boundary](adr/0011-dynamic-status-freshness.md)
+- **Decisions:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md), the proposed
+  [ADR-0011 dynamic-status freshness boundary](adr/0011-dynamic-status-freshness.md), and the accepted
+  [ADR-0012 cross-lane wire freeze](adr/0012-v2-cross-lane-interface-freeze.md)
 - **Builds on:** [ADR-0009](adr/0009-predicate-v2-and-final-onchain-surface.md),
   [`PredicateVerifier.sol`](../../contracts/src/PredicateVerifier.sol), and the M6 passport verifier
 
@@ -20,6 +21,11 @@ Proof-of-Humanity NFT remains an optional uniqueness/freshness anchor and contai
 
 v1 remains available as a fallback while v2 is built and audited. The v1.5 on-demand/rescan product release
 is deferred; its Self/Groth16 work may still be reused as issuance and verifier infrastructure.
+
+ADR-0012 freezes the V1 cross-lane wire contract and a synthetic compatibility vector so holder, circuit and
+operator work can proceed independently without reinterpreting fields. It does **not** ratify the benchmark
+credential commitment, issuer signature, Poseidon parameters, Groth16 setup or verifier artifacts; those remain
+production blockers and must enter through an explicit versioned cryptographic profile.
 
 ## What a passport can support
 
@@ -255,13 +261,14 @@ The country root above is a deliberately small parity fixture, not a production 
   [`zk-identity-encoding.ts`](../../packages/sdk/src/zk-identity-encoding.ts),
   [`ZkIdentityEncoding.sol`](../../contracts/src/ZkIdentityEncoding.sol), and
   [`v2_identity.rs`](../../crates/zkpoh/src/v2_identity.rs), with identical fixtures in all three languages.
-- **Holder commitment and issuance transcript implemented:** the exact 16-field private-credential preimage is
-  absorbed by the measured arkworks BN254 Poseidon profile under a versioned commitment scheme, with Rust
+- **Holder commitment candidate and issuance transcript implemented:** the exact 16-field private-credential
+  preimage is absorbed by the measured arkworks BN254 Poseidon profile under a versioned reference scheme, with Rust
   native/R1CS and TypeScript parity vectors. A strict SDK flow recovers the transitional Self authorization signer,
   decodes exact allocation/snapshot receipt logs and emits a sanitized, deterministic transcript without private
   claims, secrets, raw nullifier, duplicate key or bridge signature. No public signal, ABI or status format changed.
-  The slot/epoch race-refresh conflict and final issuer-authentication envelope remain explicit integration
-  decisions. See [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md).
+  ADR-0012 does not ratify this measured Poseidon profile for production. Production commitment/hash selection,
+  the slot/epoch race-refresh conflict and the issuer-authentication envelope remain explicit integration decisions.
+  See [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md).
 - Benchmark signature/accumulator and proof-system candidates on desktop, mid-range mobile and EVM L1/L2.
 - **Desktop authentication baseline implemented:** the isolated
   [`v2-crypto-bench`](../../tools/v2-crypto-bench/README.md) harness pins constraint counts, tests invalid
@@ -346,9 +353,9 @@ assurance, issuedAtEpoch
 Dates are `YYYYMMDD` `uint32` values; country codes are ISO alpha-3 `bytes3`; holder secret and blinding are
 non-zero canonical BN254 scalar-field elements. The fixture's Keccak fingerprint exists only to detect
 cross-language encoding drift. It is **not** the circuit credential commitment and must never be published as
-a presentation identifier. The holder commitment is now the versioned Poseidon construction in
-[`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md); the production issuer-authentication
-signature/envelope remains a circuit-lane decision.
+a presentation identifier. The holder commitment candidate is the versioned Poseidon reference construction in
+[`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md); ADR-0012 leaves the production
+commitment/hash profile and issuer-authentication signature/envelope to the circuit lane.
 
 #### Pinned scoped-nullifier input (version 1)
 
@@ -417,10 +424,11 @@ pre-deployment transitional trust root, not an on-chain Self verifier or product
 [`v2-issuance-registry.md`](v2-issuance-registry.md) and
 [`v2-self-issuance-bridge.md`](v2-self-issuance-bridge.md).
 
-**Holder commitment/transcript implemented (2026-08-16):** the local Rust/WASM lane produces the exact
-slot/epoch-bound circuit commitment, and the SDK verifies signed bridge authorization plus allocation/snapshot
-receipt evidence into an encrypted-vault transcript. The existing grant-preserving slot/epoch refresh cannot
-remain valid for that commitment; it is labeled `NEEDS-INTEGRATION-DECISION` with alternatives in the holder spec.
+**Holder commitment candidate/transcript implemented (2026-08-16):** the local Rust/WASM lane produces the exact
+slot/epoch-bound reference commitment, and the SDK verifies signed bridge authorization plus allocation/snapshot
+receipt evidence into an encrypted-vault transcript. ADR-0012 does not production-ratify the measured Poseidon
+profile. The existing grant-preserving slot/epoch refresh cannot remain valid for this candidate; it is labeled
+`NEEDS-INTEGRATION-DECISION` with alternatives in the holder spec.
 
 ### Stage 3 — local prover and passkey product
 

@@ -1,0 +1,146 @@
+{
+  "schema": "org.proofofhumanity.v2-cross-lane-interface/1",
+  "interfaceVersion": 1,
+  "classification": {
+    "evmWireContract": "frozen",
+    "packedStatusProfile": "testnet-integration-only",
+    "productionCryptography": "unratified"
+  },
+  "privateCredential": {
+    "issuerKeyId": "0x02bc3d3958ba083a8c814e7961433903dd91b59f2af591138467a1202da88d21",
+    "statusId": "0x84a8b6c45e1e6baf59f05ec3b1fb2317d2ec4b773c7f64d0b8c83d63ba2b3f3a",
+    "holderSecret": "123456789",
+    "credentialBlinding": "987654321",
+    "dateOfBirth": "1990-04-03",
+    "nationality": "ARG",
+    "issuingState": "ARG",
+    "expiryDate": "2031-07-09",
+    "documentClass": "epassport",
+    "assurance": "chip-auth",
+    "issuedAtEpoch": 230,
+    "diagnosticFingerprint": "0x5f3113cae53c94a863c5362d229137c767d996e444283541f19b13aac89e7f11"
+  },
+  "issuanceDomain": {
+    "chainId": 84532,
+    "registry": "0x1111111111111111111111111111111111111111",
+    "hash": "0x3bf5571a5fb54037b033765a46a43d150ae8ffa32cb5c72c2ec11f6a572bd998"
+  },
+  "nullifierScope": {
+    "mode": "single-use",
+    "chainId": 84532,
+    "verifier": "0x1111111111111111111111111111111111111111",
+    "consumer": "0x2222222222222222222222222222222222222222",
+    "context": "0x40b3b0ff9df9a56d11190d43b954f1e764f955b8b28fdc4882d9c48c57d75852",
+    "policyHash": "0x3f71ddd64fc1edef180756674529dd32b2c90f7288d2f0ced062e781a0cda3a2",
+    "hash": "0x6f9eb06ffea41fade00efe22ab9a7a855f366218cd9248acb84e7578a4f90716",
+    "preimage": [
+      "3753063511814324395807447140844095217",
+      "39595397136107903161255285981469469429",
+      "1",
+      "123456789",
+      "148368269012998052364797751201271282309",
+      "126559033271166220203394870356863420182"
+    ]
+  },
+  "publicSignals": {
+    "names": [
+      "layoutVersion",
+      "circuitIdHi",
+      "circuitIdLo",
+      "issuerKeyIdHi",
+      "issuerKeyIdLo",
+      "activeRootHi",
+      "activeRootLo",
+      "policyHashHi",
+      "policyHashLo",
+      "presentationBindingHashHi",
+      "presentationBindingHashLo",
+      "nullifierScopeHashHi",
+      "nullifierScopeHashLo",
+      "scopedNullifier",
+      "subject",
+      "result",
+      "credentialEpoch",
+      "statusEpoch"
+    ],
+    "semanticValues": {
+      "circuitId": "0x6fb2504bcbedf578626be56688b0c6086ba9509b8af690dd4e488ac99223898a",
+      "issuerKeyId": "0x02bc3d3958ba083a8c814e7961433903dd91b59f2af591138467a1202da88d21",
+      "activeRoot": "0x2ab05e97e46a5597dcf46f06434efe77d5842ad3900bb196b6cbc92cba966199",
+      "policyHash": "0x3f71ddd64fc1edef180756674529dd32b2c90f7288d2f0ced062e781a0cda3a2",
+      "presentationBindingHash": "0xfcbaa318d3aba026a8827d332ec45ae24e9dbdd9ca6029b6fd3741b4e670e7a0",
+      "nullifierScopeHash": "0x6f9eb06ffea41fade00efe22ab9a7a855f366218cd9248acb84e7578a4f90716",
+      "scopedNullifier": "4242424242",
+      "subject": "0x3333333333333333333333333333333333333333",
+      "result": true,
+      "credentialEpoch": 230,
+      "statusEpoch": 0
+    },
+    "values": [
+      "1",
+      "148470164970938473527131569574145738248",
+      "143106528634218877324650955020395841930",
+      "3635849571425045330628617071914858755",
+      "294515953839665300979725696144129953057",
+      "56743338650715011814192789619580272247",
+      "283811814910439300292750339907545096601",
+      "84332592671497082657127333409566874930",
+      "237646548228780080072226119388672926626",
+      "335934530153236393154503107393022614242",
+      "104498824908571987640421674469385365408",
+      "148368269012998052364797751201271282309",
+      "126559033271166220203394870356863420182",
+      "4242424242",
+      "292300327466180583640736966543256603931186508595",
+      "1",
+      "230",
+      "0"
+    ]
+  },
+  "packedStatusTestnetProfile": {
+    "statusIdBits": 32,
+    "chunkBits": 256,
+    "treeDepth": 24,
+    "slotZero": "sentinel",
+    "activeBit": 0,
+    "unallocatedOrRevokedBit": 1,
+    "hashSuite": "unratified-research-candidate"
+  },
+  "negativeMutations": [
+    {
+      "name": "unsupported-layout",
+      "index": 0,
+      "value": "2"
+    },
+    {
+      "name": "zero-policy-hash",
+      "index": 7,
+      "value": "0",
+      "alsoIndex": 8,
+      "alsoValue": "0"
+    },
+    {
+      "name": "noncanonical-nullifier",
+      "index": 13,
+      "value": "21888242871839275222246405745257275088548364400416034343698204186575808495617"
+    },
+    {
+      "name": "zero-subject",
+      "index": 14,
+      "value": "0"
+    },
+    {
+      "name": "nonboolean-result",
+      "index": 15,
+      "value": "2"
+    }
+  ],
+  "productionBlockers": [
+    "circuit-native credential commitment and hash parameters",
+    "issuer signature scheme, encoding, subgroup checks and nonce derivation",
+    "production packed-status hash suite and profile identifier",
+    "production circuit identifiers and policy circuits",
+    "audited compiler, setup ceremony, proving key and verifier bytecode",
+    "mid-range mobile proving and target-chain gas evidence"
+  ]
+}

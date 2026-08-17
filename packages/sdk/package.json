@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx src/passport.test.ts && tsx src/predicate.test.ts && tsx src/credential-vault.test.ts && tsx src/zk-identity-policy.test.ts && tsx src/zk-identity-status-manifest.test.ts && tsx src/zk-identity-packed-status.test.ts && tsx src/zk-identity-status-snapshot.test.ts && tsx src/zk-identity-status-ingestion.test.ts && tsx src/zk-identity-encoding.test.ts && tsx src/zk-self-issuance.test.ts && tsx src/zk-holder-credential.test.ts"
+    "test": "tsx src/passport.test.ts && tsx src/predicate.test.ts && tsx src/credential-vault.test.ts && tsx src/zk-identity-policy.test.ts && tsx src/zk-identity-status-manifest.test.ts && tsx src/zk-identity-packed-status.test.ts && tsx src/zk-identity-status-snapshot.test.ts && tsx src/zk-identity-status-ingestion.test.ts && tsx src/zk-identity-encoding.test.ts && tsx src/zk-identity-interface-fixture.test.ts && tsx src/zk-self-issuance.test.ts && tsx src/zk-holder-credential.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22",

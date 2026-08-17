@@ -1,9 +1,11 @@
 # V2 holder credential commitment and issuance transcript
 
-- **Status:** implemented holder/reference interface; production issuer authentication and presentation circuits remain gated
+- **Status:** implemented holder/reference candidate; production commitment/hash profile, issuer authentication
+  and presentation circuits remain unratified
 - **SDK:** [`zk-holder-credential.ts`](../../packages/sdk/src/zk-holder-credential.ts)
 - **Circuit reference:** [`holder_credential.rs`](../../tools/v2-crypto-bench/src/holder_credential.rs)
 - **Parent:** [`10-evm-zk-identity-v2.md`](10-evm-zk-identity-v2.md)
+- **Cross-lane boundary:** [`ADR-0012`](adr/0012-v2-cross-lane-interface-freeze.md)
 
 ## Purpose and boundary
 
@@ -13,12 +15,12 @@ credential commitment is public at issuance and anchors issuer authorization, al
 revocation. It is deliberately absent from the 18 presentation signals, so applications cannot correlate two
 presentations through it.
 
-This slice pins the circuit-native holder commitment, its deterministic vectors and a sanitized live issuance
-transcript. It does **not** put passport claims in the NFT, registry, transcript or public signals. It also does
-not select or simulate a production issuer signature: allocation under the transitional Self bridge is not by
-itself a presentation-ready anonymous credential.
+This slice pins a versioned circuit-native holder-commitment candidate, its deterministic vectors and a sanitized
+live issuance transcript. It does **not** put passport claims in the NFT, registry, transcript or public signals.
+It also does not ratify this measured Poseidon profile or select/simulate a production issuer signature: allocation
+under the transitional Self bridge is not by itself a presentation-ready anonymous credential.
 
-## Credential commitment v1
+## Credential commitment reference profile v1 (candidate)
 
 Identifiers:
 
@@ -122,9 +124,10 @@ Transcript states are intentionally honest:
 - `allocated` — the registry consumed the commitment and assigned its slot/epoch;
 - `snapshot-covered` — an authenticated publication covers the allocation watermark.
 
-Neither state means a production issuer signature exists. The credential becomes presentation-ready only after
-the circuit/verifier lane supplies the separately versioned issuer-authentication artifact and the local prover
-verifies it before vault persistence.
+Neither state means a production commitment profile or issuer signature exists. A credential becomes
+presentation-ready only if the circuit/verifier lane ratifies this exact commitment scheme (or publishes an
+explicit migration) and supplies the separately versioned issuer-authentication artifact for local verification
+before vault persistence.
 
 ## Public versus private
 
@@ -157,7 +160,7 @@ attributes, no credential ciphertext and no credential commitment.
 ### Slot/epoch race recovery
 
 The existing transitional PATCH refresh changes `expectedStatusId` and/or `expectedEpoch` while preserving the
-old commitment. V1 now correctly commits both values, so such an artifact is rejected by transcript validation
+old commitment. Reference profile v1 commits both values, so such an artifact is rejected by transcript validation
 and cannot create a valid presentation credential. Cross-lane integration must choose one:
 
 1. **Recommit and re-run passport binding after a race.** No ABI change and safest first testnet behavior, but a

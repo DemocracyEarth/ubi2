@@ -134,9 +134,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   immutable
   EIP-712 Self bridge now binds a byte-exact configured off-chain verification decision to the proof subject,
   proof-bound holder commitment, registry-scoped key, issuer key and expected slot/epoch; bridge plus allocation is
-  pinned at 140,108 local gas. The exact slot/epoch-bound Poseidon holder commitment, Rust/WASM reference vector
-  and sanitized live-receipt transcript are pinned without a public-interface change. Remaining: resolve the
-  commitment versus slot/epoch-refresh decision, integrate the production issuer-authentication envelope,
+  pinned at 140,108 local gas. The exact slot/epoch-bound Poseidon holder-commitment candidate, Rust/WASM reference
+  vector and sanitized live-receipt transcript are pinned without a public-interface change or production-profile
+  ratification. Remaining: resolve the commitment versus slot/epoch-refresh decision, ratify the production
+  commitment and issuer-authentication envelope,
   on-chain/native passport proof verification, independently hosted snapshot operators and real paging/drills,
   mobile, alternate
   hash/proof-system,
@@ -156,6 +157,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   nullifier, and passes the real registry→adapter→host→replay path. Its 3,349-byte raw verifier costs 331,699 gas and
   the stateful path costs 419,219 gas locally; every signal mutation rejects. The setup toxic waste is public and
   categorically non-deployable. The security boundary, constraint-audit plan and ceremony gates are recorded.
+  The status fleet now verifies the content-addressed immutable endpoint itself and can archive a non-overwriting,
+  secretless bundle whose checksum, signatures and fleet decision reproduce offline; no hosted canonical-testnet
+  bundle, real page acknowledgement or completed drill is claimed yet.
   Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
   target-chain measurements, production ceremony and audits remain.
 - **ZKID-V2-T2 · architect/protocol/security** — one-time issuance and uniqueness foundation. *Accepts:* issuance
