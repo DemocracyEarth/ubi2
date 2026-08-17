@@ -2,8 +2,9 @@
 
 - **Status:** proposed; foundation implementation started
 - **Owner:** architect → cryptography engineer → protocol engineer → interface engineer → security auditor
-- **Decisions:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md) and the proposed
-  [ADR-0011 dynamic-status freshness boundary](adr/0011-dynamic-status-freshness.md)
+- **Decisions:** [ADR-0010](adr/0010-direct-v2-portable-zk-credential.md), the proposed
+  [ADR-0011 dynamic-status freshness boundary](adr/0011-dynamic-status-freshness.md), and the accepted
+  [ADR-0012 cross-lane wire freeze](adr/0012-v2-cross-lane-interface-freeze.md)
 - **Builds on:** [ADR-0009](adr/0009-predicate-v2-and-final-onchain-surface.md),
   [`PredicateVerifier.sol`](../../contracts/src/PredicateVerifier.sol), and the M6 passport verifier
 
@@ -20,6 +21,11 @@ Proof-of-Humanity NFT remains an optional uniqueness/freshness anchor and contai
 
 v1 remains available as a fallback while v2 is built and audited. The v1.5 on-demand/rescan product release
 is deferred; its Self/Groth16 work may still be reused as issuance and verifier infrastructure.
+
+ADR-0012 freezes the V1 cross-lane wire contract and a synthetic compatibility vector so holder, circuit and
+operator work can proceed independently without reinterpreting fields. It does **not** ratify the benchmark
+credential commitment, issuer signature, Poseidon parameters, Groth16 setup or verifier artifacts; those remain
+production blockers and must enter through an explicit versioned cryptographic profile.
 
 ## What a passport can support
 
