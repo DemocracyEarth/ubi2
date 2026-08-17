@@ -1,0 +1,25 @@
+{
+  "schema": "org.proofofhumanity.v2-packed-status-testnet-drill-manifest/1",
+  "restarts": [
+    {
+      "operatorId": "reconciler-a",
+      "before": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T120000Z-restart-a-before.json",
+      "after": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T120200Z-restart-a-after.json"
+    },
+    {
+      "operatorId": "reconciler-b",
+      "before": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T120300Z-restart-b-before.json",
+      "after": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T120500Z-restart-b-after.json"
+    }
+  ],
+  "withholding": {
+    "before": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T121000Z-withholding-before.json",
+    "blocked": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T121500Z-withholding-blocked.json",
+    "after": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T122000Z-withholding-after.json"
+  },
+  "divergence": {
+    "before": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T123000Z-divergence-before.json",
+    "blocked": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T123100Z-divergence-blocked.json",
+    "after": "/var/lib/ubi2-status-evidence/canonical-testnet/20260817T123500Z-divergence-after.json"
+  }
+}
