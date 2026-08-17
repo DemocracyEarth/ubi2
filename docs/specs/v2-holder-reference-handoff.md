@@ -4,6 +4,8 @@
 - **SDK:** [`zk-holder-reference-handoff.ts`](../../packages/sdk/src/zk-holder-reference-handoff.ts)
 - **Credential/transcript parent:**
   [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md)
+- **Reference proving boundary:**
+  [`v2-holder-reference-prover-worker.md`](v2-holder-reference-prover-worker.md)
 - **Cross-lane boundary:** [`ADR-0012`](adr/0012-v2-cross-lane-interface-freeze.md)
 
 ## Outcome and non-goals
@@ -154,3 +156,8 @@ normalization, scalar ranges and independence, one-session capacity, one-shot se
 wrong-passkey rejection, transcript mismatch rejection, payload tamper rejection, unknown-field rejection and
 non-sensitive builder errors. Serialized preparation and vault envelopes are checked for private field names and
 synthetic claim values.
+
+The follow-on reference Worker control plane now pins one-job isolation, monotonic progress, cancellation,
+deadlines, WASM-memory ceilings, exact 18-signal equality and sanitized failures without accepting a credential
+witness or returning proof bytes. It remains non-presentable until a ratified profile supplies a new
+profile-specific engine and proof path.
