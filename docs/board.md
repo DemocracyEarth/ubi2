@@ -136,7 +136,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   proof-bound holder commitment, registry-scoped key, issuer key and expected slot/epoch; bridge plus allocation is
   pinned at 140,108 local gas. The exact slot/epoch-bound Poseidon holder-commitment candidate, Rust/WASM reference
   vector and sanitized live-receipt transcript are pinned without a public-interface change or production-profile
-  ratification. Remaining: resolve the commitment versus slot/epoch-refresh decision, ratify the production
+  ratification. An expiring one-shot reference handoff now generates holder material, binds the transcript and
+  seals only a hard-gated non-presentable synthetic payload through the encrypted vault. Remaining: resolve the
+  commitment versus slot/epoch-refresh decision, ratify the production
   commitment and issuer-authentication envelope,
   on-chain/native passport proof verification, independently hosted snapshot operators and real paging/drills,
   mobile, alternate
