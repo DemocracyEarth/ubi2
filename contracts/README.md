@@ -24,7 +24,10 @@ age, gender, sanctions result, or identity. One-human-one-token **per chain** vi
   the proof's active root to equal the exact root committed by that policy. Do not configure it until a reviewed
   production circuit and ceremony artifact exist.
 - `src/ZkIdentityVersionRegistry.sol` — **pre-deployment** additive circuit/codehash, issuer and root governance
-  prototype. Production ownership requires a timelock-controlled multisig.
+  prototype. Production ownership requires a timelock-controlled multisig. Production registration and
+  `PredicateVerifier.setPredicateProver` activation must first pass the read-only
+  [production-profile admission gate](../docs/specs/v2-production-profile-admission.md); research verifier
+  artifacts are categorically inadmissible.
 
 ## V2 adapter developer preview
 

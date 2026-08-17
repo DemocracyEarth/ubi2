@@ -430,6 +430,13 @@ receipt evidence into an encrypted-vault transcript. ADR-0012 does not productio
 profile. The existing grant-preserving slot/epoch refresh cannot remain valid for this candidate; it is labeled
 `NEEDS-INTEGRATION-DECISION` with alternatives in the holder spec.
 
+**Production-profile admission gate implemented (2026-08-17):** the release SDK now strictly binds audited circuit,
+setup, runtime, mobile and target-chain evidence in a content-addressed manifest. Its read-only live preflight
+checks exact deployed codehashes, timelocked ownership, an unregistered circuit and an unset host proof path before
+emitting registry/issuer calldata and a separately gated prover-activation call. This gate approves no current
+profile and cannot broadcast. See
+[`v2-production-profile-admission.md`](v2-production-profile-admission.md).
+
 ### Stage 3 — local prover and passkey product
 
 - WebAuthn PRF feature detection and user-verification ceremony; multiple passkeys and reviewed recovery.
