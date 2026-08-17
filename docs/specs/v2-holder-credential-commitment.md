@@ -3,6 +3,7 @@
 - **Status:** implemented holder/reference candidate; production commitment/hash profile, issuer authentication
   and presentation circuits remain unratified
 - **SDK:** [`zk-holder-credential.ts`](../../packages/sdk/src/zk-holder-credential.ts)
+- **Private handoff:** [`v2-holder-reference-handoff.md`](v2-holder-reference-handoff.md)
 - **Circuit reference:** [`holder_credential.rs`](../../tools/v2-crypto-bench/src/holder_credential.rs)
 - **Parent:** [`10-evm-zk-identity-v2.md`](10-evm-zk-identity-v2.md)
 - **Cross-lane boundary:** [`ADR-0012`](adr/0012-v2-cross-lane-interface-freeze.md)
@@ -201,3 +202,7 @@ The SDK pins a complete synthetic authorization → receipt allocation → statu
 Tests mutate every private field class, signer, commitment, slot, epoch, allocation event, snapshot watermark and
 serialized transcript; each mismatch fails closed. CI reproduces the Rust vector byte-for-byte and builds the
 WASM commitment export.
+
+The follow-on reference handoff now generates holder material inside an expiring one-shot session, binds this
+transcript and produces authenticated ciphertext through the existing credential vault. Its payload is hard-coded
+`reference-only-unratified` and `presentationReady: false`; ADR-0012 still forbids live persistence.
