@@ -84,3 +84,10 @@ migrating the NFT or changing the forever-interface.
 
 This ADR becomes accepted only after Stage 1 records measured proof-system/credential-authentication results
 and the security owner approves the threat model. Starting the vault primitive does not pre-decide the circuit.
+
+**Implementation note (2026-08-16):** the holder lane now pins the versioned private-credential Poseidon
+commitment and sanitized issuance transcript in
+[`v2-holder-credential-commitment.md`](../v2-holder-credential-commitment.md). This does not ratify the production
+issuer-signature envelope or proof system. It also exposes a pre-existing integration conflict: a commitment that
+binds `statusId`/`issuedAtEpoch` cannot survive the transitional bridge's grant-preserving refresh of those fields.
+No shared ABI changed; the alternatives and consequences are recorded as `NEEDS-INTEGRATION-DECISION`.

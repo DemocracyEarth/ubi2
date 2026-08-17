@@ -33,9 +33,19 @@ use std::{error::Error, fmt};
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 use wasm_bindgen::{prelude::*, JsCast};
 
+mod holder_credential;
 mod status_distribution;
 mod status_registry;
 mod status_snapshot;
+
+pub use holder_credential::{
+    build_holder_credential_commitment, holder_credential_commitment_from_json,
+    holder_credential_field_elements, synthetic_holder_credential_reference_vector,
+    HolderCredentialCommitment, HolderCredentialCommitmentInput, HolderCredentialError,
+    HolderCredentialReferenceVector, HOLDER_CREDENTIAL_COMMITMENT_SCHEMA,
+    HOLDER_CREDENTIAL_COMMITMENT_SCHEME, HOLDER_CREDENTIAL_INPUT_SCHEMA,
+    HOLDER_CREDENTIAL_PRIVATE_SCHEMA,
+};
 
 pub use status_distribution::{
     run_status_distribution_bakeoff, DeliveryMode, PackedStatusBatchEstimate,
@@ -54,6 +64,15 @@ pub use status_snapshot::{
     PackedStatusWitness, SourceBlockRef, PACKED_STATUS_SNAPSHOT_SCHEMA,
     PACKED_STATUS_SOURCE_SCHEMA, PACKED_STATUS_WITNESS_SCHEMA,
 };
+
+/// Browser-local commitment entry point. The JSON source is consumed in WASM
+/// memory and the returned descriptor contains no private fields.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = buildHolderCredentialCommitment)]
+pub fn build_holder_credential_commitment_wasm(source: &str) -> Result<String, JsValue> {
+    holder_credential_commitment_from_json(source)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
 
 /// Native field used by the Stage-1 status-registry prototype.
 pub type StatusField = CircuitField;

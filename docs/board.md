@@ -134,8 +134,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   immutable
   EIP-712 Self bridge now binds a byte-exact configured off-chain verification decision to the proof subject,
   proof-bound holder commitment, registry-scoped key, issuer key and expected slot/epoch; bridge plus allocation is
-  pinned at 140,108 local gas. Remaining: on-chain/native passport proof verification, production credential
-  commitment generation, independently hosted snapshot operators and real paging/drills, mobile, alternate
+  pinned at 140,108 local gas. The exact slot/epoch-bound Poseidon holder commitment, Rust/WASM reference vector
+  and sanitized live-receipt transcript are pinned without a public-interface change. Remaining: resolve the
+  commitment versus slot/epoch-refresh decision, integrate the production issuer-authentication envelope,
+  on-chain/native passport proof verification, independently hosted snapshot operators and real paging/drills,
+  mobile, alternate
   hash/proof-system,
   production ceremony/target-chain gas,
   transport/privacy hardening, and the measured ADR. The raw five-input arkworks fixture verifies through EIP-196/197 at a pinned

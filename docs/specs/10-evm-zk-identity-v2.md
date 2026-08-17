@@ -255,6 +255,13 @@ The country root above is a deliberately small parity fixture, not a production 
   [`zk-identity-encoding.ts`](../../packages/sdk/src/zk-identity-encoding.ts),
   [`ZkIdentityEncoding.sol`](../../contracts/src/ZkIdentityEncoding.sol), and
   [`v2_identity.rs`](../../crates/zkpoh/src/v2_identity.rs), with identical fixtures in all three languages.
+- **Holder commitment and issuance transcript implemented:** the exact 16-field private-credential preimage is
+  absorbed by the measured arkworks BN254 Poseidon profile under a versioned commitment scheme, with Rust
+  native/R1CS and TypeScript parity vectors. A strict SDK flow recovers the transitional Self authorization signer,
+  decodes exact allocation/snapshot receipt logs and emits a sanitized, deterministic transcript without private
+  claims, secrets, raw nullifier, duplicate key or bridge signature. No public signal, ABI or status format changed.
+  The slot/epoch race-refresh conflict and final issuer-authentication envelope remain explicit integration
+  decisions. See [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md).
 - Benchmark signature/accumulator and proof-system candidates on desktop, mid-range mobile and EVM L1/L2.
 - **Desktop authentication baseline implemented:** the isolated
   [`v2-crypto-bench`](../../tools/v2-crypto-bench/README.md) harness pins constraint counts, tests invalid
@@ -339,8 +346,9 @@ assurance, issuedAtEpoch
 Dates are `YYYYMMDD` `uint32` values; country codes are ISO alpha-3 `bytes3`; holder secret and blinding are
 non-zero canonical BN254 scalar-field elements. The fixture's Keccak fingerprint exists only to detect
 cross-language encoding drift. It is **not** the circuit credential commitment and must never be published as
-a presentation identifier. The circuit-native commitment and issuer-authentication scheme remain Stage 1
-benchmark decisions.
+a presentation identifier. The holder commitment is now the versioned Poseidon construction in
+[`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md); the production issuer-authentication
+signature/envelope remains a circuit-lane decision.
 
 #### Pinned scoped-nullifier input (version 1)
 
@@ -408,6 +416,11 @@ allocation is pinned at 140,108 local gas. This remains a
 pre-deployment transitional trust root, not an on-chain Self verifier or production credential circuit. See
 [`v2-issuance-registry.md`](v2-issuance-registry.md) and
 [`v2-self-issuance-bridge.md`](v2-self-issuance-bridge.md).
+
+**Holder commitment/transcript implemented (2026-08-16):** the local Rust/WASM lane produces the exact
+slot/epoch-bound circuit commitment, and the SDK verifies signed bridge authorization plus allocation/snapshot
+receipt evidence into an encrypted-vault transcript. The existing grant-preserving slot/epoch refresh cannot
+remain valid for that commitment; it is labeled `NEEDS-INTEGRATION-DECISION` with alternatives in the holder spec.
 
 ### Stage 3 — local prover and passkey product
 
