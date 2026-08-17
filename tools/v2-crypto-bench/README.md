@@ -6,6 +6,41 @@ its circuit gadgets and prover dependencies do not enter the production `ubi2-zk
 
 This is **not a production circuit, security audit, parameter ratification, or final cryptographic decision**.
 
+## Versioned holder-credential commitment
+
+The holder lane now pins the v1 circuit-native commitment independently of any production presentation
+verifier. It absorbs the exact 16-element private-credential preimage with the already measured arkworks
+BN254 Poseidon sponge (`x^5`, 8 full + 57 partial rounds, rate 2, capacity 1) under field domain `1`.
+The inner preimage contains the lossless Keccak-domain limbs and schema version, so changing either the
+credential layout or Poseidon profile requires a new commitment scheme identifier.
+
+Generate a commitment by sending private JSON only through stdin. The tool rejects unknown fields, caps the
+input at 8 KiB, never echoes private values in errors, and returns a descriptor containing only the commitment,
+issuer key, assigned status slot, issuance epoch and scheme identifiers:
+
+```bash
+your-in-memory-json-producer | cargo run \
+  --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --holder-credential-commitment
+```
+
+Do not put real passport claims in a command line, source file, fixture, shell history or log. A product caller
+must construct the JSON in temporary memory, call the WASM export `buildHolderCredentialCommitment`, immediately
+discard the plaintext buffer, and persist the resulting private credential only through the encrypted vault.
+The CLI exists for development pipes and deterministic tests; it does not authorize plaintext input files.
+
+The committed [`holder-credential-commitment.json`](fixtures/holder-credential-commitment.json) vector uses the
+ISO user-assigned codes `XAA`/`XAB` and no real person or passport. Reproduce it with:
+
+```bash
+cargo run --manifest-path tools/v2-crypto-bench/Cargo.toml --release --locked -- \
+  --holder-credential-reference-vector
+```
+
+The SDK counterpart derives the same 16 field elements and finalizes a sanitized transcript from the signed
+Self authorization plus exact `CredentialAllocated` and optional `StatusSnapshotPublished` receipt logs. It
+does not store the raw Self nullifier, duplicate key, bridge signature, holder secret or passport claims.
+
 ## Relations measured
 
 Every candidate performs the same common work:

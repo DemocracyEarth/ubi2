@@ -94,6 +94,10 @@ jobs:
           diff -u fixtures/packed-status-snapshot.json "$RUNNER_TEMP/packed-status-snapshot.json"
           cargo run --release --locked -- --advance-status-snapshot fixtures/packed-status-snapshot.json fixtures/packed-status-continuation.json > "$RUNNER_TEMP/packed-status-advanced-snapshot.json"
           diff -u fixtures/packed-status-advanced-snapshot.json "$RUNNER_TEMP/packed-status-advanced-snapshot.json"
+      - name: Reproduce holder-credential commitment vector
+        run: |
+          cargo run --release --locked -- --holder-credential-reference-vector > "$RUNNER_TEMP/holder-credential-commitment.json"
+          diff -u fixtures/holder-credential-commitment.json "$RUNNER_TEMP/holder-credential-commitment.json"
 
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)

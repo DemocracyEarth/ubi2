@@ -133,6 +133,9 @@ No production deployment is authorized by this pre-deployment implementation.
 ## Next implementation slice
 
 Run the packaged reconciler instances and fleet gate on three independent canonical-testnet trust paths, connect
-real paging to non-ready fleet reports, and capture restart/withholding/divergence drills. Then connect the holder-
-side circuit-native credential commitment and capture one live issuance, slot-race refresh, duplicate rejection,
-activation, revocation, stale-root overlap and target-chain acceptance transcript.
+real paging to non-ready fleet reports, and capture restart/withholding/divergence drills. The holder-side
+commitment candidate and sanitized receipt transcript are now pinned as reference tooling in
+[`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md). Next capture one live canonical-testnet
+issuance, duplicate rejection, activation, revocation, stale-root overlap and target-chain acceptance transcript.
+Do not claim grant-preserving slot/epoch race refresh for the new commitment until its recorded integration
+decision is resolved.
