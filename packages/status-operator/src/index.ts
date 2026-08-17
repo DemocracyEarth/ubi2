@@ -1,6 +1,7 @@
 export * from "./adapters";
 export * from "./artifact";
 export * from "./config";
+export * from "./evidence";
 export * from "./fleet";
 export * from "./operator";
 export * from "./server";

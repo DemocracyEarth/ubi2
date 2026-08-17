@@ -12,18 +12,35 @@ import {
   readStrictJsonFile,
 } from "./config";
 import {
-  evaluateZkIdentityStatusOperatorFleet,
-  fetchZkIdentityStatusOperatorFleet,
-} from "./fleet";
+  createZkIdentityStatusTestnetEvidence,
+  readZkIdentityStatusTestnetEvidence,
+  writeZkIdentityStatusTestnetEvidence,
+} from "./evidence";
+import { fetchZkIdentityStatusOperatorFleet } from "./fleet";
 import { runZkIdentityStatusOperatorCycle } from "./operator";
 import { startZkIdentityStatusOperatorServer } from "./server";
 import { ZkIdentityStatusOperatorStore } from "./storage";
 
-function configPath(arguments_: string[]): string {
-  if (arguments_.length !== 2 || arguments_[0] !== "--config") {
-    throw new Error("status operator requires --config ABSOLUTE_PATH");
+function options(arguments_: string[], allowed: readonly string[]): Map<string, string> {
+  if (arguments_.length % 2 !== 0) {
+    throw new Error("status operator options require flag/value pairs");
   }
-  return arguments_[1]!;
+  const parsed = new Map<string, string>();
+  for (let index = 0; index < arguments_.length; index += 2) {
+    const flag = arguments_[index]!;
+    const value = arguments_[index + 1]!;
+    if (!allowed.includes(flag) || parsed.has(flag) || value.length === 0) {
+      throw new Error("status operator received unsupported or duplicate options");
+    }
+    parsed.set(flag, value);
+  }
+  return parsed;
+}
+
+function requiredOption(parsed: Map<string, string>, flag: string): string {
+  const value = parsed.get(flag);
+  if (value === undefined) throw new Error(`status operator requires ${flag} ABSOLUTE_PATH`);
+  return value;
 }
 
 async function closeServer(server: Awaited<ReturnType<typeof startZkIdentityStatusOperatorServer>>) {
@@ -101,33 +118,53 @@ async function runOperator(path: string): Promise<void> {
   }
 }
 
-async function runFleet(path: string): Promise<void> {
+async function runFleet(path: string, evidencePath?: string): Promise<void> {
   const config = parseZkIdentityStatusFleetConfig(await readStrictJsonFile(path));
   const referenceReader = createZkIdentityFinalizedViemReader(config.referenceRpcUrl);
-  const referenceFinalizedBlock = await Promise.all([
-    referenceReader.getChainId(),
-    referenceReader.getFinalizedBlock(),
-  ])
-    .then(([chainId, block]) => (chainId === config.chainId ? block : undefined))
-    .catch(() => undefined);
-  const report = await evaluateZkIdentityStatusOperatorFleet({
+  const [referenceFinalizedBlock, fetched] = await Promise.all([
+    Promise.all([referenceReader.getChainId(), referenceReader.getFinalizedBlock()])
+      .then(([chainId, block]) => (chainId === config.chainId ? block : undefined))
+      .catch(() => undefined),
+    fetchZkIdentityStatusOperatorFleet(config),
+  ]);
+  const evidence = await createZkIdentityStatusTestnetEvidence({
     config,
-    fetched: await fetchZkIdentityStatusOperatorFleet(config),
+    fetched,
     referenceFinalizedBlock,
   });
+  if (evidencePath !== undefined) {
+    await writeZkIdentityStatusTestnetEvidence(evidencePath, evidence);
+  }
+  const report = evidence.report;
   process.stdout.write(`${JSON.stringify(report)}\n`);
   if (!report.ready) process.exitCode = 2;
 }
 
+async function verifyEvidence(path: string): Promise<void> {
+  const evidence = await readZkIdentityStatusTestnetEvidence(path);
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "status_testnet_evidence_verified",
+      evidenceSha256: evidence.evidenceSha256,
+      ready: evidence.report.ready,
+      alerts: evidence.report.alerts,
+    })}\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const [command, ...arguments_] = process.argv.slice(2);
-  const path = configPath(arguments_);
   if (command === "run") {
-    await runOperator(path);
+    const parsed = options(arguments_, ["--config"]);
+    await runOperator(requiredOption(parsed, "--config"));
   } else if (command === "fleet") {
-    await runFleet(path);
+    const parsed = options(arguments_, ["--config", "--evidence"]);
+    await runFleet(requiredOption(parsed, "--config"), parsed.get("--evidence"));
+  } else if (command === "verify-evidence") {
+    const parsed = options(arguments_, ["--input"]);
+    await verifyEvidence(requiredOption(parsed, "--input"));
   } else {
-    throw new Error("status operator command must be run or fleet");
+    throw new Error("status operator command must be run, fleet, or verify-evidence");
   }
 }
 
@@ -136,6 +173,7 @@ function fatalCode(error: unknown): string {
     error !== null && typeof error === "object" && "code" in error
       ? (error as { code?: unknown }).code
       : undefined;
+  if (systemCode === "EVIDENCE_ALREADY_EXISTS") return "EVIDENCE_ALREADY_EXISTS";
   if (systemCode === "EEXIST") return "OPERATOR_LOCK_HELD";
   if (systemCode === "EADDRINUSE" || systemCode === "EACCES") return "LISTEN_FAILED";
   const message = error instanceof Error ? error.message : "";

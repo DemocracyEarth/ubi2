@@ -76,11 +76,18 @@ pnpm --filter @ubi2/status-operator start -- fleet --config /etc/ubi2/status-ope
 ```
 
 Exit `0` means every configured operator is available, fresh, within the finalized-block lag budget, byte-identical
-at quorum, and signed by its pinned EOA. Exit `2` means publication is blocked and the JSON report contains only
-machine-readable alert codes. Missing reference RPC, stale heartbeat, degraded operator, withholding, split root,
-wrong signer, malformed content and unavailable quorum all fail closed. Route failed systemd units or exit `2` to
-the production paging system; journald alone is not a page.
+at quorum, signed by its pinned EOA, and serving a canonical copy from the expected immutable artifact URL. Exit
+`2` means publication is blocked and the JSON report contains only machine-readable alert codes. Missing reference
+RPC, stale heartbeat, degraded operator, unavailable/mismatched immutable artifacts, withholding, split root, wrong
+signer, malformed content and unavailable quorum all fail closed. Route failed systemd units or exit `2` to the
+production paging system; journald alone is not a page.
 
-Before a testnet checkpoint transaction, archive the two immutable artifact URLs, fleet report, reference finalized
-block, transaction simulation and final receipt. The on-chain publisher must consume only the fleet report's
+Before a testnet checkpoint transaction, archive a non-overwriting evidence bundle with `fleet --evidence`, verify
+it offline with `verify-evidence`, then archive the transaction simulation and final receipt beside it. The bundle
+contains both immutable artifacts, their URLs/cache metadata, the fleet report and the reference finalized block;
+it never contains the configured RPC URLs. The on-chain publisher must consume only the fleet report's
 `publication` fields and must remain a separate key path.
+
+The exact deployment, paging, evidence and restart/withholding/divergence drill procedure is in
+[`TESTNET_RUNBOOK.md`](TESTNET_RUNBOOK.md). That runbook is a procedure, not evidence that any host or network has
+been exercised.
