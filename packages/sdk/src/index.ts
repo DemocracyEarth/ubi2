@@ -30,6 +30,8 @@ export * from "./zk-holder-reference-handoff";
 export * from "./zk-production-profile";
 export * from "./zk-holder-reference-prover-worker";
 export * from "./zk-holder-reference-browser-runtime";
+export * from "./zk-holder-profile-prover-worker";
+export * from "./zk-holder-profile-browser-runtime";
 
 export const UBI_DECIMALS = 18n;
 export const UBI = 10n ** UBI_DECIMALS;

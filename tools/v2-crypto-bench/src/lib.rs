@@ -41,11 +41,11 @@ mod status_snapshot;
 
 pub use holder_credential::{
     build_holder_credential_commitment, holder_credential_commitment_from_json,
-    holder_credential_field_elements, synthetic_holder_credential_reference_vector,
-    HolderCredentialCommitment, HolderCredentialCommitmentInput, HolderCredentialError,
-    HolderCredentialReferenceVector, HOLDER_CREDENTIAL_COMMITMENT_SCHEMA,
-    HOLDER_CREDENTIAL_COMMITMENT_SCHEME, HOLDER_CREDENTIAL_INPUT_SCHEMA,
-    HOLDER_CREDENTIAL_PRIVATE_SCHEMA,
+    holder_credential_field_elements, parse_holder_credential_input,
+    synthetic_holder_credential_reference_vector, HolderCredentialCommitment,
+    HolderCredentialCommitmentInput, HolderCredentialError, HolderCredentialReferenceVector,
+    HOLDER_CREDENTIAL_COMMITMENT_SCHEMA, HOLDER_CREDENTIAL_COMMITMENT_SCHEME,
+    HOLDER_CREDENTIAL_INPUT_SCHEMA, HOLDER_CREDENTIAL_PRIVATE_SCHEMA,
 };
 
 pub use production_profile::{
@@ -93,6 +93,10 @@ pub const BROWSER_DYNAMIC_STATUS_REFERENCE_SCHEMA: &str =
     "org.proofofhumanity.v2-browser-dynamic-status-reference-proof/1";
 pub const BROWSER_DYNAMIC_STATUS_REFERENCE_WARNING: &str =
     "research fixture only; deterministic toxic-waste setup and proof are not deployable";
+pub const BROWSER_SYNTHETIC_PROFILE_PROOF_SCHEMA: &str =
+    "org.proofofhumanity.v2-holder-profile-synthetic-proof/1";
+pub const BROWSER_SYNTHETIC_PROFILE_PROOF_WARNING: &str =
+    "synthetic profile fixture only; public toxic-waste setup is not production-admitted";
 pub const REGISTRY_DEPTH: usize = 32;
 pub const REGISTRY_DEPTH_PROFILES: [usize; 4] = [32, 64, 96, 128];
 pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_995];
@@ -138,6 +142,10 @@ const PACKED_STATUS_LEAF_DOMAIN: u64 = 8;
 const DYNAMIC_STATUS_CIRCUIT_ID: [u128; 2] = [
     289_702_399_193_246_464_478_010_289_331_281_785_396,
     48_741_886_182_628_607_789_356_429_954_167_136_159,
+];
+const PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID: [u128; 2] = [
+    298_153_432_178_052_702_942_782_841_865_641_982_479,
+    323_371_391_837_014_476_834_094_542_362_038_374_866,
 ];
 const DYNAMIC_STATUS_POLICY_HASH: [u128; 2] = [
     193_982_682_682_601_763_857_871_921_400_019_234_941,
@@ -214,6 +222,7 @@ pub struct SpikeCircuit {
 #[derive(Clone)]
 pub struct DynamicStatusPresentationCircuit {
     inner: SpikeCircuit,
+    expected_circuit_id: [u128; 2],
     public_signals: [CircuitField; DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT],
 }
 
@@ -385,6 +394,23 @@ pub struct BrowserDynamicStatusReferenceReport {
     pub proof_verified: bool,
 }
 
+/// Worker-private production-profile-shaped proof output. The fixture uses an
+/// exact synthetic vault credential and public toxic waste, so it can exercise
+/// proof serialization and local verification without becoming admissible.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserSyntheticProfileProofReport {
+    pub schema: &'static str,
+    pub profile_id: &'static str,
+    pub warning: &'static str,
+    pub constraints: usize,
+    pub witness_variables: usize,
+    pub public_input_count: usize,
+    pub public_inputs: Vec<String>,
+    pub proof: EvmGroth16Proof,
+    pub proof_verified: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RegistryTransportEstimateReport {
     pub schema: &'static str,
@@ -410,6 +436,8 @@ pub enum BrowserBenchmarkError {
     Synthesis(SynthesisError),
     Serialization(SerializationError),
     ProofRejected,
+    Credential(HolderCredentialError),
+    UnsupportedSyntheticCredential,
 }
 
 impl fmt::Display for BrowserBenchmarkError {
@@ -428,6 +456,10 @@ impl fmt::Display for BrowserBenchmarkError {
                 write!(formatter, "proving-key encoding failed: {error}")
             }
             Self::ProofRejected => formatter.write_str("generated proof did not verify"),
+            Self::Credential(error) => write!(formatter, "holder credential rejected: {error}"),
+            Self::UnsupportedSyntheticCredential => formatter.write_str(
+                "browser synthetic profile proof requires the pinned reserved-country fixture",
+            ),
         }
     }
 }
@@ -443,6 +475,12 @@ impl From<SynthesisError> for BrowserBenchmarkError {
 impl From<SerializationError> for BrowserBenchmarkError {
     fn from(error: SerializationError) -> Self {
         Self::Serialization(error)
+    }
+}
+
+impl From<HolderCredentialError> for BrowserBenchmarkError {
+    fn from(error: HolderCredentialError) -> Self {
+        Self::Credential(error)
     }
 }
 
@@ -531,7 +569,8 @@ impl SpikeCircuit {
         }
         let credential_commitment =
             poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
-        let signature_nonce = JubjubScalar::from(8_181_818u64);
+        let signature_nonce =
+            production_profile::derive_nonce(issuer_secret, credential_commitment, [0x42u8; 32]);
         let signature_commitment = EdwardsProjective::generator() * signature_nonce;
         let challenge = signature_challenge_native(
             &poseidon,
@@ -845,8 +884,102 @@ impl DynamicStatusPresentationCircuit {
 
         Self {
             inner,
+            expected_circuit_id: DYNAMIC_STATUS_CIRCUIT_ID,
             public_signals,
         }
+    }
+
+    fn synthetic_production_profile_fixture(
+        input: &HolderCredentialCommitmentInput,
+    ) -> Result<Self, BrowserBenchmarkError> {
+        if input != &production_profile::synthetic_production_holder_input() {
+            return Err(BrowserBenchmarkError::UnsupportedSyntheticCredential);
+        }
+        let poseidon = poseidon_config();
+        let (_, credential_elements) = holder_credential_field_elements(input)?;
+        let issuer_secret = JubjubScalar::from(4_242_424u64);
+        let issuer_public_key = EdwardsProjective::generator() * issuer_secret;
+        let issuer_key_id =
+            split_field_to_u128_limbs(issuer_key_digest_native(&poseidon, &issuer_public_key));
+        if credential_elements[CREDENTIAL_ISSUER_KEY_ID_HIGH_INDEX] != issuer_key_id[0]
+            || credential_elements[CREDENTIAL_ISSUER_KEY_ID_LOW_INDEX] != issuer_key_id[1]
+        {
+            return Err(BrowserBenchmarkError::UnsupportedSyntheticCredential);
+        }
+
+        let credential_commitment =
+            poseidon_native(&poseidon, CREDENTIAL_DOMAIN, &credential_elements);
+        let signature_nonce = JubjubScalar::from(8_181_818u64);
+        let signature_commitment = EdwardsProjective::generator() * signature_nonce;
+        let challenge = signature_challenge_native(
+            &poseidon,
+            &signature_commitment,
+            &issuer_public_key,
+            credential_commitment,
+        );
+        let signature_response =
+            signature_nonce - jubjub_scalar_from_circuit_field(challenge) * issuer_secret;
+
+        let status_id = credential_elements[CREDENTIAL_STATUS_ID_LOW_INDEX];
+        let packed_status_chunk = packed_status_chunk_with_active_slot(status_id);
+        let registry_siblings = (0..PACKED_STATUS_DEPTH)
+            .map(|index| CircuitField::from((index as u64 + 1) * 7_000_001))
+            .collect::<Vec<_>>();
+        let status_leaf = packed_status_leaf_native(&poseidon, packed_status_chunk);
+        let status_directions = packed_status_path_directions_native(status_id);
+        let expected_registry_root = split_field_to_u128_limbs(merkle_root_native(
+            &poseidon,
+            status_leaf,
+            &registry_siblings,
+            &status_directions,
+        ));
+        let inner = SpikeCircuit {
+            authentication: Authentication::SignatureAndPackedStatus,
+            credential_elements,
+            nullifier_fields: [CircuitField::from(0u64); NULLIFIER_FIELD_COUNT],
+            expected_nullifier: CircuitField::from(0u64),
+            issuer_public_key,
+            issuer_key_id,
+            signature_commitment,
+            signature_response,
+            packed_status_chunk,
+            registry_siblings,
+            expected_registry_root,
+        };
+
+        let nullifier_preimage = [
+            CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[0]),
+            CircuitField::from(NULLIFIER_PREIMAGE_DOMAIN[1]),
+            CircuitField::from(1u64),
+            inner.credential_elements[CREDENTIAL_HOLDER_SECRET_INDEX],
+            CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[0]),
+            CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[1]),
+        ];
+        let scoped_nullifier = poseidon_native(&poseidon, NULLIFIER_DOMAIN, &nullifier_preimage);
+        let subject = CircuitField::from_be_bytes_mod_order(&[0x33; 20]);
+        let mut public_signals = [CircuitField::from(0u64); DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT];
+        public_signals[0] = CircuitField::from(1u64);
+        public_signals[1] = CircuitField::from(PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID[0]);
+        public_signals[2] = CircuitField::from(PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID[1]);
+        public_signals[3..5].copy_from_slice(&inner.issuer_key_id);
+        public_signals[5..7].copy_from_slice(&inner.expected_registry_root);
+        public_signals[7] = CircuitField::from(DYNAMIC_STATUS_POLICY_HASH[0]);
+        public_signals[8] = CircuitField::from(DYNAMIC_STATUS_POLICY_HASH[1]);
+        public_signals[9] = CircuitField::from(DYNAMIC_STATUS_PRESENTATION_BINDING[0]);
+        public_signals[10] = CircuitField::from(DYNAMIC_STATUS_PRESENTATION_BINDING[1]);
+        public_signals[11] = CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[0]);
+        public_signals[12] = CircuitField::from(DYNAMIC_STATUS_NULLIFIER_SCOPE[1]);
+        public_signals[13] = scoped_nullifier;
+        public_signals[14] = subject;
+        public_signals[15] = CircuitField::from(1u64);
+        public_signals[16] = inner.credential_elements[CREDENTIAL_ISSUED_AT_EPOCH_INDEX];
+        public_signals[17] = CircuitField::from(DYNAMIC_STATUS_PUBLISHED_AT);
+
+        Ok(Self {
+            inner,
+            expected_circuit_id: PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID,
+            public_signals,
+        })
     }
 
     pub fn public_inputs(&self) -> Vec<CircuitField> {
@@ -975,10 +1108,10 @@ impl ConstraintSynthesizer<CircuitField> for DynamicStatusPresentationCircuit {
 
         public[0].enforce_equal(&FpVar::Constant(CircuitField::from(1u64)))?;
         public[1].enforce_equal(&FpVar::Constant(CircuitField::from(
-            DYNAMIC_STATUS_CIRCUIT_ID[0],
+            self.expected_circuit_id[0],
         )))?;
         public[2].enforce_equal(&FpVar::Constant(CircuitField::from(
-            DYNAMIC_STATUS_CIRCUIT_ID[1],
+            self.expected_circuit_id[1],
         )))?;
         for high_index in [1usize, 3, 5, 7, 9, 11] {
             enforce_identifier(&public[high_index], &public[high_index + 1])?;
@@ -1369,6 +1502,57 @@ pub fn generate_dynamic_status_browser_reference_report(
     Ok(browser_dynamic_status_reference_report(&fixture))
 }
 
+/// Generate and locally verify the exact ratified-profile synthetic fixture.
+/// The private JSON must be the checked-in XAA/XAB vault credential. Public
+/// toxic waste is generated inside WASM and never qualifies for admission.
+pub fn generate_synthetic_profile_browser_proof(
+    private_credential_json: &str,
+) -> Result<BrowserSyntheticProfileProofReport, BrowserBenchmarkError> {
+    let input = parse_holder_credential_input(private_credential_json)?;
+    let circuit = DynamicStatusPresentationCircuit::synthetic_production_profile_fixture(&input)?;
+    let measurement_cs = ConstraintSystem::<CircuitField>::new_ref();
+    circuit
+        .clone()
+        .generate_constraints(measurement_cs.clone())?;
+    if !measurement_cs.is_satisfied()? {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+    let constraints = measurement_cs.num_constraints();
+    let witness_variables = measurement_cs.num_witness_variables();
+    let public_inputs = circuit.public_inputs();
+
+    let mut setup_rng = StdRng::seed_from_u64(0x50_52_4f_46_49_4c_45_31);
+    let (proving_key, _) =
+        Groth16::<Bn254>::circuit_specific_setup(circuit.clone(), &mut setup_rng)?;
+    let mut proof_rng = StdRng::seed_from_u64(0x56_41_55_4c_54_5f_50_31);
+    let proof = Groth16::<Bn254>::prove(&proving_key, circuit, &mut proof_rng)?;
+    let processed = Groth16::<Bn254>::process_vk(&proving_key.vk)?;
+    let proof_verified =
+        Groth16::<Bn254>::verify_with_processed_vk(&processed, &public_inputs, &proof)?;
+    if !proof_verified {
+        return Err(BrowserBenchmarkError::ProofRejected);
+    }
+
+    Ok(BrowserSyntheticProfileProofReport {
+        schema: BROWSER_SYNTHETIC_PROFILE_PROOF_SCHEMA,
+        profile_id: PRODUCTION_CRYPTO_PROFILE_ID,
+        warning: BROWSER_SYNTHETIC_PROFILE_PROOF_WARNING,
+        constraints,
+        witness_variables,
+        public_input_count: public_inputs.len(),
+        public_inputs: public_inputs
+            .into_iter()
+            .map(field_element_decimal)
+            .collect(),
+        proof: EvmGroth16Proof {
+            a: evm_g1(&proof.a),
+            b: evm_g2(&proof.b),
+            c: evm_g1(&proof.c),
+        },
+        proof_verified,
+    })
+}
+
 fn export_packed_status_evm_fixture_with_key(
     proving_key_bytes: &[u8],
 ) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
@@ -1503,6 +1687,19 @@ pub fn browser_prove_packed_status(proving_key: &[u8]) -> Result<String, JsValue
 pub fn browser_prove_dynamic_status_reference() -> Result<String, JsValue> {
     let report =
         generate_dynamic_status_browser_reference_report().map_err(browser_benchmark_js_error)?;
+    serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Profile-specific holder entry point. Only the exact synthetic credential is
+/// accepted until production ceremony artifacts and a production vault schema
+/// have passed admission.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = proveSyntheticHolderProfile)]
+pub fn browser_prove_synthetic_holder_profile(
+    private_credential_json: &str,
+) -> Result<String, JsValue> {
+    let report = generate_synthetic_profile_browser_proof(private_credential_json)
+        .map_err(browser_benchmark_js_error)?;
     serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -2505,5 +2702,41 @@ mod tests {
         assert!(!serialized.contains("\"proof\":"));
         assert!(!serialized.contains("alpha_g1"));
         assert!(!serialized.contains("gamma_abc_g1"));
+
+        let credential = production_profile::synthetic_production_holder_input();
+        let credential_json =
+            serde_json::to_string(&credential).expect("synthetic holder credential serializes");
+        let profile_report = generate_synthetic_profile_browser_proof(&credential_json)
+            .expect("synthetic production-profile proof verifies");
+        assert_eq!(profile_report.profile_id, PRODUCTION_CRYPTO_PROFILE_ID);
+        assert_eq!(profile_report.public_input_count, 18);
+        assert_eq!(
+            profile_report.public_inputs[1],
+            PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID[0].to_string()
+        );
+        assert_eq!(
+            profile_report.public_inputs[2],
+            PRODUCTION_SANCTIONS_CLEAR_CIRCUIT_ID[1].to_string()
+        );
+        let expected_vector = synthetic_production_crypto_reference_vector()
+            .expect("profile reference vector generates");
+        assert_eq!(
+            profile_report.public_inputs,
+            expected_vector["publicSignals"]
+                .as_array()
+                .expect("profile public signals are an array")
+                .iter()
+                .map(|value| value.as_str().expect("public signal is decimal").to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(profile_report.proof_verified);
+
+        let mut changed = credential;
+        changed.nationality = "XAC".to_owned();
+        let changed_json = serde_json::to_string(&changed).unwrap();
+        assert!(matches!(
+            generate_synthetic_profile_browser_proof(&changed_json),
+            Err(BrowserBenchmarkError::UnsupportedSyntheticCredential)
+        ));
     }
 }

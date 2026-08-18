@@ -71,6 +71,14 @@ jobs:
         run: cargo clippy --release --locked --all-targets -- -D warnings
       - name: Compile browser prover bridge
         run: cargo build --release --locked --target wasm32-unknown-unknown --lib --features browser
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+      - name: Reproduce content-addressed holder profile WASM
+        run: |
+          wasm-pack build . --target web --out-dir browser/pkg --release -- --features browser --locked
+          echo "451d599ba213d44f2b9e56c139e0c889b150ed9bbe57ee1fa3de7a2d91ee72c7  browser/pkg/ubi2_v2_crypto_bench_bg.wasm" | sha256sum --check
+          cmp browser/pkg/ubi2_v2_crypto_bench_bg.wasm ../../fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm
       - name: Relation tests and pinned constraint budgets
         run: cargo test --release --locked
       - name: Generate and verify every Groth16 candidate proof

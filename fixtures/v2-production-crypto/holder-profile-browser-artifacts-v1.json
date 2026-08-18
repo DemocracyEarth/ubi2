@@ -1,0 +1,16 @@
+{
+  "schema": "org.proofofhumanity.v2-holder-profile-browser-artifacts/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "mode": "synthetic",
+  "presentationReady": false,
+  "warning": "synthetic profile fixture only; public toxic-waste setup is not production-admitted",
+  "build": "wasm-pack 0.15.0; wasm-bindgen 0.2.125; Rust 1.96.0; release; browser feature; locked",
+  "artifacts": [
+    {
+      "role": "wasmModule",
+      "runtimePath": "fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm",
+      "sha256": "451d599ba213d44f2b9e56c139e0c889b150ed9bbe57ee1fa3de7a2d91ee72c7",
+      "bytes": 1061773
+    }
+  ]
+}
