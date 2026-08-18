@@ -26,11 +26,18 @@ import {
   type Hex,
 } from "viem";
 import { buildSelfApp, getUniversalLink, SelfQRcodeWrapper, type SelfApp } from "./self-client";
-import { CHAINS, SELF_ENDPOINT, type ChainConfig } from "./config";
+import { CHAINS, SELF_ENDPOINT, isDeployed, type ChainConfig } from "./config";
 import { proofOfHumanityAbi } from "./abi/proofOfHumanity";
 import type { SerializedHumanCredential } from "./lib/predicate";
 import type { AgeThreshold, DisclosureProfile } from "./lib/disclosure-profile";
-import { saveHeldCredential } from "./lib/held-credential";
+import { clearHeldCredential, saveHeldCredential } from "./lib/held-credential";
+import {
+  ACCOUNT_PRIVACY_REASON_LABELS,
+  resolveWalletAccountChange,
+  sameWalletAccount,
+  scanAccountPrivacy,
+  type AccountPrivacyAssessment,
+} from "./lib/account-privacy";
 import { PredicateCenter } from "./predicates/predicate-center";
 
 /*//////////////////////////////////////////////////////////////
@@ -192,6 +199,8 @@ function Icon({ name }: { name: IconName }) {
 
 interface Injected {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+  on?(event: "accountsChanged", listener: (accounts: unknown[]) => void): void;
+  removeListener?(event: "accountsChanged", listener: (accounts: unknown[]) => void): void;
 }
 
 interface SerializedVoucher {
@@ -218,6 +227,7 @@ interface RelayReady {
 }
 
 type Phase = "connect" | "scan" | "waiting" | "ready" | "minting" | "minted";
+type AccountPrivacyUiState = { status: "idle" | "scanning" } | AccountPrivacyAssessment;
 
 interface Minted {
   tokenId: bigint;
@@ -278,9 +288,15 @@ function MintFlow() {
   const [note, setNote] = useState<{ kind: "ok" | "err" | "warn"; text: string } | null>(null);
   const [minted, setMinted] = useState<Minted | null>(null);
   const [verificationSession, setVerificationSession] = useState<string | null>(null);
+  const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
+  const [privacyScan, setPrivacyScan] = useState<AccountPrivacyUiState>({ status: "idle" });
   const [ageThreshold, setAgeThreshold] = useState<AgeThreshold>(null);
   const [includeNationality, setIncludeNationality] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const accountRef = useRef<Address | null>(null);
+  const verificationSessionRef = useRef<string | null>(null);
+  const verificationBindingRef = useRef<string | null>(null);
+  const privacyScanRequestRef = useRef(0);
 
   const disclosureProfile = useMemo<DisclosureProfile>(
     () => ({ age: ageThreshold, nationality: includeNationality }),
@@ -289,8 +305,83 @@ function MintFlow() {
 
   useEffect(() => setInjected(getInjected()), []);
 
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const resetAccountSession = useCallback(
+    (
+      nextAccount: Address | null,
+      nextNote: { kind: "ok" | "err" | "warn"; text: string } | null,
+    ) => {
+      const previousAccount = accountRef.current;
+      const previousSession = verificationSessionRef.current;
+      stopPolling();
+      privacyScanRequestRef.current += 1;
+      verificationBindingRef.current = null;
+      verificationSessionRef.current = null;
+      if (previousAccount && previousSession) {
+        fetch(`/api/self-verify?address=${previousAccount}`, {
+          method: "DELETE",
+          headers: { "x-poh-verification-session": previousSession },
+        }).catch(() => {});
+      }
+      if (previousAccount !== null || previousSession !== null) clearHeldCredential();
+      accountRef.current = nextAccount;
+      setAccount(nextAccount);
+      setVerificationSession(null);
+      setPrivacyAcknowledged(false);
+      setPrivacyScan({ status: "idle" });
+      setSelfApp(null);
+      setBuildError(null);
+      setReady(null);
+      setSelectedChainId(null);
+      setMinted(null);
+      setPhase("connect");
+      setNote(nextNote);
+    },
+    [stopPolling],
+  );
+
+  const applyWalletAccounts = useCallback(
+    (accounts: readonly unknown[], source: "connect" | "change"): Address | null => {
+      const previousAccount = accountRef.current;
+      const change = resolveWalletAccountChange(previousAccount, accounts);
+      if (change.account === previousAccount) return change.account;
+      resetAccountSession(
+        change.account,
+        source === "change" && change.invalidatesSession
+          ? {
+              kind: "warn",
+              text: change.account
+                ? "Wallet account changed. The previous Self session and voucher were discarded; review and acknowledge the new credential account."
+                : "Wallet disconnected. The previous Self session and voucher were discarded.",
+            }
+          : null,
+      );
+      return change.account;
+    },
+    [resetAccountSession],
+  );
+
   useEffect(() => {
-    if (!account || !verificationSession) return;
+    if (!injected?.on) return;
+    const onAccountsChanged = (accounts: unknown[]) => {
+      applyWalletAccounts(accounts, "change");
+    };
+    injected.on("accountsChanged", onAccountsChanged);
+    return () => injected.removeListener?.("accountsChanged", onAccountsChanged);
+  }, [applyWalletAccounts, injected]);
+
+  useEffect(() => {
+    if (!account || !privacyAcknowledged || !verificationSession) {
+      setSelfApp(null);
+      return;
+    }
     if (!SELF_ENDPOINT) {
       setSelfApp(null);
       return;
@@ -302,15 +393,7 @@ function MintFlow() {
       setSelfApp(null);
       setBuildError(errMessage(e));
     }
-  }, [account, disclosureProfile, verificationSession]);
-
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }, []);
-  useEffect(() => () => stopPolling(), [stopPolling]);
+  }, [account, disclosureProfile, privacyAcknowledged, verificationSession]);
 
   const connect = useCallback(async () => {
     if (!injected) {
@@ -318,20 +401,100 @@ function MintFlow() {
       return;
     }
     try {
-      const accounts = (await injected.request({ method: "eth_requestAccounts" })) as string[];
-      const addr = accounts[0] as Address | undefined;
-      if (!addr) throw new Error("No account returned.");
-      setAccount(addr);
-      setVerificationSession(newVerificationSession());
-      setPhase("scan");
-      setNote(null);
+      const accounts = (await injected.request({ method: "eth_requestAccounts" })) as unknown[];
+      if (applyWalletAccounts(accounts, "connect") === null) throw new Error("No valid account returned.");
     } catch (e) {
       setNote({ kind: "err", text: errMessage(e) });
     }
-  }, [injected]);
+  }, [applyWalletAccounts, injected]);
+
+  const chooseAnotherAccount = useCallback(async () => {
+    if (!injected) return;
+    const previousAccount = accountRef.current;
+    try {
+      await injected.request({ method: "wallet_requestPermissions", params: [{ eth_accounts: {} }] });
+      const accounts = (await injected.request({ method: "eth_accounts" })) as unknown[];
+      const nextAccount = applyWalletAccounts(accounts, "change");
+      if (nextAccount === previousAccount) {
+        setNote({
+          kind: "warn",
+          text: "The wallet kept the same account. Open its account selector if you want to use a dedicated credential account.",
+        });
+      }
+    } catch (e) {
+      const code = e && typeof e === "object" ? (e as { code?: number }).code : undefined;
+      setNote({
+        kind: "warn",
+        text:
+          code === 4001
+            ? "Account selection was canceled."
+            : "This wallet cannot open its account selector here. Switch accounts in the wallet; the app will detect the change and reset safely.",
+      });
+    }
+  }, [applyWalletAccounts, injected]);
+
+  const setPrivacyAcknowledgement = useCallback(
+    (acknowledged: boolean) => {
+      const activeAccount = accountRef.current;
+      if (!activeAccount) return;
+      if (!acknowledged) {
+        resetAccountSession(activeAccount, {
+          kind: "warn",
+          text: "Privacy acknowledgment removed. Complete it again before starting a Self verification.",
+        });
+        return;
+      }
+      const session = newVerificationSession();
+      verificationSessionRef.current = session;
+      verificationBindingRef.current = `${activeAccount.toLowerCase()}:${session}`;
+      setVerificationSession(session);
+      setPrivacyAcknowledged(true);
+      setPhase("scan");
+      setNote(null);
+    },
+    [resetAccountSession],
+  );
+
+  const runPrivacyScan = useCallback(async () => {
+    const activeAccount = accountRef.current;
+    if (!activeAccount) return;
+    const requestId = privacyScanRequestRef.current + 1;
+    privacyScanRequestRef.current = requestId;
+    setPrivacyScan({ status: "scanning" });
+    const scanChains = CHAINS.filter(isDeployed);
+    const assessment = await scanAccountPrivacy({
+      account: activeAccount,
+      chains: scanChains,
+      probe: async (chain, probedAccount) => {
+        const client = createPublicClient({
+          chain: viemChain(chain),
+          transport: http(chain.rpcUrl, { retryCount: 0, timeout: 5_000 }),
+        });
+        const blockNumber = await client.getBlockNumber();
+        const [transactionCount, nativeBalance, bytecode, pohBalance] = await Promise.all([
+          client.getTransactionCount({ address: probedAccount, blockNumber }),
+          client.getBalance({ address: probedAccount, blockNumber }),
+          client.getBytecode({ address: probedAccount, blockNumber }),
+          client.readContract({
+            address: chain.pohAddress,
+            abi: proofOfHumanityAbi,
+            functionName: "balanceOf",
+            args: [probedAccount],
+            blockNumber,
+          }),
+        ]);
+        return { transactionCount, nativeBalance, bytecode, pohBalance };
+      },
+    });
+    if (privacyScanRequestRef.current === requestId && sameWalletAccount(accountRef.current, activeAccount)) {
+      setPrivacyScan(assessment);
+    }
+  }, []);
 
   const startPolling = useCallback(() => {
     if (!account || !verificationSession) return;
+    const binding = `${account.toLowerCase()}:${verificationSession}`;
+    if (verificationBindingRef.current !== binding) return;
     stopPolling();
     pollTimer.current = setInterval(async () => {
       try {
@@ -347,7 +510,14 @@ function MintFlow() {
           issuer?: Address;
           error?: string;
         };
+        if (verificationBindingRef.current !== binding) return;
         if (data.status === "ready" && data.vouchers && data.proof) {
+          if (data.vouchers.some(({ voucher }) => !sameWalletAccount(voucher.to, account))) {
+            setNote({ kind: "err", text: "Relay returned a voucher for a different wallet account." });
+            setPhase("scan");
+            stopPolling();
+            return;
+          }
           const nextReady: RelayReady = {
             status: "ready",
             proof: data.proof,
@@ -381,10 +551,14 @@ function MintFlow() {
   }, [account, stopPolling, verificationSession]);
 
   const onQrSuccess = useCallback(() => {
+    if (!privacyAcknowledged || !verificationSession) {
+      setNote({ kind: "err", text: "Acknowledge the credential-account privacy notice before verifying." });
+      return;
+    }
     setPhase("waiting");
     setNote({ kind: "ok", text: "Self reported success — verifying your proof and signing the voucher…" });
     startPolling();
-  }, [startPolling]);
+  }, [privacyAcknowledged, startPolling, verificationSession]);
 
   const onQrError = useCallback((data: { error_code?: string; reason?: string }) => {
     setNote({ kind: "err", text: `Self app error: ${data.reason ?? data.error_code ?? "unknown"}` });
@@ -437,15 +611,31 @@ function MintFlow() {
   );
 
   const mint = useCallback(async () => {
-    if (!injected || !account || !selected) return;
+    if (!injected || !account || !selected || !privacyAcknowledged) return;
+    const binding = verificationBindingRef.current;
+    if (binding === null) return;
     const chainCfg = CHAINS.find((c) => c.chainId === selected.chainId);
     if (!chainCfg) return;
     const chain = viemChain(chainCfg);
 
-    setPhase("minting");
-    setNote(null);
     try {
+      const activeAccounts = (await injected.request({ method: "eth_accounts" })) as unknown[];
+      const activeAccount = resolveWalletAccountChange(account, activeAccounts).account;
+      if (!sameWalletAccount(activeAccount, account)) {
+        resetAccountSession(activeAccount, {
+          kind: "warn",
+          text: "The wallet account changed before minting. The previous voucher was discarded; verify again with the intended credential account.",
+        });
+        return;
+      }
+      if (!sameWalletAccount(selected.voucher.to, account)) {
+        setNote({ kind: "err", text: "The selected voucher belongs to a different wallet account." });
+        return;
+      }
+      setPhase("minting");
+      setNote(null);
       await ensureChain(chain);
+      if (verificationBindingRef.current !== binding) return;
 
       const wallet = createWalletClient({ account, chain, transport: custom(injected) });
       const pub = createPublicClient({ chain, transport: http(chainCfg.rpcUrl) });
@@ -465,6 +655,7 @@ function MintFlow() {
       });
       setNote({ kind: "ok", text: `Submitted · tx ${short(hash)} · waiting for confirmation…` });
       await pub.waitForTransactionReceipt({ hash });
+      if (verificationBindingRef.current !== binding) return;
 
       const nullifier = BigInt(sv.nullifier);
       const tokenId = await pub.readContract({
@@ -489,10 +680,19 @@ function MintFlow() {
         }).catch(() => {});
       }
     } catch (e) {
+      if (verificationBindingRef.current !== binding) return;
       setNote({ kind: "err", text: errMessage(e) });
       setPhase("ready");
     }
-  }, [injected, account, selected, ensureChain, verificationSession]);
+  }, [
+    injected,
+    account,
+    selected,
+    privacyAcknowledged,
+    ensureChain,
+    resetAccountSession,
+    verificationSession,
+  ]);
 
   const decodedMetadata = useMemo(() => {
     if (!minted) return null;
@@ -506,7 +706,7 @@ function MintFlow() {
     }
   }, [minted]);
 
-  const stepConnectDone = !!account;
+  const stepConnectDone = !!account && privacyAcknowledged;
   const stepProofDone = !!ready;
 
   return (
@@ -517,29 +717,123 @@ function MintFlow() {
         <div className={`step-row${stepConnectDone ? " done" : ""}`}>
           <div className="step-badge">{stepConnectDone ? "✓" : "1"}</div>
           <div className="step-body">
-            <h4>Connect a wallet</h4>
-            {account ? (
-              <div className="row">
-                <span className="mono">{short(account)}</span>
-                <span className="pill ok">connected</span>
+            <h4>Choose your credential account</h4>
+            <div className="account-privacy-card">
+              <div className="account-privacy-head">
+                <b>Use a dedicated account for better privacy</b>
+                <span className="pill">recommended</span>
               </div>
+              <p>
+                Your Proof of Humanity address and soulbound credential are public and permanent. An account used
+                only for this credential reduces links to your payments, ENS, DeFi, voting, and social activity.
+              </p>
+              <p className="muted small">
+                This does not make you anonymous: funding, later usage, and the current credential identifier can
+                still create links.
+              </p>
+            </div>
+            {account ? (
+              <>
+                <div className="row account-privacy-actions">
+                  <span className="mono">{short(account)}</span>
+                  <span className="pill ok">connected</span>
+                  <button
+                    className="btn ghost sm"
+                    type="button"
+                    onClick={chooseAnotherAccount}
+                    disabled={phase === "waiting" || phase === "minting"}
+                  >
+                    Choose another account
+                  </button>
+                  <button
+                    className="btn ghost sm"
+                    type="button"
+                    onClick={runPrivacyScan}
+                    disabled={privacyScan.status === "scanning" || phase === "waiting" || phase === "minting"}
+                  >
+                    {privacyScan.status === "scanning" ? "Checking activity…" : "Optional activity check"}
+                  </button>
+                </div>
+                <p className="muted small account-privacy-disclosure">
+                  The optional check sends this public address to every configured chain RPC. It looks only for
+                  obvious activity and can never prove that an account is fresh, private, or unlinkable.
+                </p>
+
+                {privacyScan.status === "scanning" && (
+                  <div className="notice warn" role="status">
+                    Checking configured networks. This never blocks verification or minting.
+                  </div>
+                )}
+                {privacyScan.status === "activity-detected" && (
+                  <div className="notice warn" role="status">
+                    <b>Prior activity detected — warning only.</b> You can continue, or switch to a more dedicated
+                    account.
+                    <ul className="account-privacy-findings">
+                      {privacyScan.findings.map((finding) => (
+                        <li key={finding.chainId}>
+                          {finding.chainName}:{" "}
+                          {finding.reasons.map((reason) => ACCOUNT_PRIVACY_REASON_LABELS[reason]).join(", ")}
+                        </li>
+                      ))}
+                    </ul>
+                    {privacyScan.unavailableChains.length > 0 && (
+                      <span>
+                        Check unavailable on: {privacyScan.unavailableChains.join(", ")}.
+                      </span>
+                    )}
+                  </div>
+                )}
+                {privacyScan.status === "incomplete" && (
+                  <div className="notice warn" role="status">
+                    <b>Activity check incomplete.</b> No obvious activity was found on {privacyScan.checkedChains}{" "}
+                    reachable network(s). Unavailable:{" "}
+                    {privacyScan.unavailableChains.join(", ") || "all configured networks"}. This is not proof of
+                    freshness.
+                  </div>
+                )}
+                {privacyScan.status === "no-obvious-activity" && (
+                  <div className="notice ok" role="status">
+                    <b>No obvious prior activity detected</b> on {privacyScan.checkedChains} configured network(s).
+                    This is a limited warning check, not proof that the account is fresh or anonymous.
+                  </div>
+                )}
+
+                <label className="account-privacy-ack">
+                  <input
+                    type="checkbox"
+                    checked={privacyAcknowledged}
+                    onChange={(event) => setPrivacyAcknowledgement(event.target.checked)}
+                    disabled={phase === "waiting" || phase === "minting" || phase === "minted" || ready !== null}
+                  />
+                  <span>
+                    I understand that this address and credential are public and permanent, and that using a
+                    dedicated account is recommended.
+                  </span>
+                </label>
+              </>
             ) : (
-              <button className="btn primary sm" onClick={connect}>
-                {injected ? "Connect wallet" : "No wallet detected"}
-              </button>
+              <div className="account-connect-action">
+                <p className="muted small">Create or select the account in your wallet before connecting.</p>
+                <button className="btn primary sm" onClick={connect}>
+                  {injected ? "Connect credential account" : "No wallet detected"}
+                </button>
+              </div>
             )}
           </div>
         </div>
 
         {/* STEP 2 — Self proof */}
-        <div className={`step-row${!account ? " disabled" : stepProofDone ? " done" : ""}`}>
+        <div className={`step-row${!stepConnectDone ? " disabled" : stepProofDone ? " done" : ""}`}>
           <div className="step-badge">{stepProofDone ? "✓" : "2"}</div>
           <div className="step-body">
             <h4>Prove you are human with Self</h4>
 
-            {!account && <p className="muted small">Connect a wallet first.</p>}
+            {!account && <p className="muted small">Connect a credential account first.</p>}
+            {account && !privacyAcknowledged && (
+              <p className="muted small">Review and acknowledge the public credential-account notice first.</p>
+            )}
 
-            {account && !SELF_ENDPOINT && (
+            {stepConnectDone && !SELF_ENDPOINT && (
               <div className="notice warn">
                 <b>Live QR not configured.</b> Set <code>NEXT_PUBLIC_SELF_ENDPOINT</code> to this app&apos;s publicly
                 reachable <code>/api/self-verify</code> URL (a tunnel like ngrok/cloudflared in dev, or the deployed
@@ -547,7 +841,9 @@ function MintFlow() {
               </div>
             )}
 
-            {account && buildError && <div className="notice err">Could not build the Self request: {buildError}</div>}
+            {stepConnectDone && buildError && (
+              <div className="notice err">Could not build the Self request: {buildError}</div>
+            )}
 
             {account && (phase === "scan" || phase === "waiting") && (
               <div className="disclosure-picker">
@@ -609,7 +905,7 @@ function MintFlow() {
               </div>
             )}
 
-            {account && SELF_ENDPOINT && ready && phase !== "scan" && phase !== "waiting" && (
+            {stepConnectDone && SELF_ENDPOINT && ready && phase !== "scan" && phase !== "waiting" && (
               <div className="notice ok">
                 Unique human verified. Voucher signed for {ready.vouchers.length} chain(s); private predicate
                 credential saved for this browser session.

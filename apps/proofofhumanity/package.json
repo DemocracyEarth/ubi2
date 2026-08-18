@@ -11,7 +11,7 @@
     "test:crossstack": "tsx test/voucher.crossstack.ts",
     "test:predicate": "tsx test/predicate.crossstack.ts",
     "test:issuance": "tsx test/zk-self-issuance.crossstack.ts",
-    "test:product": "tsx test/predicate.product.ts && tsx test/expiring-store.ts",
+    "test:product": "tsx test/predicate.product.ts && tsx test/expiring-store.ts && tsx test/account-privacy.product.ts",
     "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate && pnpm run test:issuance && pnpm run test:product"
   },
   "dependencies": {

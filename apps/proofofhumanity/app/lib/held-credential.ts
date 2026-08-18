@@ -20,6 +20,16 @@ export function saveHeldCredential(held: HeldCredential): boolean {
   }
 }
 
+export function clearHeldCredential(): void {
+  try {
+    sessionStorage.removeItem(HELD_CREDENTIAL_KEY);
+    window.dispatchEvent(new Event(HELD_CREDENTIAL_EVENT));
+  } catch {
+    // Storage can be unavailable in privacy modes; in-memory mint state is
+    // still cleared by the caller.
+  }
+}
+
 export function loadHeldCredential(): HeldCredential | null {
   try {
     const raw = sessionStorage.getItem(HELD_CREDENTIAL_KEY);
