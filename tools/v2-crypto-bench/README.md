@@ -359,6 +359,21 @@ pins each deterministic fixture key's exact byte length and SHA-256 digest, chec
 transfer, and then uses validated arkworks deserialization. Production must independently pin the ceremony artifact
 digest and deployed verifier key; these fixture fingerprints are not deployable trust anchors.
 
+### Holder reference Worker smoke test
+
+The holder lane also connects the SDK's strict one-shot Worker control plane to the deterministic 18-signal
+dynamic-status research proof. The Rust export performs setup, proving and verification inside WASM, then returns a
+sanitized report with no proof or key. The outer Worker returns only a non-presentable reference receipt.
+
+```bash
+tools/v2-crypto-bench/browser/build-holder-reference-smoke.sh
+python3 -m http.server 4173 --bind 127.0.0.1 --directory tools/v2-crypto-bench/browser
+```
+
+Open `http://127.0.0.1:4173/holder-reference-smoke.html` for a complete proof, or append `?mode=cancel` to verify
+that host cancellation hard-terminates synchronous WASM. This is synthetic public-toxic-waste evidence only; it
+does not emit proof bytes and is not a production prover or device benchmark.
+
 ## Preliminary desktop baseline
 
 Measured 2026-08-12 using `rustc 1.96.0`, release mode, aarch64 macOS 26.5.2. Timings are a single warm-binary

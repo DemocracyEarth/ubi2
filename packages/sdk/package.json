@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx src/passport.test.ts && tsx src/predicate.test.ts && tsx src/credential-vault.test.ts && tsx src/zk-identity-policy.test.ts && tsx src/zk-identity-status-manifest.test.ts && tsx src/zk-identity-packed-status.test.ts && tsx src/zk-identity-status-snapshot.test.ts && tsx src/zk-identity-status-ingestion.test.ts && tsx src/zk-identity-encoding.test.ts && tsx src/zk-identity-interface-fixture.test.ts && tsx src/zk-self-issuance.test.ts && tsx src/zk-holder-credential.test.ts && tsx src/zk-holder-reference-handoff.test.ts && tsx src/zk-production-profile.test.ts && tsx src/zk-holder-reference-prover-worker.test.ts",
+    "test": "tsx src/passport.test.ts && tsx src/predicate.test.ts && tsx src/credential-vault.test.ts && tsx src/zk-identity-policy.test.ts && tsx src/zk-identity-status-manifest.test.ts && tsx src/zk-identity-packed-status.test.ts && tsx src/zk-identity-status-snapshot.test.ts && tsx src/zk-identity-status-ingestion.test.ts && tsx src/zk-identity-encoding.test.ts && tsx src/zk-identity-interface-fixture.test.ts && tsx src/zk-self-issuance.test.ts && tsx src/zk-holder-credential.test.ts && tsx src/zk-holder-reference-handoff.test.ts && tsx src/zk-production-profile.test.ts && tsx src/zk-holder-reference-prover-worker.test.ts && tsx src/zk-holder-reference-browser-runtime.test.ts",
     "admit:v2-profile": "tsx src/zk-production-profile-cli.ts"
   },
   "devDependencies": {

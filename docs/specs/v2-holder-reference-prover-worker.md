@@ -3,6 +3,8 @@
 - **Status:** reference-only execution control plane implemented; no production proof or credential path
 - **SDK:**
   [`zk-holder-reference-prover-worker.ts`](../../packages/sdk/src/zk-holder-reference-prover-worker.ts)
+- **Browser/WASM adapter:**
+  [`v2-holder-reference-browser-runtime.md`](v2-holder-reference-browser-runtime.md)
 - **Private handoff:** [`v2-holder-reference-handoff.md`](v2-holder-reference-handoff.md)
 - **Cross-lane boundary:** [`ADR-0012`](adr/0012-v2-cross-lane-interface-freeze.md)
 
@@ -119,3 +121,8 @@ relabel this reference-only protocol. That integration must decide and test:
 
 Until those decisions merge, this receipt is the terminal output. No caller may turn it into calldata or treat a
 successful synthetic run as evidence that a live credential can prove a predicate.
+
+The follow-on browser adapter now runs the existing deterministic 18-signal research proof in real Rust/WASM and a
+real disposable module Worker. Its public-toxic-waste setup, synthetic witness, key and proof stay Worker-private;
+only this same non-presentable receipt returns. That proves browser execution/isolation without satisfying or
+bypassing any production-profile decision above.
