@@ -82,6 +82,10 @@ pub type StatusField = CircuitField;
 pub const CREDENTIAL_ELEMENT_COUNT: usize = 16;
 pub const NULLIFIER_FIELD_COUNT: usize = 6;
 pub const DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT: usize = 18;
+pub const BROWSER_DYNAMIC_STATUS_REFERENCE_SCHEMA: &str =
+    "org.proofofhumanity.v2-browser-dynamic-status-reference-proof/1";
+pub const BROWSER_DYNAMIC_STATUS_REFERENCE_WARNING: &str =
+    "research fixture only; deterministic toxic-waste setup and proof are not deployable";
 pub const REGISTRY_DEPTH: usize = 32;
 pub const REGISTRY_DEPTH_PROFILES: [usize; 4] = [32, 64, 96, 128];
 pub const REGISTRY_DEPTH_CONSTRAINTS: [usize; 4] = [21_723, 37_147, 52_571, 67_995];
@@ -358,6 +362,19 @@ pub struct DynamicStatusEvmFixtureReport {
     pub delta_g2: EvmG2Point,
     pub gamma_abc_g1: Vec<EvmG1Point>,
     pub proof: EvmGroth16Proof,
+    pub proof_verified: bool,
+}
+
+/// Sanitized result returned inside the reference-only browser Worker.
+/// The proof and verification key never cross the Rust/WASM boundary.
+#[derive(Debug, Serialize)]
+pub struct BrowserDynamicStatusReferenceReport {
+    pub schema: &'static str,
+    pub warning: &'static str,
+    pub constraints: usize,
+    pub witness_variables: usize,
+    pub public_input_count: usize,
+    pub public_inputs: Vec<String>,
     pub proof_verified: bool,
 }
 
@@ -1323,6 +1340,28 @@ pub fn generate_dynamic_status_evm_fixture(
     })
 }
 
+fn browser_dynamic_status_reference_report(
+    fixture: &DynamicStatusEvmFixtureReport,
+) -> BrowserDynamicStatusReferenceReport {
+    BrowserDynamicStatusReferenceReport {
+        schema: BROWSER_DYNAMIC_STATUS_REFERENCE_SCHEMA,
+        warning: BROWSER_DYNAMIC_STATUS_REFERENCE_WARNING,
+        constraints: fixture.constraints,
+        witness_variables: fixture.witness_variables,
+        public_input_count: fixture.public_input_count,
+        public_inputs: fixture.public_inputs.clone(),
+        proof_verified: fixture.proof_verified,
+    }
+}
+
+/// Generate and locally verify the deterministic 18-signal research proof, then
+/// discard its proof/key material and return only a reference execution report.
+pub fn generate_dynamic_status_browser_reference_report(
+) -> Result<BrowserDynamicStatusReferenceReport, BrowserBenchmarkError> {
+    let fixture = generate_dynamic_status_evm_fixture()?;
+    Ok(browser_dynamic_status_reference_report(&fixture))
+}
+
 fn export_packed_status_evm_fixture_with_key(
     proving_key_bytes: &[u8],
 ) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
@@ -1447,6 +1486,16 @@ pub fn browser_generate_packed_status_proving_key() -> Result<Vec<u8>, JsValue> 
 #[wasm_bindgen(js_name = provePackedStatus)]
 pub fn browser_prove_packed_status(proving_key: &[u8]) -> Result<String, JsValue> {
     let report = prove_packed_status_with_key(proving_key).map_err(browser_benchmark_js_error)?;
+    serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Reference-only 18-signal proof entry point. The deterministic fixture,
+/// toxic-waste setup, proof and verification key stay inside WASM/Worker memory.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = proveDynamicStatusReference)]
+pub fn browser_prove_dynamic_status_reference() -> Result<String, JsValue> {
+    let report =
+        generate_dynamic_status_browser_reference_report().map_err(browser_benchmark_js_error)?;
     serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -2436,5 +2485,18 @@ mod tests {
             fingerprint, DYNAMIC_STATUS_EVM_FIXTURE_FNV64,
             "fixture drift requires regenerating and reviewing the 18-signal Solidity verifier"
         );
+
+        let browser_report = browser_dynamic_status_reference_report(&dynamic_fixture);
+        assert_eq!(
+            browser_report.schema,
+            BROWSER_DYNAMIC_STATUS_REFERENCE_SCHEMA
+        );
+        assert_eq!(browser_report.public_input_count, 18);
+        assert!(browser_report.proof_verified);
+        let serialized =
+            serde_json::to_string(&browser_report).expect("browser reference report serializes");
+        assert!(!serialized.contains("\"proof\":"));
+        assert!(!serialized.contains("alpha_g1"));
+        assert!(!serialized.contains("gamma_abc_g1"));
     }
 }

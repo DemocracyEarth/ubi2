@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en" data-state="running">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ubi2 holder reference Worker smoke test</title>
+  </head>
+  <body>
+    <pre id="result">running</pre>
+    <script type="module" src="./dist/holder-reference-smoke.js"></script>
+  </body>
+</html>
