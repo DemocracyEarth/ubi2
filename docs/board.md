@@ -165,9 +165,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   restart, withholding, divergence and recovery relationships while keeping authoritative timestamps, host actions
   and page acknowledgements external. A separate transaction-free preflight now rejects topology reuse and checks
   the reviewed registry deployment, runtime bytecode, completed ownership, issuance domain, issuer key and status
-  publisher at each of three finalized RPC views before archiving a secretless non-overwriting report. Physical
-  independence, host-local hashes, keystore inspection and authoritative timestamps remain external. No hosted
-  canonical-testnet bundle, real page acknowledgement or completed drill is claimed yet.
+  publisher at each of three finalized RPC views before archiving a secretless non-overwriting report. A separate
+  per-host gate now requires that public preflight, checks the reviewed commit/clean tracked tree, actual executable
+  hashes, private local-file permissions, secret-file separation and public keystore address, and emits only
+  secretless non-overwriting evidence. Physical independence and authoritative timestamps remain external. No
+  hosted canonical-testnet bundle, real page acknowledgement or completed drill is claimed yet.
   A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
   per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
   circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.

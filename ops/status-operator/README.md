@@ -60,9 +60,10 @@ matches its finalized runtime. All three providers must agree on that public sta
 evidence before returning; provider URLs and error strings are never archived. Evidence files are atomic and
 non-overwriting.
 
-The evidence report deliberately keeps host/volume/provider independence, on-host executable hashing, encrypted
-keystore address/permissions and authoritative capture time as external checks. A JSON record cannot prove those
-physical facts about itself.
+The evidence report deliberately keeps host/volume/provider independence, on-host source/executable hashing,
+encrypted-keystore address/permissions and authoritative capture time as external checks. The per-host attestation
+below closes the two host-local checks by chaining them to this public preflight record. Physical independence and
+authoritative time still require evidence from outside the process.
 
 ## Host preparation
 
@@ -103,6 +104,36 @@ Prefix the two reviewed `shasum` outputs with `0x` and pin them in `builderSha25
 absolute `ExecStart` paths in the templates to the host's reviewed Node/pnpm installation. Encrypted local keystores
 are a testnet mechanism, not a mainnet custody recommendation; production signing still requires the audited HSM or
 remote-signer work and its own availability/recovery drill.
+
+## Transaction-free per-host attestation
+
+After a `ready: true` public preflight exists and before enabling either service, copy that secretless preflight
+file to each operator host. Run the following as the same unprivileged `ubi2-status` account that will run the
+service, changing only the operator name and evidence filename on Host B:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- attest-host \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json \
+  --source-dir /opt/ubi2 \
+  --evidence /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a-YYYYMMDDTHHMMSSZ.json
+
+pnpm --filter @ubi2/status-operator start -- verify-host-attestation \
+  --input /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a-YYYYMMDDTHHMMSSZ.json \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json
+```
+
+The command first requires a valid, `ready: true` preflight and records its SHA-256. It then checks the exact
+reviewed source commit, absence of tracked source changes, builder and `cast` hashes, private permissions on the
+operator config/keystore/password files, distinct keystore and password-file inodes, and the keystore's public
+address. Address recovery invokes the already hash-verified `cast wallet address`; it does not sign, simulate or
+send a transaction. Exit `2` still writes an immutable blocked record.
+
+Host evidence contains public identifiers, hashes, booleans, alert codes and the public signer address only. It
+excludes RPC URLs, every filesystem path, subprocess errors and all secret contents. `ready: true` is a local
+observation by that process; separately prove the named hosts, volumes and providers are physically independent,
+and anchor both evidence hashes and capture times in an authoritative external system.
 
 ## Independent fleet gate
 
