@@ -1,0 +1,84 @@
+{
+  "schema": "org.proofofhumanity.v2-production-profile-inputs/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "admissionSchema": "org.proofofhumanity.zk-production-profile/1",
+  "classification": "ratified-for-implementation-not-production-approved",
+  "publishedFromCommit": "91684328b7a9f67b6506f56b8b7cb0312a47156b",
+  "sharedCircuitFields": {
+    "publicSignalLayoutVersion": 1,
+    "publicSignalCount": 18,
+    "proofSystem": "groth16-bn254-circuit-specific-mpc/1",
+    "commitmentScheme": "poseidon-bn254-arkworks-0.5-x5-rate2/1",
+    "issuerAuthenticationScheme": "schnorr-babyjubjub-poseidon-sha512-nonce/1",
+    "statusTreeScheme": "poseidon-bn254-packed-status-depth24/1",
+    "compiler": "arkworks-r1cs-rust",
+    "compilerVersion": "rust-1.96.0-arkworks-0.5"
+  },
+  "artifactInputsAvailable": {
+    "parameterManifest": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/parameters-v1.json",
+      "sha256": "0xb328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb"
+    },
+    "compilerLock": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/compiler-lock-v1.json",
+      "sha256": "0x789932b37fdf49209e561e66217d4f9817b385c67da3df2fbbe921fe4e1b1708"
+    },
+    "publicSignalManifest": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/public-signals-v1.json",
+      "sha256": "0x9b28661b00a32d27647f524702cb8a7348ff81b93603d94719ea729ba08fce58"
+    },
+    "circuitSet": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/circuit-set-v1.json",
+      "sha256": "0x9059b6e55cd1b1a63d9a6b077d26f34f5d67008a19dfd984ddf76492345e199d"
+    },
+    "deterministicReferenceVector": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/reference-vector-v1.json",
+      "sha256": "0x28249d2064ab83d081037abc1f0b43f0c12760d3bf83f9aebaee4f1be54655df"
+    },
+    "artifactIndex": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/artifact-index-v1.json",
+      "sha256": "0xc47f360611e8f93907ef9ba91606a2e1b89a162562d24d4faf63ffb7a4257ea4"
+    }
+  },
+  "perCircuitInputs": [
+    {
+      "name": "sanctions-clear",
+      "circuitId": "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+      "relationStatus": "implemented-candidate",
+      "pendingAdmissionArtifacts": ["audited circuit source", "canonical constraint system", "MPC proving key", "MPC verifying key", "production verifier source and runtime"]
+    },
+    {
+      "name": "age-threshold",
+      "circuitId": "0xe372a2a117a999d9de9a071f78281a421aaf5562705b34f0e110c7f33f302305",
+      "relationStatus": "implementation-required",
+      "pendingAdmissionArtifacts": ["all circuit-specific artifacts"]
+    },
+    {
+      "name": "nationality-set-membership",
+      "circuitId": "0xcf17502eca9d6173b12a1d6b8149db11a2b3db5e739b336dfbd122b91b21a3a6",
+      "relationStatus": "implementation-required",
+      "pendingAdmissionArtifacts": ["all circuit-specific artifacts"]
+    },
+    {
+      "name": "expiry-valid",
+      "circuitId": "0xf0901f3261d5952d6a48fc33f1b8782a064175c6aa96063fa959b2ec41ef806f",
+      "relationStatus": "implementation-required",
+      "pendingAdmissionArtifacts": ["all circuit-specific artifacts"]
+    },
+    {
+      "name": "assurance-minimum",
+      "circuitId": "0x2ba3a8d0157db6fcd9a82a825cd527347b7629787483f6ff5a3ec900b0999801",
+      "relationStatus": "implementation-required",
+      "pendingAdmissionArtifacts": ["all circuit-specific artifacts"]
+    }
+  ],
+  "profileManifestInputsStillRequired": {
+    "release": ["full source commit containing final audited circuit artifacts", "canonical approval timestamp"],
+    "issuers": ["sorted production issuer key IDs approved by governance"],
+    "setup": ["Phase 1 transcript", "Phase 2 transcript", "at least three verified contributions", "final beacon", "contribution verification", "independent reproduction"],
+    "audits": ["circuit", "cryptography", "Solidity", "privacy", "QA", "reliability", "security", "accepted-risk register", "zero open Critical or High findings"],
+    "devices": ["mid-range-mobile benchmark with at least 20 samples", "proof p95", "peak memory", "content-addressed report"],
+    "targets": ["network and chain ID", "deployment block", "governance, registry, raw verifier, adapter and host addresses", "all runtime codehashes", "raw and full-path gas evidence", "integration report"]
+  },
+  "activationRule": "do not create a production-approved manifest, register a circuit or enable a permanent proof path until every pending input passes the existing admission and status gates"
+}

@@ -1,7 +1,6 @@
 # V2 holder credential commitment and issuance transcript
 
-- **Status:** implemented holder/reference candidate; production commitment/hash profile, issuer authentication
-  and presentation circuits remain unratified
+- **Status:** commitment and issuer envelope ratified for implementation by ADR-0013; activation evidence pending
 - **SDK:** [`zk-holder-credential.ts`](../../packages/sdk/src/zk-holder-credential.ts)
 - **Private handoff:** [`v2-holder-reference-handoff.md`](v2-holder-reference-handoff.md)
 - **Circuit reference:** [`holder_credential.rs`](../../tools/v2-crypto-bench/src/holder_credential.rs)
@@ -16,12 +15,13 @@ credential commitment is public at issuance and anchors issuer authorization, al
 revocation. It is deliberately absent from the 18 presentation signals, so applications cannot correlate two
 presentations through it.
 
-This slice pins a versioned circuit-native holder-commitment candidate, its deterministic vectors and a sanitized
+This slice pins a versioned circuit-native holder commitment, its deterministic vectors and a sanitized
 live issuance transcript. It does **not** put passport claims in the NFT, registry, transcript or public signals.
-It also does not ratify this measured Poseidon profile or select/simulate a production issuer signature: allocation
-under the transitional Self bridge is not by itself a presentation-ready anonymous credential.
+ADR-0013 now ratifies the exact Poseidon and issuer-signature envelope for implementation. Allocation under the
+transitional Self bridge is still not by itself a production-approved anonymous credential: audited circuits,
+ceremony artifacts and admission remain separate gates.
 
-## Credential commitment reference profile v1 (candidate)
+## Credential commitment profile v1
 
 Identifiers:
 
@@ -156,31 +156,30 @@ attributes, no credential ciphertext and no credential commitment.
 - The transitional Self bridge remains usable when the holder commits the exact slot/epoch observed before the
   scan and the allocation wins without a race.
 
-## NEEDS-INTEGRATION-DECISION
-
-### Slot/epoch race recovery
+## Resolved integration decision: slot/epoch race recovery
 
 The existing transitional PATCH refresh changes `expectedStatusId` and/or `expectedEpoch` while preserving the
-old commitment. Reference profile v1 commits both values, so such an artifact is rejected by transcript validation
-and cannot create a valid presentation credential. Cross-lane integration must choose one:
+old commitment. Profile v1 commits both values, so such an artifact is rejected by transcript validation and
+cannot create a valid presentation credential. ADR-0013 selects option 1 for profile v1:
 
-1. **Recommit and re-run passport binding after a race.** No ABI change and safest first testnet behavior, but a
-   poor experience under contention or epoch rollover.
+1. **Selected: recommit and re-run passport binding after a race.** No ABI change and safest initial behavior,
+   with an acknowledged extra passport interaction after a losing allocation or epoch rollover.
 2. **Reserve a slot/epoch before the passport scan.** Keeps one final commitment, but adds reservation expiry,
    squatting/DoS and abandoned-slot rules to the issuance/status registry.
 3. **Two-stage commitment.** Bind a passport proof to a private core commitment, then fold the assigned slot and
    epoch into a final issuer-signed commitment. Best race UX, but changes the Self request, bridge authorization,
    issuer service and circuit relation and therefore needs an explicit integration ADR.
 
-No shared bridge/registry format is changed in this PR. Until a decision merges, a circuit-native path must treat
-`UnexpectedStatusId`/`UnexpectedIssuanceEpoch` as re-enrollment, not grant-preserving refresh.
+No shared bridge/registry format changes. A circuit-native path treats
+`UnexpectedStatusId`/`UnexpectedIssuanceEpoch` as re-enrollment, not grant-preserving refresh. Reservation or a
+two-stage commitment requires a new profile/integration ADR and cannot reinterpret profile v1.
 
-### Issuer authentication artifact
+## Ratified issuer authentication artifact
 
-The research circuit measures a Baby-Jubjub/Poseidon signature, but ADR-0010 has not ratified its exact key,
-nonce, signature encoding or rotation scheme. The production circuit/verifier lane must freeze that envelope and
-publish cross-language vectors. The holder transcript intentionally does not invent opaque signature bytes or
-claim registry allocation is equivalent to issuer authentication.
+ADR-0013 ratifies `schnorr-babyjubjub-poseidon-sha512-nonce/1`, including key/point/scalar encodings, subgroup
+checks, challenge, response equation and nonce derivation. Its exact parameters and synthetic vector live in
+[`fixtures/v2-production-crypto/`](../../fixtures/v2-production-crypto/). Production persistence must still verify
+an issuer artifact issued under an admitted key; registry allocation alone is not issuer authentication.
 
 ## Deterministic and adversarial evidence
 

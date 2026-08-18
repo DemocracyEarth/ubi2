@@ -1,0 +1,40 @@
+{
+  "schema": "org.proofofhumanity.v2-production-compiler-lock/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "sourceBaseCommit": "6489c3365bac4489110e0a4220c852d94ea8d1b2",
+  "rust": {
+    "toolchain": "1.96.0",
+    "edition": "2021",
+    "target": "wasm32-unknown-unknown",
+    "release": { "codegenUnits": 1, "lto": "thin" }
+  },
+  "crates": {
+    "ark-bn254": "0.5.0",
+    "ark-crypto-primitives": "0.5.0",
+    "ark-ec": "0.5.0",
+    "ark-ed-on-bn254": "0.5.0",
+    "ark-ff": "0.5.0",
+    "ark-groth16": "0.5.0",
+    "ark-r1cs-std": "0.5.0",
+    "ark-relations": "0.5.1",
+    "ark-serialize": "0.5.0",
+    "ark-snark": "0.5.1",
+    "ark-std": "0.5.0",
+    "sha2": "0.10.9",
+    "wasm-bindgen": "0.2.125"
+  },
+  "evmVerifier": {
+    "solc": "0.8.28",
+    "optimizer": true,
+    "optimizerRuns": 200,
+    "evmVersion": "cancun",
+    "pairingInterface": "EIP-197"
+  },
+  "lockfiles": [
+    "rust-toolchain.toml",
+    "tools/v2-crypto-bench/Cargo.toml",
+    "tools/v2-crypto-bench/Cargo.lock",
+    "contracts/foundry.toml"
+  ],
+  "releaseCaveat": "arkworks identifies its Groth16 implementation as academic software; an independent implementation review and reproducible constraint/verifier audit are mandatory admission inputs"
+}

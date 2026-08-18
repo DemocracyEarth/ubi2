@@ -1,12 +1,13 @@
 # ADR-0012 — Freeze the V2 cross-lane wire contract before production cryptography
 
-- **Status:** accepted for cross-lane integration; production cryptographic suite remains unratified
+- **Status:** accepted; production cryptographic suite ratified for implementation by ADR-0013, activation pending
 - **Date:** 2026-08-16
 - **Decider:** V2 release and integration lead
 - **Consumers:** holder/prover, circuit/verifier, testnet operations, SDK, EVM contracts and release gates
 - **Related:** [ADR-0009](0009-predicate-v2-and-final-onchain-surface.md),
   [ADR-0010](0010-direct-v2-portable-zk-credential.md),
-  [ADR-0011](0011-dynamic-status-freshness.md), and
+  [ADR-0011](0011-dynamic-status-freshness.md),
+  [ADR-0013](0013-v2-production-cryptographic-profile.md), and
   [EVM ZK Identity v2](../10-evm-zk-identity-v2.md)
 - **Canonical vector:**
   [`fixtures/v2-identity/interface-v1.json`](../../../fixtures/v2-identity/interface-v1.json)
@@ -122,7 +123,12 @@ This decision changes no deployed bytecode and adds no runtime gas. It preserves
 shape. A later production suite must measure its own raw verifier and full stateful path on every target chain;
 local Cancun research values are not release budgets.
 
-## Release gate
+## Production-profile ratification and release gate
+
+ADR-0013 ratifies the exact credential commitment, issuer authentication, status hash, proof system, circuit-set
+identifiers and compiler lock for implementation. It does not change this wire contract or authorize deployment.
+Its checked-in deterministic keys/vectors remain non-deployable; the per-circuit ceremony, audit, device and live
+target evidence below are still mandatory.
 
 CI must run the shared vector in TypeScript, Rust and Solidity. A worker PR that changes a frozen field, index,
 scope, status convention or verifier ABI must update this ADR with a versioned migration, add positive and negative

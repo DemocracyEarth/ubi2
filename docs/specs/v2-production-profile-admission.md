@@ -17,8 +17,10 @@ This gate is the release-owned boundary between reviewed artifacts and activatio
 content-addressed profile; matches it to exact runtime bytecode on one chain; verifies timelocked ownership and
 inactive on-chain state; and emits the exact governance calldata. It has no signer, keystore or broadcast path.
 
-No production manifest is checked in yet. Candidate holder commitments, research circuit identifiers, public-toxic-
-waste verifier artifacts and the five existing v1-only Phase 2 hosts remain inadmissible.
+No production manifest is checked in yet. ADR-0013 now supplies implementation-ratified cryptographic parameters,
+content-addressed vectors and the exact manifest-input checklist, but it does not supply ceremony keys, independent
+audits, device evidence or live target identities. Research circuit identifiers, public-toxic-waste verifier
+artifacts and the five existing v1-only Phase 2 hosts remain inadmissible.
 
 ## Manifest V1
 
@@ -49,7 +51,8 @@ the live RPC preflight deliberately does not download arbitrary manifest URLs.
   independent reproduction.
 - `transparent`: setup rationale and independent reproduction; contribution count must be zero.
 
-This records rather than selects the proof system. The circuit/verifier lane owns that decision and its artifacts.
+ADR-0013 selects circuit-specific Groth16/BN254 for V2 profile 1. This section records the evidence that selection
+must produce per circuit; it does not allow a suite-selection manifest to stand in for a verified ceremony.
 
 ## Admission invariants
 
@@ -111,9 +114,15 @@ The five Phase 2 testnet deployments stay v1-only with `prover == address(0)`. V
 adapter and host deployment whose ownership and codehashes pass this gate. L2 activation precedes Ethereum unless
 the approved target evidence explicitly supports simultaneous release.
 
-## Remaining work
+## Ratified inputs and remaining work
 
-- circuit/verifier: ratify and publish the production parameter/artifact set;
+The exact cryptographic fields and content-addressed pre-ceremony artifacts are listed in
+[`fixtures/v2-production-crypto/admission-inputs-v1.json`](../../fixtures/v2-production-crypto/admission-inputs-v1.json).
+Release must copy only the selected values and independently verified artifact digests into one manifest per
+circuit. Placeholder URLs, zero digests or the deterministic reference signature/proof are forbidden.
+
+- circuit/verifier: implement the four remaining relations, complete independent audits and publish canonical
+  constraint systems plus MPC-derived proving/verifying artifacts for every admitted circuit;
 - holder/prover: finish isolated local proving, vault/recovery and representative device evidence;
 - operations: publish live status-root admission evidence for the corrected stack;
 - QA/reliability/security: produce the required independent reports and close all Critical/High findings;
