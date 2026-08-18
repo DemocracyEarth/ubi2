@@ -3,6 +3,7 @@
   "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
   "admissionSchema": "org.proofofhumanity.zk-production-profile/1",
   "classification": "ratified-for-implementation-not-production-approved",
+  "publishedFromCommit": "91684328b7a9f67b6506f56b8b7cb0312a47156b",
   "sharedCircuitFields": {
     "publicSignalLayoutVersion": 1,
     "publicSignalCount": 18,
@@ -14,12 +15,30 @@
     "compilerVersion": "rust-1.96.0-arkworks-0.5"
   },
   "artifactInputsAvailable": {
-    "parameterManifest": "fixtures/v2-production-crypto/parameters-v1.json",
-    "compilerLock": "fixtures/v2-production-crypto/compiler-lock-v1.json",
-    "publicSignalManifest": "fixtures/v2-production-crypto/public-signals-v1.json",
-    "circuitSet": "fixtures/v2-production-crypto/circuit-set-v1.json",
-    "deterministicReferenceVector": "fixtures/v2-production-crypto/reference-vector-v1.json",
-    "artifactIndex": "fixtures/v2-production-crypto/artifact-index-v1.json"
+    "parameterManifest": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/parameters-v1.json",
+      "sha256": "0xb328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb"
+    },
+    "compilerLock": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/compiler-lock-v1.json",
+      "sha256": "0x789932b37fdf49209e561e66217d4f9817b385c67da3df2fbbe921fe4e1b1708"
+    },
+    "publicSignalManifest": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/public-signals-v1.json",
+      "sha256": "0x9b28661b00a32d27647f524702cb8a7348ff81b93603d94719ea729ba08fce58"
+    },
+    "circuitSet": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/circuit-set-v1.json",
+      "sha256": "0x9059b6e55cd1b1a63d9a6b077d26f34f5d67008a19dfd984ddf76492345e199d"
+    },
+    "deterministicReferenceVector": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/reference-vector-v1.json",
+      "sha256": "0x28249d2064ab83d081037abc1f0b43f0c12760d3bf83f9aebaee4f1be54655df"
+    },
+    "artifactIndex": {
+      "uri": "https://raw.githubusercontent.com/DemocracyEarth/ubi2/91684328b7a9f67b6506f56b8b7cb0312a47156b/fixtures/v2-production-crypto/artifact-index-v1.json",
+      "sha256": "0xc47f360611e8f93907ef9ba91606a2e1b89a162562d24d4faf63ffb7a4257ea4"
+    }
   },
   "perCircuitInputs": [
     {

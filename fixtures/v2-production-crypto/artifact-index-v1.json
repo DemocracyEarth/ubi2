@@ -3,6 +3,7 @@
   "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
   "hashAlgorithm": "sha256",
   "sourceBaseCommit": "6489c3365bac4489110e0a4220c852d94ea8d1b2",
+  "immutableEvidenceCommit": "91684328b7a9f67b6506f56b8b7cb0312a47156b",
   "releaseStatus": "ratified-for-implementation-not-production-approved",
   "artifacts": [
     {
@@ -32,8 +33,8 @@
     },
     {
       "path": "fixtures/v2-production-crypto/admission-inputs-v1.json",
-      "sha256": "0616766b8f3421dc92bf9a513e61916fc2c75a74823a09c218ed3da4260b5f64",
-      "bytes": 3777
+      "sha256": "fa6b4c6025c74c195029901c9657c0b6aac658c1c598fa71e07a0bd0cf128388",
+      "bytes": 5058
     },
     {
       "path": "fixtures/v2-production-crypto/circuit-set-v1.json",
