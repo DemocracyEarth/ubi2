@@ -163,8 +163,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   secretless bundle whose checksum, signatures and fleet decision reproduce offline. Verification binds every
   bundle to a separately reviewed fleet config, and a strict manifest checks internally ordered non-regressing
   restart, withholding, divergence and recovery relationships while keeping authoritative timestamps, host actions
-  and page acknowledgements external. No hosted canonical-testnet bundle, real page acknowledgement or completed
-  drill is claimed yet.
+  and page acknowledgements external. A separate transaction-free preflight now rejects topology reuse and checks
+  the reviewed registry deployment, runtime bytecode, completed ownership, issuance domain, issuer key and status
+  publisher at each of three finalized RPC views before archiving a secretless non-overwriting report. Physical
+  independence, host-local hashes, keystore inspection and authoritative timestamps remain external. No hosted
+  canonical-testnet bundle, real page acknowledgement or completed drill is claimed yet.
   A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
   per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
   circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.

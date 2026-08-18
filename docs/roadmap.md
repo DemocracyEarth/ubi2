@@ -257,7 +257,8 @@ and v2 proof generation are not enabled yet.
   finalized-RPC ingestion, content-addressed EIP-712 envelopes and two-party root reconciliation are now implemented
   as reference tooling. A deployable single-writer operator, immutable artifact server, third-RPC fleet gate,
   end-to-end immutable retrieval check, non-overwriting offline-verifiable evidence bundle, reviewed-config trust
-  binding, intrinsic restart/withholding/divergence evidence gate and systemd/drill runbooks are implemented. The
+  binding, intrinsic restart/withholding/divergence evidence gate, systemd/drill runbooks and a secretless
+  three-finalized-RPC deployment/topology preflight are implemented. The
   versioned holder-commitment candidate, Rust/WASM reference generator and sanitized SDK issuance transcript are
   pinned without changing public signals, ABI or status format and without promoting the measured Poseidon profile
   to production. An expiring one-shot SDK handoff now generates holder material,

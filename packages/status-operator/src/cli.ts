@@ -23,6 +23,11 @@ import {
 } from "./evidence";
 import { fetchZkIdentityStatusOperatorFleet } from "./fleet";
 import { runZkIdentityStatusOperatorCycle } from "./operator";
+import {
+  captureZkIdentityStatusTestnetPreflight,
+  verifyZkIdentityStatusTestnetPreflightEvidenceAgainstTopology,
+  writeZkIdentityStatusTestnetPreflightEvidence,
+} from "./readiness";
 import { startZkIdentityStatusOperatorServer } from "./server";
 import { ZkIdentityStatusOperatorStore } from "./storage";
 
@@ -158,6 +163,7 @@ async function verifyEvidence(path: string, configPath: string): Promise<void> {
       alerts: evidence.report.alerts,
     })}\n`,
   );
+  if (!evidence.report.ready) process.exitCode = 2;
 }
 
 async function verifyDrillEvidence(manifestPath: string, configPath: string): Promise<void> {
@@ -170,6 +176,57 @@ async function verifyDrillEvidence(manifestPath: string, configPath: string): Pr
     manifest,
   });
   process.stdout.write(`${JSON.stringify(report)}\n`);
+}
+
+async function readinessInputs(parsed: Map<string, string>): Promise<{
+  trustRecord: unknown;
+  operatorConfigs: readonly [unknown, unknown];
+  fleetConfig: unknown;
+}> {
+  const [trustRecord, operatorA, operatorB, fleetConfig] = await Promise.all([
+    readStrictJsonFile(requiredOption(parsed, "--trust-record")),
+    readStrictJsonFile(requiredOption(parsed, "--operator-a")),
+    readStrictJsonFile(requiredOption(parsed, "--operator-b")),
+    readStrictJsonFile(requiredOption(parsed, "--fleet")),
+  ]);
+  return { trustRecord, operatorConfigs: [operatorA, operatorB], fleetConfig };
+}
+
+async function runPreflight(parsed: Map<string, string>): Promise<void> {
+  const input = await readinessInputs(parsed);
+  const evidence = await captureZkIdentityStatusTestnetPreflight(input);
+  await writeZkIdentityStatusTestnetPreflightEvidence(
+    requiredOption(parsed, "--evidence"),
+    evidence,
+  );
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "status_testnet_preflight_captured",
+      evidenceSha256: evidence.evidenceSha256,
+      ready: evidence.report.ready,
+      alerts: evidence.report.alerts,
+      externalChecksRequired: evidence.report.externalChecksRequired,
+    })}\n`,
+  );
+  if (!evidence.report.ready) process.exitCode = 2;
+}
+
+async function verifyPreflight(parsed: Map<string, string>): Promise<void> {
+  const input = await readinessInputs(parsed);
+  const evidence = verifyZkIdentityStatusTestnetPreflightEvidenceAgainstTopology({
+    ...input,
+    evidence: await readStrictJsonFile(requiredOption(parsed, "--input")),
+  });
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "status_testnet_preflight_verified",
+      evidenceSha256: evidence.evidenceSha256,
+      ready: evidence.report.ready,
+      alerts: evidence.report.alerts,
+      externalChecksRequired: evidence.report.externalChecksRequired,
+    })}\n`,
+  );
+  if (!evidence.report.ready) process.exitCode = 2;
 }
 
 async function main(): Promise<void> {
@@ -192,9 +249,27 @@ async function main(): Promise<void> {
       requiredOption(parsed, "--manifest"),
       requiredOption(parsed, "--config"),
     );
+  } else if (command === "preflight") {
+    const parsed = options(arguments_, [
+      "--trust-record",
+      "--operator-a",
+      "--operator-b",
+      "--fleet",
+      "--evidence",
+    ]);
+    await runPreflight(parsed);
+  } else if (command === "verify-preflight") {
+    const parsed = options(arguments_, [
+      "--input",
+      "--trust-record",
+      "--operator-a",
+      "--operator-b",
+      "--fleet",
+    ]);
+    await verifyPreflight(parsed);
   } else {
     throw new Error(
-      "status operator command must be run, fleet, verify-evidence, or verify-drill-evidence",
+      "status operator command must be run, fleet, verify-evidence, verify-drill-evidence, preflight, or verify-preflight",
     );
   }
 }

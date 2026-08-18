@@ -3,6 +3,10 @@
 This directory deploys the v2 packed-status reference operator as two independent, read-only artifact services and
 one fleet check. It is suitable for a canonical **testnet** rehearsal. It does not authorize mainnet publication.
 
+Copy [`trust-record.example.json`](trust-record.example.json) for the selected testnet and replace every fixture.
+The strict record contains only public deployment, role, host/volume/provider identifiers, origins, source commit
+and executable hashes. RPC URLs and secret-file contents never belong in it.
+
 ## Trust and isolation
 
 Run `reconciler-a` and `reconciler-b` on different hosts, storage volumes, RPC providers and encrypted EOA
@@ -25,6 +29,40 @@ recovers both artifact signers and reconciles the signed snapshot content before
 Terminate TLS at a reverse proxy and allow only those four read routes. Never expose the state directory.
 The reference fleet fetch caps each JSON response at 2 MiB; exceeding that limit blocks publication. Production
 retention, chunking/CDN transport and larger-population artifact limits remain a later measured design decision.
+
+## Transaction-free canonical preflight
+
+Before starting either operator, run the preflight from a controlled administration host that can read the two
+operator configs and fleet config. The CLI reads their RPC URLs but excludes them, all filesystem paths and all
+transport errors from its output. It sends only read-only RPC requests at each provider's `finalized` block and
+never initializes a signer or constructs a transaction:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- preflight \
+  --trust-record /etc/ubi2/status-operator/canonical-testnet-trust.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --fleet /etc/ubi2/status-operator/fleet.json \
+  --evidence /var/lib/ubi2-status-evidence/canonical-testnet/preflight-YYYYMMDDTHHMMSSZ.json
+
+pnpm --filter @ubi2/status-operator start -- verify-preflight \
+  --input /var/lib/ubi2-status-evidence/canonical-testnet/preflight-YYYYMMDDTHHMMSSZ.json \
+  --trust-record /etc/ubi2/status-operator/canonical-testnet-trust.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --fleet /etc/ubi2/status-operator/fleet.json
+```
+
+Exit `0` requires two-of-two distinct operators, three distinct RPC URLs/provider labels, exact trust-record
+binding, the reviewed registry runtime code hash and successful deployment transaction, completed ownership
+state with no pending transfer, the canonical issuance domain, an active issuer key, and an active publisher whose configured codehash
+matches its finalized runtime. All three providers must agree on that public state. Exit `2` writes the blocked
+evidence before returning; provider URLs and error strings are never archived. Evidence files are atomic and
+non-overwriting.
+
+The evidence report deliberately keeps host/volume/provider independence, on-host executable hashing, encrypted
+keystore address/permissions and authoritative capture time as external checks. A JSON record cannot prove those
+physical facts about itself.
 
 ## Host preparation
 
