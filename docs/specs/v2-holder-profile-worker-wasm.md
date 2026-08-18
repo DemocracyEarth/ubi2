@@ -61,7 +61,7 @@ Synthetic execution requires exactly one `wasmModule` whose bytes hash to:
 sha256:1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e
 ```
 
-The committed WASM is generated with Rust 1.96.0, wasm-bindgen 0.2.125 and wasm-pack 0.15.0 in locked release mode.
+The committed WASM is generated with Rust 1.96.0, wasm-bindgen 0.2.125 and wasm-pack 0.15.0 in locked release mode on `aarch64-apple-darwin`. `wasm-pack` output contains host-sensitive bytes: every CI host compiles the same source, but only the committed byte sequence above is an admitted runtime artifact. Browser packaging hashes and copies that artifact instead of substituting a host-local build.
 The build script rejects byte drift. The fixture manifest records its exact byte count and categorically marks it
 synthetic/non-presentable.
 

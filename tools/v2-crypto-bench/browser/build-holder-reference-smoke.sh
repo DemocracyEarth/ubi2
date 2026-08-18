@@ -5,12 +5,13 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bench_dir="$(cd "$script_dir/.." && pwd)"
 repo_dir="$(cd "$bench_dir/../.." && pwd)"
 dist_dir="$script_dir/dist"
+profile_wasm="$repo_dir/fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm"
 
 wasm-pack build "$bench_dir" --target web --out-dir browser/pkg --release -- \
   --features browser --locked
 
 expected_profile_wasm_sha256="1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e"
-actual_profile_wasm_sha256="$(shasum -a 256 "$script_dir/pkg/ubi2_v2_crypto_bench_bg.wasm" | awk '{print $1}')"
+actual_profile_wasm_sha256="$(shasum -a 256 "$profile_wasm" | awk '{print $1}')"
 if [[ "$actual_profile_wasm_sha256" != "$expected_profile_wasm_sha256" ]]; then
   echo "holder profile WASM digest mismatch: $actual_profile_wasm_sha256" >&2
   exit 1
@@ -26,6 +27,6 @@ pnpm --dir "$repo_dir" exec esbuild "$script_dir/holder-reference-smoke.ts" \
 pnpm --dir "$repo_dir" exec esbuild "$script_dir/holder-profile-worker.ts" \
   --bundle --format=esm --platform=browser --target=es2022 \
   --outfile="$dist_dir/holder-profile-worker.js"
-cp "$script_dir/pkg/ubi2_v2_crypto_bench_bg.wasm" "$dist_dir/ubi2_v2_crypto_bench_bg.wasm"
+cp "$profile_wasm" "$dist_dir/ubi2_v2_crypto_bench_bg.wasm"
 
 echo "holder reference browser smoke bundle PASS"

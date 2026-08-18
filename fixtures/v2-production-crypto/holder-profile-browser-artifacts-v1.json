@@ -4,7 +4,7 @@
   "mode": "synthetic",
   "presentationReady": false,
   "warning": "synthetic profile fixture only; public toxic-waste setup is not production-admitted",
-  "build": "wasm-pack 0.15.0; wasm-bindgen 0.2.125; Rust 1.96.0; release; browser feature; locked",
+  "build": "wasm-pack 0.15.0; wasm-bindgen 0.2.125; Rust 1.96.0; release; browser feature; locked; aarch64-apple-darwin",
   "artifacts": [
     {
       "role": "wasmModule",
