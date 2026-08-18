@@ -77,7 +77,7 @@ jobs:
       - name: Reproduce content-addressed holder profile WASM
         run: |
           wasm-pack build . --target web --out-dir browser/pkg --release -- --features browser --locked
-          echo "f4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5  browser/pkg/ubi2_v2_crypto_bench_bg.wasm" | sha256sum --check
+          echo "1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e  browser/pkg/ubi2_v2_crypto_bench_bg.wasm" | sha256sum --check
           cmp browser/pkg/ubi2_v2_crypto_bench_bg.wasm ../../fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm
       - name: Relation tests and pinned constraint budgets
         run: cargo test --release --locked

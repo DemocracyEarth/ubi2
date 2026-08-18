@@ -569,8 +569,7 @@ impl SpikeCircuit {
         }
         let credential_commitment =
             poseidon_native(&poseidon, CREDENTIAL_DOMAIN, credential_elements.as_slice());
-        let signature_nonce =
-            production_profile::derive_nonce(issuer_secret, credential_commitment, [0x42u8; 32]);
+        let signature_nonce = JubjubScalar::from(8_181_818u64);
         let signature_commitment = EdwardsProjective::generator() * signature_nonce;
         let challenge = signature_challenge_native(
             &poseidon,
@@ -909,7 +908,8 @@ impl DynamicStatusPresentationCircuit {
 
         let credential_commitment =
             poseidon_native(&poseidon, CREDENTIAL_DOMAIN, &credential_elements);
-        let signature_nonce = JubjubScalar::from(8_181_818u64);
+        let signature_nonce =
+            production_profile::derive_nonce(issuer_secret, credential_commitment, [0x42u8; 32]);
         let signature_commitment = EdwardsProjective::generator() * signature_nonce;
         let challenge = signature_challenge_native(
             &poseidon,

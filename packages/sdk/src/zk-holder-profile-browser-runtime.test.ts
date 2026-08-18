@@ -141,11 +141,11 @@ const TestWorker = class {
   }
 } as unknown as ZkHolderProfileBrowserWorkerConstructor;
 const client = createZkHolderProfileBrowserClient({
-  workerUrl: new URL("https://holder.invalid/assets/profile-worker.f4e5aa36.js"),
+  workerUrl: new URL("https://holder.invalid/assets/profile-worker.1a931e60.js"),
   WorkerConstructor: TestWorker,
 });
 await client.prove(request());
-assert.equal(createdUrl?.href, "https://holder.invalid/assets/profile-worker.f4e5aa36.js");
+assert.equal(createdUrl?.href, "https://holder.invalid/assets/profile-worker.1a931e60.js");
 assert.deepEqual(createdOptions, { type: "module", name: ZK_HOLDER_PROFILE_BROWSER_WORKER_NAME });
 assert.throws(() => createZkHolderProfileBrowserClient({ workerUrl: new URL("data:text/javascript,1"), WorkerConstructor: TestWorker }), /HTTP or HTTPS/u);
 assert.throws(() => createZkHolderProfileBrowserClient({ workerUrl: new URL("https://user:pass@holder.invalid/worker.js"), WorkerConstructor: TestWorker }), /credentials or a fragment/u);

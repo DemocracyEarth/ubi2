@@ -9,8 +9,8 @@
     {
       "role": "wasmModule",
       "runtimePath": "fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm",
-      "sha256": "f4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5",
-      "bytes": 1061773
+      "sha256": "1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e",
+      "bytes": 1061830
     }
   ]
 }
