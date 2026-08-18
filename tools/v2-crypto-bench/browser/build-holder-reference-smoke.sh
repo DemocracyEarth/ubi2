@@ -9,7 +9,7 @@ dist_dir="$script_dir/dist"
 wasm-pack build "$bench_dir" --target web --out-dir browser/pkg --release -- \
   --features browser --locked
 
-expected_profile_wasm_sha256="451d599ba213d44f2b9e56c139e0c889b150ed9bbe57ee1fa3de7a2d91ee72c7"
+expected_profile_wasm_sha256="f4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5"
 actual_profile_wasm_sha256="$(shasum -a 256 "$script_dir/pkg/ubi2_v2_crypto_bench_bg.wasm" | awk '{print $1}')"
 if [[ "$actual_profile_wasm_sha256" != "$expected_profile_wasm_sha256" ]]; then
   echo "holder profile WASM digest mismatch: $actual_profile_wasm_sha256" >&2

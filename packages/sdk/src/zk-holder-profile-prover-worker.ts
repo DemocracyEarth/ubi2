@@ -40,7 +40,7 @@ export const ZK_HOLDER_PROFILE_SYNTHETIC_FIXTURE_ID =
 export const ZK_HOLDER_PROFILE_SYNTHETIC_WARNING =
   "synthetic profile fixture only; public toxic-waste setup is not production-admitted" as const;
 export const ZK_HOLDER_PROFILE_SYNTHETIC_WASM_SHA256 =
-  "0x451d599ba213d44f2b9e56c139e0c889b150ed9bbe57ee1fa3de7a2d91ee72c7" as const;
+  "0xf4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5" as const;
 
 export const ZK_HOLDER_PROFILE_MIN_TIMEOUT_MS = 1_000;
 export const ZK_HOLDER_PROFILE_MAX_TIMEOUT_MS = 10 * 60 * 1_000;

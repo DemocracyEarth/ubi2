@@ -58,7 +58,7 @@ reference vault as a production format.
 Synthetic execution requires exactly one `wasmModule` whose bytes hash to:
 
 ```text
-sha256:451d599ba213d44f2b9e56c139e0c889b150ed9bbe57ee1fa3de7a2d91ee72c7
+sha256:f4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5
 ```
 
 The committed WASM is generated with Rust 1.96.0, wasm-bindgen 0.2.125 and wasm-pack 0.15.0 in locked release mode.
