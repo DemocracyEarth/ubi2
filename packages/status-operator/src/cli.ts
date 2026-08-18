@@ -22,6 +22,11 @@ import {
   writeZkIdentityStatusTestnetEvidence,
 } from "./evidence";
 import { fetchZkIdentityStatusOperatorFleet } from "./fleet";
+import {
+  captureZkIdentityStatusTestnetHostAttestation,
+  verifyZkIdentityStatusTestnetHostAttestationEvidenceAgainstConfig,
+  writeZkIdentityStatusTestnetHostAttestationEvidence,
+} from "./host-attestation";
 import { runZkIdentityStatusOperatorCycle } from "./operator";
 import {
   captureZkIdentityStatusTestnetPreflight,
@@ -229,6 +234,59 @@ async function verifyPreflight(parsed: Map<string, string>): Promise<void> {
   if (!evidence.report.ready) process.exitCode = 2;
 }
 
+async function runHostAttestation(parsed: Map<string, string>): Promise<void> {
+  const operatorConfigPath = requiredOption(parsed, "--operator-config");
+  const [preflightEvidence, operatorConfig] = await Promise.all([
+    readStrictJsonFile(requiredOption(parsed, "--preflight")),
+    readStrictJsonFile(operatorConfigPath),
+  ]);
+  const evidence = await captureZkIdentityStatusTestnetHostAttestation({
+    preflightEvidence,
+    operatorConfig,
+    operatorConfigPath,
+    sourceDirectory: requiredOption(parsed, "--source-dir"),
+  });
+  await writeZkIdentityStatusTestnetHostAttestationEvidence(
+    requiredOption(parsed, "--evidence"),
+    evidence,
+  );
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "status_testnet_host_attestation_captured",
+      operatorId: evidence.identity.operatorId,
+      evidenceSha256: evidence.evidenceSha256,
+      ready: evidence.report.ready,
+      alerts: evidence.report.alerts,
+      externalChecksRequired: evidence.report.externalChecksRequired,
+    })}\n`,
+  );
+  if (!evidence.report.ready) process.exitCode = 2;
+}
+
+async function verifyHostAttestation(parsed: Map<string, string>): Promise<void> {
+  const [evidence, preflightEvidence, operatorConfig] = await Promise.all([
+    readStrictJsonFile(requiredOption(parsed, "--input")),
+    readStrictJsonFile(requiredOption(parsed, "--preflight")),
+    readStrictJsonFile(requiredOption(parsed, "--operator-config")),
+  ]);
+  const verified = verifyZkIdentityStatusTestnetHostAttestationEvidenceAgainstConfig({
+    evidence,
+    preflightEvidence,
+    operatorConfig,
+  });
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "status_testnet_host_attestation_verified",
+      operatorId: verified.identity.operatorId,
+      evidenceSha256: verified.evidenceSha256,
+      ready: verified.report.ready,
+      alerts: verified.report.alerts,
+      externalChecksRequired: verified.report.externalChecksRequired,
+    })}\n`,
+  );
+  if (!verified.report.ready) process.exitCode = 2;
+}
+
 async function main(): Promise<void> {
   const [command, ...arguments_] = process.argv.slice(2);
   if (command === "run") {
@@ -267,9 +325,20 @@ async function main(): Promise<void> {
       "--fleet",
     ]);
     await verifyPreflight(parsed);
+  } else if (command === "attest-host") {
+    const parsed = options(arguments_, [
+      "--preflight",
+      "--operator-config",
+      "--source-dir",
+      "--evidence",
+    ]);
+    await runHostAttestation(parsed);
+  } else if (command === "verify-host-attestation") {
+    const parsed = options(arguments_, ["--input", "--preflight", "--operator-config"]);
+    await verifyHostAttestation(parsed);
   } else {
     throw new Error(
-      "status operator command must be run, fleet, verify-evidence, verify-drill-evidence, preflight, or verify-preflight",
+      "status operator command must be run, fleet, verify-evidence, verify-drill-evidence, preflight, verify-preflight, attest-host, or verify-host-attestation",
     );
   }
 }

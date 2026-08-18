@@ -56,9 +56,10 @@ requires the operator executable hashes to match the trust record. It never init
 transaction. A blocked network observation is still written and exits `2`; the evidence contains no RPC URL,
 secret path or provider error text.
 
-The report always lists four facts that remain externally observed: actual host/volume/provider independence,
-on-host source/executable hashes, encrypted-keystore public-address/file-permission checks, and an authoritative
-archive timestamp. Do not mark those complete from the JSON alone.
+The report always lists four facts that it cannot observe from the administration host. The per-host attestation
+below turns the source/executable and encrypted-keystore checks into host-local evidence chained to this preflight.
+Actual host/volume/provider independence and authoritative archive time remain external facts; do not mark those
+complete from either JSON record alone.
 
 The following commands are the independent human spot-check and incident fallback. Run them separately against
 providers A, B and C before starting an operator and again before any publication simulation. Load RPC URLs from
@@ -86,8 +87,8 @@ public deployer; its successful receipt must create the recorded registry. The c
 recorded intended testnet owner. Stop on any mismatch. These are read-only calls; they do not authorize a
 transaction.
 
-On each operator host, verify only the public address of the encrypted keystore and compare it to both the local
-operator config and the fleet config:
+If the packaged host attestation cannot run during an incident, the read-only fallback is to recover only the
+public address of the encrypted keystore and compare it to both the local operator config and the fleet config:
 
 ```shell
 cast wallet address --keystore "$KEYSTORE_PATH" --password-file "$PASSWORD_FILE"
@@ -102,6 +103,34 @@ Build the reviewed commit and pin both executable hashes exactly as described in
 must agree on chain ID, registry and issuer key, but must use different operator IDs, RPC providers, signers,
 keystores, password files, state volumes and public origins. Both hosts start from one manually reviewed identical
 checkpoint.
+
+Copy the already captured public preflight evidence to both hosts. As the same unprivileged service account, run a
+non-overwriting host attestation before enabling either operator:
+
+```shell
+HOST_EVIDENCE=/var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a-YYYYMMDDTHHMMSSZ.json
+
+pnpm --filter @ubi2/status-operator start -- attest-host \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json \
+  --source-dir /opt/ubi2 \
+  --evidence "$HOST_EVIDENCE"
+
+pnpm --filter @ubi2/status-operator start -- verify-host-attestation \
+  --input "$HOST_EVIDENCE" \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json
+```
+
+Repeat on Host B with its own config and a different evidence file. Both commands must exit `0` and report
+`ready: true`. A blocked capture exits `2` but remains useful incident evidence. The command verifies the preflight
+checksum and readiness, exact reviewed commit, clean tracked source, both executable hashes, private permissions,
+distinct keystore/password files and the public keystore address. It makes no RPC request and performs no signing,
+simulation or transaction. Its JSON contains no RPC URL, local path, subprocess error or secret content.
+
+Anchor each host-evidence SHA-256 and authoritative capture time outside the host. Separately attach provider/host
+inventory evidence proving Host A, Host B and Host C, their volumes and their RPC providers are genuinely
+independent. The local process cannot prove those physical relationships about itself.
 
 Install and start the operator service on its corresponding host:
 
@@ -222,6 +251,8 @@ acknowledgements. Attach those records from their authoritative systems before c
       agree through providers A, B and C.
 - [ ] A non-overwriting `ready: true` preflight evidence file verifies offline against the reviewed trust record,
       both operator configs and the fleet config; its SHA-256 and authoritative capture time are externally anchored.
+- [ ] Two non-overwriting `ready: true` host attestations verify against that exact preflight and their respective
+      operator configs; both SHA-256 values and capture times are externally anchored.
 - [ ] Registry owner, issuance domain, active issuer key and active separate status publisher agree through all
       three providers.
 - [ ] Two hosts, volumes, RPC providers, reconciler signers, encrypted keystores and password-file paths are

@@ -65,8 +65,29 @@ pnpm --filter @ubi2/status-operator start -- preflight \
 
 Blocked observations are still written and return exit `2`. `verify-preflight` recomputes the checksum, report,
 embedded trust binding and separately supplied topology offline. RPC URLs, secret paths and provider error text are
-excluded from the evidence. Host independence, local executable hashes, encrypted-keystore checks and an
-authoritative archive timestamp remain external observations.
+excluded from the evidence.
+
+On each operator host, chain the host-local checks to that public `ready: true` preflight without making any RPC
+request or transaction:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- attest-host \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json \
+  --source-dir /opt/ubi2 \
+  --evidence /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a-YYYYMMDDTHHMMSSZ.json
+
+pnpm --filter @ubi2/status-operator start -- verify-host-attestation \
+  --input /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a-YYYYMMDDTHHMMSSZ.json \
+  --preflight /etc/ubi2/status-operator/canonical-testnet-preflight.json \
+  --operator-config /etc/ubi2/status-operator/reconciler-a.json
+```
+
+This fail-closed record pins the preflight checksum, reviewed source commit, clean tracked files, actual builder and
+`cast` hashes, private config/keystore/password-file permissions, separate secret-file inodes and the encrypted
+keystore's public address. The hash-verified `cast wallet address` operation only decrypts enough to recover that
+public address; it never signs. Evidence excludes every local path, RPC URL, error string and secret content.
+Physical host/volume/provider independence and authoritative capture time remain external observations.
 
 Evidence contains public trust metadata, health, signed artifacts, immutable cache metadata, the third-RPC
 finalized header, and the reproduced fleet report. RPC URLs are deliberately excluded because their paths may be

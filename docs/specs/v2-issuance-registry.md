@@ -131,16 +131,19 @@ No production deployment is authorized by this pre-deployment implementation.
   embedded timestamps, host actions or paging acknowledgements as self-attested proof. Systemd hardening and drill
   templates are included. A transaction-free readiness gate now binds two operator configs and the third-RPC fleet
   config to a strict public trust record, checks finalized registry bytecode/deployment/ownership/issuer/publisher
-  state across all three RPC paths, and archives a secretless non-overwriting report. Physical independence,
-  on-host hashes, keystore inspection and authoritative timestamps remain external; no canonical testnet host or
-  completed drill is claimed yet.
+  state across all three RPC paths, and archives a secretless non-overwriting report. A transaction-free per-host
+  attestation now requires that public preflight to be ready, pins its checksum, and fail-closed checks the reviewed
+  commit, clean tracked source, executable hashes, private config/keystore/password permissions, secret-file
+  separation and public signer address without archiving paths or errors. Physical independence and authoritative
+  timestamps remain external; no canonical testnet host or completed drill is claimed yet.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Run the packaged reconciler instances and fleet gate on three independent canonical-testnet trust paths, connect
-real paging to non-ready fleet reports, and capture restart/withholding/divergence drills. The holder-side
+Capture and externally anchor both host attestations against one observed canonical-testnet preflight, then run the
+packaged reconciler instances and fleet gate on three independent trust paths, connect real paging to non-ready
+fleet reports, and capture restart/withholding/divergence drills. The holder-side
 commitment candidate and sanitized receipt transcript are now pinned as reference tooling in
 [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md). Next capture one live canonical-testnet
 issuance, duplicate rejection, activation, revocation, stale-root overlap and target-chain acceptance transcript.
