@@ -3,12 +3,12 @@
   "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
   "hashAlgorithm": "sha256",
   "sourceBaseCommit": "6489c3365bac4489110e0a4220c852d94ea8d1b2",
-  "immutableEvidenceCommit": "ac0a062bbbb30ec126f0038769d4cfc585f087d0",
+  "immutableEvidenceCommit": "8ce88272df1ef5a3ba5debd34644bfcdf1c7a525",
   "releaseStatus": "ratified-for-implementation-not-production-approved",
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "12f28910d551bac1c40592aec7bdc6adae5ac0e6d3eec6dd93636b30053dc60c",
+      "sha256": "0a8019ab7697eac99231193d2c1340bba0ca261e13fd597766b58a7d402ec298",
       "bytes": 9703
     },
     {
@@ -28,7 +28,7 @@
     },
     {
       "path": "docs/specs/v2-holder-profile-worker-wasm.md",
-      "sha256": "089dd1eabac43098e0560393779284b3c2ed086753f8004de94a1fb5ffeac330",
+      "sha256": "6f206b24dcc5d6d42a0313af3a572dcc2ef642edc6a1f45c6b2a225a6925d682",
       "bytes": 9676
     },
     {
@@ -58,13 +58,13 @@
     },
     {
       "path": "fixtures/v2-production-crypto/holder-profile-browser-artifacts-v1.json",
-      "sha256": "490aff3c66f857c00df10f35034a915ae472c716ab0bdad21ac55baa30699c24",
+      "sha256": "3b45242f782f40f147f9e93a1075d021c4dc23728ac85950cb895db16e59e4b4",
       "bytes": 658
     },
     {
       "path": "fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm",
-      "sha256": "f4e5aa36f560ac57c7fe6005af7b064c9ce695705ed9444de924d91f7bab31d5",
-      "bytes": 1061773
+      "sha256": "1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e",
+      "bytes": 1061830
     },
     {
       "path": "fixtures/v2-production-crypto/parameters-v1.json",
@@ -93,7 +93,7 @@
     },
     {
       "path": "packages/sdk/src/zk-holder-profile-browser-runtime.test.ts",
-      "sha256": "6886873d13ffa3d61bb41126fa447301d5ba0c13211f17a8af1416933c54ea10",
+      "sha256": "256f08f061b137c079587dcd4ad5ca734d0bf8372491c79444092f1626be7bde",
       "bytes": 8767
     },
     {
@@ -108,7 +108,7 @@
     },
     {
       "path": "packages/sdk/src/zk-holder-profile-prover-worker.ts",
-      "sha256": "51a094bbbecfe69a8d820fa15663542aad8dee4e9cf8a8efb89ff3b2a73a5e95",
+      "sha256": "070b1249d3b8a13e61a3b35205ef28bc5d1988b2e22b29c6dd52e87236d4976a",
       "bytes": 43918
     },
     {
@@ -143,7 +143,7 @@
     },
     {
       "path": "tools/v2-crypto-bench/browser/build-holder-reference-smoke.sh",
-      "sha256": "e31f708ef9757907c2201b298c54b1bc4f91a4242135a3e1f0ee69c601df309f",
+      "sha256": "e7765600c14f685b7233c1a861ed0a554eee7ed6e5de31bc5727b3ed9746ec5a",
       "bytes": 1432
     },
     {
@@ -158,7 +158,7 @@
     },
     {
       "path": "tools/v2-crypto-bench/src/lib.rs",
-      "sha256": "aa0e574dc64ee8ee75a3d39442f428319fff536a120502332c7898a25cc37fb9",
+      "sha256": "2cb8a9fb859ebff288ea876fd5be2c6c13d7c020997f95a758659289486d002a",
       "bytes": 109661
     },
     {
