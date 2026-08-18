@@ -2,15 +2,32 @@ use std::{error::Error, io::Read};
 use ubi2_v2_crypto_bench::{
     advance_packed_status_snapshot_from_json, build_packed_status_snapshot_from_json,
     generate_dynamic_status_evm_fixture, generate_packed_status_evm_fixture,
-    holder_credential_commitment_from_json, run_registry_depth_suite,
-    run_registry_transport_estimates, run_status_distribution_bakeoff, run_suite,
-    synthetic_holder_credential_reference_vector,
+    holder_credential_commitment_from_json, production_crypto_parameter_manifest,
+    run_registry_depth_suite, run_registry_transport_estimates, run_status_distribution_bakeoff,
+    run_suite, synthetic_holder_credential_reference_vector,
+    synthetic_production_crypto_reference_vector,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let constraints_only = arguments.iter().any(|arg| arg == "--constraints-only");
     if arguments
+        .iter()
+        .any(|arg| arg == "--production-crypto-parameters")
+    {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&production_crypto_parameter_manifest())?
+        );
+    } else if arguments
+        .iter()
+        .any(|arg| arg == "--production-crypto-reference-vector")
+    {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&synthetic_production_crypto_reference_vector()?)?
+        );
+    } else if arguments
         .iter()
         .any(|arg| arg == "--holder-credential-reference-vector")
     {

@@ -1,0 +1,114 @@
+{
+  "schema": "org.proofofhumanity.v2-production-crypto-artifact-index/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "hashAlgorithm": "sha256",
+  "sourceBaseCommit": "6489c3365bac4489110e0a4220c852d94ea8d1b2",
+  "releaseStatus": "ratified-for-implementation-not-production-approved",
+  "artifacts": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "c9933cf7d0987224315996ba2d8305f4d763a9816c944bf8c5a6318ec331cddd",
+      "bytes": 9167
+    },
+    {
+      "path": "docs/specs/adr/0012-v2-cross-lane-interface-freeze.md",
+      "sha256": "7fa46bf9bea1dd0baf09ee455fbe60b865be0a63ca770460681a76a36aa1ec3e",
+      "bytes": 9001
+    },
+    {
+      "path": "docs/specs/adr/0013-v2-production-cryptographic-profile.md",
+      "sha256": "bb2226e31f324bf60fc10f9453718d8d82ccdc785fc099d4a28def85b7d54bb4",
+      "bytes": 9051
+    },
+    {
+      "path": "docs/specs/v2-holder-credential-commitment.md",
+      "sha256": "0839dc0644aedf0540274c0b9a61ab349464023a835277db815e0fe99f254ea9",
+      "bytes": 13588
+    },
+    {
+      "path": "docs/specs/v2-production-profile-admission.md",
+      "sha256": "ef95308e9ca600f2bde2c4eb3a23a00b588d8b627784d55807225b70d1531e7a",
+      "bytes": 8670
+    },
+    {
+      "path": "fixtures/v2-production-crypto/admission-inputs-v1.json",
+      "sha256": "0616766b8f3421dc92bf9a513e61916fc2c75a74823a09c218ed3da4260b5f64",
+      "bytes": 3777
+    },
+    {
+      "path": "fixtures/v2-production-crypto/circuit-set-v1.json",
+      "sha256": "9059b6e55cd1b1a63d9a6b077d26f34f5d67008a19dfd984ddf76492345e199d",
+      "bytes": 2422
+    },
+    {
+      "path": "fixtures/v2-production-crypto/compiler-lock-v1.json",
+      "sha256": "789932b37fdf49209e561e66217d4f9817b385c67da3df2fbbe921fe4e1b1708",
+      "bytes": 1263
+    },
+    {
+      "path": "fixtures/v2-production-crypto/parameters-v1.json",
+      "sha256": "b328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb",
+      "bytes": 24831
+    },
+    {
+      "path": "fixtures/v2-production-crypto/public-signals-v1.json",
+      "sha256": "9b28661b00a32d27647f524702cb8a7348ff81b93603d94719ea729ba08fce58",
+      "bytes": 2527
+    },
+    {
+      "path": "fixtures/v2-production-crypto/reference-vector-v1.json",
+      "sha256": "28249d2064ab83d081037abc1f0b43f0c12760d3bf83f9aebaee4f1be54655df",
+      "bytes": 5059
+    },
+    {
+      "path": "packages/sdk/package.json",
+      "sha256": "01f8b2a8973aca596cccd2cad389547a4e01309bb5aa1393fba97b3ccce6030c",
+      "bytes": 1278
+    },
+    {
+      "path": "packages/sdk/src/zk-production-crypto-profile.test.ts",
+      "sha256": "a9c3c255da424d534b77f61bb7b55c4e271410b6c641f7bc1f6ddbfe04192432",
+      "bytes": 2265
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "33006023b8293beae18a6041f66bebe392a0108765e3605fe4f302513bdc987f",
+      "bytes": 246
+    },
+    {
+      "path": "contracts/foundry.toml",
+      "sha256": "c32e5962215772fdb6470ced7d24419c690dd04c618ebfbcd64190d023ebf734",
+      "bytes": 488
+    },
+    {
+      "path": "tools/v2-crypto-bench/Cargo.toml",
+      "sha256": "daab8ab0ac8e599190cff15f4293c48bc6e0a6cd403f63aed63ab39f1d7ef8c6",
+      "bytes": 1532
+    },
+    {
+      "path": "tools/v2-crypto-bench/Cargo.lock",
+      "sha256": "fa0c91c58b6764d35d2d29582698ebaa90103e785b5379aff797f31e3bc3512e",
+      "bytes": 21261
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/holder_credential.rs",
+      "sha256": "35df3fb72287664ff305f8a0b1849cb561b6fa8aaaf47a1ded3868fec0180344",
+      "bytes": 17695
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/lib.rs",
+      "sha256": "07336d258a9ed085fa075ed0a4b4e718fae65bbb0f31c0e441cbf6293a03d74c",
+      "bytes": 98569
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/main.rs",
+      "sha256": "f9cea8301f8c8eaa9dace70d73ce2df0b0192dd3c6e767694ae0fdf9c5cbe74d",
+      "bytes": 4141
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/production_profile.rs",
+      "sha256": "0b8b801ff6fded387ced036af3e1dc73b85acdc8306272dc086694048210c30e",
+      "bytes": 21839
+    }
+  ]
+}

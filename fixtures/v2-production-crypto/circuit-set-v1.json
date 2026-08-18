@@ -1,0 +1,49 @@
+{
+  "schema": "org.proofofhumanity.v2-production-circuit-set/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "publicSignalLayoutVersion": 1,
+  "publicSignalCount": 18,
+  "upgradeRule": "each relation and constraint change receives a new circuitId and additive registry entry",
+  "circuits": [
+    {
+      "name": "sanctions-clear",
+      "circuitId": "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+      "idPreimage": "org.proofofhumanity.v2.sanctions-clear.groth16-bn254/1",
+      "predicate": "issuer-authenticated credential status slot is allocated and active under the governed packed-status root",
+      "relationStatus": "implemented-candidate",
+      "productionArtifactStatus": "ceremony-and-audit-pending"
+    },
+    {
+      "name": "age-threshold",
+      "circuitId": "0xe372a2a117a999d9de9a071f78281a421aaf5562705b34f0e110c7f33f302305",
+      "idPreimage": "org.proofofhumanity.v2.age-threshold.groth16-bn254/1",
+      "predicate": "normalized private date of birth satisfies a policy-bound minimum age at a policy-bound date",
+      "relationStatus": "implementation-required",
+      "productionArtifactStatus": "not-generated"
+    },
+    {
+      "name": "nationality-set-membership",
+      "circuitId": "0xcf17502eca9d6173b12a1d6b8149db11a2b3db5e739b336dfbd122b91b21a3a6",
+      "idPreimage": "org.proofofhumanity.v2.nationality-set.groth16-bn254/1",
+      "predicate": "normalized private nationality is a member of the policy-bound canonical country set",
+      "relationStatus": "implementation-required",
+      "productionArtifactStatus": "not-generated"
+    },
+    {
+      "name": "expiry-valid",
+      "circuitId": "0xf0901f3261d5952d6a48fc33f1b8782a064175c6aa96063fa959b2ec41ef806f",
+      "idPreimage": "org.proofofhumanity.v2.expiry-valid.groth16-bn254/1",
+      "predicate": "normalized private expiry date is on or after a policy-bound date",
+      "relationStatus": "implementation-required",
+      "productionArtifactStatus": "not-generated"
+    },
+    {
+      "name": "assurance-minimum",
+      "circuitId": "0x2ba3a8d0157db6fcd9a82a825cd527347b7629787483f6ff5a3ec900b0999801",
+      "idPreimage": "org.proofofhumanity.v2.assurance.groth16-bn254/1",
+      "predicate": "private assurance class meets the policy-bound minimum",
+      "relationStatus": "implementation-required",
+      "productionArtifactStatus": "not-generated"
+    }
+  ]
+}

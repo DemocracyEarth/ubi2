@@ -34,6 +34,7 @@ use std::{error::Error, fmt};
 use wasm_bindgen::{prelude::*, JsCast};
 
 mod holder_credential;
+mod production_profile;
 mod status_distribution;
 mod status_registry;
 mod status_snapshot;
@@ -45,6 +46,12 @@ pub use holder_credential::{
     HolderCredentialReferenceVector, HOLDER_CREDENTIAL_COMMITMENT_SCHEMA,
     HOLDER_CREDENTIAL_COMMITMENT_SCHEME, HOLDER_CREDENTIAL_INPUT_SCHEMA,
     HOLDER_CREDENTIAL_PRIVATE_SCHEMA,
+};
+
+pub use production_profile::{
+    production_crypto_parameter_manifest, synthetic_production_crypto_reference_vector,
+    PRODUCTION_CRYPTO_PARAMETER_SCHEMA, PRODUCTION_CRYPTO_PROFILE_ID,
+    PRODUCTION_CRYPTO_REFERENCE_VECTOR_SCHEMA,
 };
 
 pub use status_distribution::{

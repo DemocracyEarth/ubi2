@@ -1,0 +1,41 @@
+{
+  "schema": "org.proofofhumanity.v2-production-public-signals/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "layoutVersion": 1,
+  "count": 18,
+  "abiChange": false,
+  "signals": [
+    { "index": 0, "name": "layoutVersion", "type": "uint256", "rule": "equals 1" },
+    { "index": 1, "name": "circuitIdHi", "type": "uint128", "rule": "high bytes32 limb" },
+    { "index": 2, "name": "circuitIdLo", "type": "uint128", "rule": "low bytes32 limb" },
+    { "index": 3, "name": "issuerKeyIdHi", "type": "uint128", "rule": "high bytes32 limb" },
+    { "index": 4, "name": "issuerKeyIdLo", "type": "uint128", "rule": "low bytes32 limb" },
+    { "index": 5, "name": "activeRootHi", "type": "uint128", "rule": "high canonical BN254 field limb" },
+    { "index": 6, "name": "activeRootLo", "type": "uint128", "rule": "low canonical BN254 field limb" },
+    { "index": 7, "name": "policyHashHi", "type": "uint128", "rule": "high nonzero bytes32 limb" },
+    { "index": 8, "name": "policyHashLo", "type": "uint128", "rule": "low nonzero bytes32 limb" },
+    { "index": 9, "name": "presentationBindingHashHi", "type": "uint128", "rule": "high nonzero bytes32 limb" },
+    { "index": 10, "name": "presentationBindingHashLo", "type": "uint128", "rule": "low nonzero bytes32 limb" },
+    { "index": 11, "name": "nullifierScopeHashHi", "type": "uint128", "rule": "high nonzero bytes32 limb" },
+    { "index": 12, "name": "nullifierScopeHashLo", "type": "uint128", "rule": "low nonzero bytes32 limb" },
+    { "index": 13, "name": "scopedNullifier", "type": "bn254-fr", "rule": "canonical and nonzero" },
+    { "index": 14, "name": "subject", "type": "uint160", "rule": "canonical and nonzero" },
+    { "index": 15, "name": "result", "type": "bool", "rule": "equals 1 for an accepted predicate" },
+    { "index": 16, "name": "credentialEpoch", "type": "uint32", "rule": "equals the issuer-authenticated credential epoch" },
+    { "index": 17, "name": "statusEpoch", "type": "uint32", "rule": "equals the governed status publication Unix time" }
+  ],
+  "private": [
+    "credential attributes",
+    "holder secret and credential blinding",
+    "credential commitment",
+    "issuer public key and signature",
+    "status slot, chunk and Merkle path",
+    "predicate witness values"
+  ],
+  "public": [
+    "circuit and issuer key identifiers",
+    "status root and publication time",
+    "policy, presentation and nullifier-scope bindings",
+    "scoped nullifier, subject, Boolean result and credential epoch"
+  ]
+}

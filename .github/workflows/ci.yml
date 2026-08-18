@@ -98,6 +98,12 @@ jobs:
         run: |
           cargo run --release --locked -- --holder-credential-reference-vector > "$RUNNER_TEMP/holder-credential-commitment.json"
           diff -u fixtures/holder-credential-commitment.json "$RUNNER_TEMP/holder-credential-commitment.json"
+      - name: Reproduce ratified cryptographic profile and vector
+        run: |
+          cargo run --release --locked -- --production-crypto-parameters > "$RUNNER_TEMP/v2-production-crypto-parameters.json"
+          diff -u ../../fixtures/v2-production-crypto/parameters-v1.json "$RUNNER_TEMP/v2-production-crypto-parameters.json"
+          cargo run --release --locked -- --production-crypto-reference-vector > "$RUNNER_TEMP/v2-production-crypto-vector.json"
+          diff -u ../../fixtures/v2-production-crypto/reference-vector-v1.json "$RUNNER_TEMP/v2-production-crypto-vector.json"
 
   multinode:
     name: chain (rust — multi-node acceptance, m5_stage_a)
