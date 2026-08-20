@@ -20,7 +20,7 @@ const PRIVATE_CREDENTIAL_DOMAIN_LIMBS: [u128; 2] = [
     108_915_475_269_134_690_892_806_380_524_430_507_010,
 ];
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HolderCredentialCommitmentInput {
     pub schema: String,
@@ -35,6 +35,15 @@ pub struct HolderCredentialCommitmentInput {
     pub document_class: String,
     pub assurance: String,
     pub issued_at_epoch: u32,
+}
+
+pub fn parse_holder_credential_input(
+    source: &str,
+) -> Result<HolderCredentialCommitmentInput, HolderCredentialError> {
+    if source.len() > MAX_PRIVATE_INPUT_JSON_BYTES {
+        return Err(HolderCredentialError::InputTooLarge);
+    }
+    serde_json::from_str(source).map_err(|_| HolderCredentialError::InvalidJson)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -117,11 +126,7 @@ impl Error for HolderCredentialError {}
 pub fn holder_credential_commitment_from_json(
     source: &str,
 ) -> Result<String, HolderCredentialError> {
-    if source.len() > MAX_PRIVATE_INPUT_JSON_BYTES {
-        return Err(HolderCredentialError::InputTooLarge);
-    }
-    let input: HolderCredentialCommitmentInput =
-        serde_json::from_str(source).map_err(|_| HolderCredentialError::InvalidJson)?;
+    let input = parse_holder_credential_input(source)?;
     let commitment = build_holder_credential_commitment(&input)?;
     serde_json::to_string(&commitment).map_err(|_| HolderCredentialError::InvalidJson)
 }

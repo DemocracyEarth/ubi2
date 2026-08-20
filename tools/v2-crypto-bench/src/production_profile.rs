@@ -35,6 +35,24 @@ const EXPIRY_VALID_CIRCUIT_ID: &str =
 const ASSURANCE_CIRCUIT_ID: &str =
     "0x2ba3a8d0157db6fcd9a82a825cd527347b7629787483f6ff5a3ec900b0999801";
 
+pub(crate) fn synthetic_production_holder_input() -> HolderCredentialCommitmentInput {
+    HolderCredentialCommitmentInput {
+        schema: "org.proofofhumanity.zk-holder-credential-input/1".to_owned(),
+        issuer_key_id: "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412"
+            .to_owned(),
+        status_id: 7,
+        holder_secret: "123456789".to_owned(),
+        credential_blinding: "987654321".to_owned(),
+        date_of_birth: "2000-01-01".to_owned(),
+        nationality: "XAA".to_owned(),
+        issuing_state: "XAB".to_owned(),
+        expiry_date: "2030-01-01".to_owned(),
+        document_class: "epassport".to_owned(),
+        assurance: "chip-auth".to_owned(),
+        issued_at_epoch: 230,
+    }
+}
+
 fn decimal<F: PrimeField>(value: F) -> String {
     value.into_bigint().to_string()
 }
@@ -69,7 +87,7 @@ fn decode_bytes32(value: &str) -> [u8; 32] {
     output
 }
 
-fn derive_nonce(
+pub(crate) fn derive_nonce(
     secret: JubjubScalar,
     credential_commitment: CircuitField,
     auxiliary_randomness: [u8; 32],
@@ -202,20 +220,8 @@ pub fn synthetic_production_crypto_reference_vector() -> Result<Value, super::Ho
     let issuer_key_digest = issuer_key_digest_native(&poseidon, &issuer_public_key);
     let issuer_key_id = hex32(issuer_key_digest);
     let issued_at_epoch = 230u32;
-    let input = HolderCredentialCommitmentInput {
-        schema: "org.proofofhumanity.zk-holder-credential-input/1".to_owned(),
-        issuer_key_id: issuer_key_id.clone(),
-        status_id: 7,
-        holder_secret: "123456789".to_owned(),
-        credential_blinding: "987654321".to_owned(),
-        date_of_birth: "2000-01-01".to_owned(),
-        nationality: "XAA".to_owned(),
-        issuing_state: "XAB".to_owned(),
-        expiry_date: "2030-01-01".to_owned(),
-        document_class: "epassport".to_owned(),
-        assurance: "chip-auth".to_owned(),
-        issued_at_epoch,
-    };
+    let input = synthetic_production_holder_input();
+    assert_eq!(input.issuer_key_id, issuer_key_id);
     let (_, credential_fields) = holder_credential_field_elements(&input)?;
     let credential_commitment = poseidon_native(&poseidon, CREDENTIAL_DOMAIN, &credential_fields);
     let auxiliary_randomness = [0x42u8; 32];

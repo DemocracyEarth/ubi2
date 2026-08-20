@@ -109,3 +109,9 @@ this synthetic fixture id, deterministic setup, research circuit id or reference
 content-addressed artifacts, a production vault-to-worker input contract, issuer/status witness requirements,
 proof encoding, local verification behavior and representative device budgets before live credentials enter this
 runtime class.
+
+**Resolved additively after ADR-0013:** the dedicated boundary is now specified in
+[`v2-holder-profile-worker-wasm.md`](v2-holder-profile-worker-wasm.md). The old reference protocol remains frozen;
+the new adapter fixes the ratified profile, verifies content-addressed artifacts, decrypts vaults only inside the
+Worker and returns locally verified proof output. Production credential-envelope and ceremony inputs remain
+explicit admission blockers rather than changes to this reference format.
