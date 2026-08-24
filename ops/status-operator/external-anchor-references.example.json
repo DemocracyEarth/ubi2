@@ -1,0 +1,29 @@
+{
+  "schema": "org.proofofhumanity.v2-canonical-testnet-external-anchor-references/1",
+  "authoritativeTimestamps": [
+    {
+      "kind": "authoritative-timestamp",
+      "authorityId": "public-timestamp-service",
+      "subjectSha256": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "receiptIssuedAt": "2026-08-24T18:00:00.000Z",
+      "receiptUrl": "https://evidence.example/timestamps/reconciler-a-20260824",
+      "receiptSha256": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "kind": "authoritative-timestamp",
+      "authorityId": "public-timestamp-service",
+      "subjectSha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "receiptIssuedAt": "2026-08-24T18:01:00.000Z",
+      "receiptUrl": "https://evidence.example/timestamps/reconciler-b-20260824",
+      "receiptSha256": "0x4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "providerIndependence": {
+    "kind": "provider-independence",
+    "authorityId": "public-provider-inventory",
+    "subjectSha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+    "receiptIssuedAt": "2026-08-24T17:00:00.000Z",
+    "receiptUrl": "https://inventory.example/receipts/canonical-testnet-topology-20260824",
+    "receiptSha256": "0x6666666666666666666666666666666666666666666666666666666666666666"
+  }
+}

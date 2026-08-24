@@ -132,6 +132,62 @@ Anchor each host-evidence SHA-256 and authoritative capture time outside the hos
 inventory evidence proving Host A, Host B and Host C, their volumes and their RPC providers are genuinely
 independent. The local process cannot prove those physical relationships about itself.
 
+### Bind the external receipts
+
+Do this only after both host evidence files independently return `ready: true`. First derive the provider-
+independence subject from the exact public preflight that both host files name:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- provider-independence-subject \
+  --preflight "$PREFLIGHT_EVIDENCE"
+```
+
+Give each host-evidence SHA-256 to the approved authoritative timestamp interface. Give the emitted provider-
+independence subject SHA-256, together with the readable host/volume/provider inventory, to the approved independent
+inventory authority. Obtain three immutable, public, non-credentialed HTTPS receipt URLs: timestamp A, timestamp B
+and provider independence. Use the authorities' documented verification procedures, download the public receipt
+bytes without credentials, and compute each receipt's SHA-256 locally. The timestamp issue time must not predate
+the corresponding host observation. Do not accept a screenshot, mutable ticket view, authenticated URL, receipt
+that does not name the submitted subject, or inventory assertion created by either operator host itself.
+
+Copy [`external-anchor-references.example.json`](external-anchor-references.example.json), replace every fixture,
+and keep only the public authority label, subject/hash/time and HTTPS receipt URL. Then build and independently
+reproduce the non-overwriting manifest:
+
+```shell
+ANCHOR_REFERENCES=/var/lib/ubi2-status-evidence/canonical-testnet/external-anchor-references.json
+ANCHOR_MANIFEST=/var/lib/ubi2-status-evidence/canonical-testnet/external-anchor-manifest.json
+
+pnpm --filter @ubi2/status-operator start -- build-anchor-manifest \
+  --preflight "$PREFLIGHT_EVIDENCE" \
+  --host-a "$HOST_A_EVIDENCE" \
+  --host-b "$HOST_B_EVIDENCE" \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --references "$ANCHOR_REFERENCES" \
+  --manifest "$ANCHOR_MANIFEST"
+
+pnpm --filter @ubi2/status-operator start -- verify-anchor-manifest \
+  --input "$ANCHOR_MANIFEST" \
+  --preflight "$PREFLIGHT_EVIDENCE" \
+  --host-a "$HOST_A_EVIDENCE" \
+  --host-b "$HOST_B_EVIDENCE" \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json
+```
+
+The manifest excludes RPC URLs, config/evidence paths, subprocess details and secret material. Its
+`intrinsicEvidenceValid: true` result means only that the two verified host records, exact ready preflight and
+receipt subjects are internally bound. It always says `liveReadinessClaimed: false`; the package neither fetches
+nor authenticates a receipt. Independently verify all three receipt hashes and authority proofs before checking an
+external-anchor completion item.
+
+Stop and record an exact blocker if any of the following is absent: either immutable host evidence file; either
+matching operator config path; the exact ready public preflight; the approved timestamp interface or its
+verification procedure; either public timestamp receipt; the independent host/volume/provider inventory; its
+authority or verification procedure; the public independence receipt; or a durable public URL and local SHA-256
+for any receipt. Never substitute fixture values or secret-bearing/authenticated URLs.
+
 Install and start the operator service on its corresponding host:
 
 ```shell
@@ -252,7 +308,8 @@ acknowledgements. Attach those records from their authoritative systems before c
 - [ ] A non-overwriting `ready: true` preflight evidence file verifies offline against the reviewed trust record,
       both operator configs and the fleet config; its SHA-256 and authoritative capture time are externally anchored.
 - [ ] Two non-overwriting `ready: true` host attestations verify against that exact preflight and their respective
-      operator configs; both SHA-256 values and capture times are externally anchored.
+      operator configs; a strict non-overwriting anchor manifest binds both SHA-256 values to distinct verified
+      authoritative timestamp receipts and binds the preflight topology to a verified provider-independence receipt.
 - [ ] Registry owner, issuance domain, active issuer key and active separate status publisher agree through all
       three providers.
 - [ ] Two hosts, volumes, RPC providers, reconciler signers, encrypted keystores and password-file paths are
