@@ -14,6 +14,21 @@ nullifier is transformed in memory into a registry-scoped duplicate key and is n
 the v2 response, logged, stored, or sent on-chain. This remains a transitional off-chain Self trust
 boundary until the exact production passport proof can be verified on-chain.
 
+The optional `/api/sponsored-mint` path is **testnet-only** and uses a third, isolated
+`POH_SPONSOR_PRIVATE_KEY`. It pays gas but has no credential authority: recipient, nullifier,
+epoch, contract and issuer signature are loaded from the short-lived address/session record created
+by the verified Self callback. The request accepts only a chain id and no body. A configured public
+testnet allowlist, live RPC chain/bytecode/issuer checks, separate-role checks, gas/fee/reserve caps,
+per-source/account/capability limits, one in-flight transaction per chain, and a three-attempt ceiling
+all fail closed before spending. Mainnet and local chain classifications are rejected even if an
+operator puts their ids in the allowlist.
+
+After submission the API returns either pending transaction evidence or a confirmed, versioned
+receipt containing the chain, contract, proof-bound recipient, token id, transaction/block hashes,
+and the matching `HumanityMinted`/`HumanityRefreshed` event. The server verifies those fields plus
+`ownerOf`, `tokenOfNullifier`, `isValid`, and `locked` at the receipt block. The browser re-reads the
+same ownership and soulbound state. Neither response contains the sponsor private key.
+
 The current Self callback handoff is an intentionally bounded, 10-minute, process-local store. A
 first production release therefore runs **one sticky Node replica**. Do not deploy this version to
 autoscaling/serverless multi-instance infrastructure: a phone callback and the browser poll may hit
@@ -49,6 +64,9 @@ unavailable. See the public
 - [ ] If v2 issuance is enabled, all six `ZK_SELF_ISSUANCE_*` values are set; the RPC chain,
       registry domain, active issuer key, bridge codehash/configuration, and isolated authority key
       are checked live by the callback before every signature.
+- [ ] If testnet sponsorship is enabled, `POH_SPONSOR_PRIVATE_KEY` is a separately generated,
+      low-balance hot account; `POH_SPONSOR_TESTNET_CHAIN_IDS` names only the intended public testnets;
+      gas/fee/reserve caps and faucet budget alerts are configured. Never enable it for mainnet.
 - [ ] Paired `ProofOfHumanity` + `PredicateVerifier` addresses set for each enabled chain.
 - [ ] One sticky Node replica, TLS, trusted proxy headers, restart monitoring, log redaction, and
       secrets injection are configured. Horizontal scaling is blocked until the shared-store design is approved.
@@ -58,11 +76,20 @@ unavailable. See the public
 ## Environment variables
 
 Client vars (`NEXT_PUBLIC_*`) are inlined into the browser bundle; server vars are not. Keep
-`ISSUER_PRIVATE_KEY` server-only (no `NEXT_PUBLIC_` prefix) — Next strips it from the client.
+`ISSUER_PRIVATE_KEY`, `POH_SPONSOR_PRIVATE_KEY`, and the v2 authority server-only (no
+`NEXT_PUBLIC_` prefix) — Next strips them from the client.
 
 | Variable | Scope | Required | Default (dev) | Notes |
 |---|---|---|---|---|
 | `ISSUER_PRIVATE_KEY` | server | **yes** (prod) | Anvil acct #1 (not secret) | Voucher/attestation signer; address must equal both contract issuers. Inject from a secret manager; never paste into chat or commit it. |
+| `POH_SPONSOR_PRIVATE_KEY` | server secret | optional testnet only | disabled | Isolated low-balance transaction signer. Must not be issuer, deployer, owner, or holder. No development fallback and never `NEXT_PUBLIC_`. |
+| `POH_SPONSOR_TESTNET_CHAIN_IDS` | server | with sponsor key | disabled | Explicit comma-separated allowlist. Every id must resolve to a configured, deployed `network: "testnet"`; mainnet/local fail closed. |
+| `POH_SPONSOR_MAX_GAS` | server | no | `350000` | Refuse an estimate above this per transaction. |
+| `POH_SPONSOR_MAX_FEE_WEI` | server | no | `5000000000000000` | Refuse when estimated gas × current gas price exceeds this amount. |
+| `POH_SPONSOR_MIN_RESERVE_WEI` | server | no | `1000000000000000` | Balance that must remain after the estimated fee. |
+| `POH_SPONSOR_CONFIRMATIONS` | server | no | `1` | Required receipt confirmations, bounded to 1–12. |
+| `POH_SPONSOR_RECEIPT_TIMEOUT_MS` | server | no | `90000` | Initial wait, bounded to 5–300 seconds. A timeout returns recoverable pending evidence rather than resubmitting. |
+| `POH_SPONSOR_DAILY_TX_LIMIT` | server | no | `100` | Conservative process-local transaction-attempt ceiling per chain and UTC-aligned 24-hour window; put a matching distributed limit at ingress. |
 | `ZK_SELF_ISSUANCE_CHAIN_ID` | server | v2 only | disabled | One canonical issuance chain. All six v2 variables must be present together. |
 | `ZK_SELF_ISSUANCE_RPC_URL` | server | v2 only | disabled | Server RPC used to read one pinned block before authorizing a slot/epoch. |
 | `ZK_SELF_ISSUANCE_REGISTRY` | server | v2 only | disabled | `ZkIdentityIssuanceRegistry` address. |
@@ -91,9 +118,11 @@ testnet targets in a deployment. A malformed address also fails closed to zero.
 2. Run `pnpm --filter @ubi2/proofofhumanity start` as a single Node process behind TLS.
 3. Inject `ISSUER_PRIVATE_KEY` from the host secret manager. Never put it in a build argument,
    image layer, `NEXT_PUBLIC_*`, `.env` committed to git, or deployment logs.
-4. Terminate untrusted direct traffic at a proxy that overwrites `X-Forwarded-For`; the route uses
-   that value for callback and v2-refresh rate limiting.
-5. Health-check `/`, `/verify`, and `/developers`; alert on restarts and 5xx responses from both API routes.
+4. Terminate untrusted direct traffic at a proxy that overwrites `X-Forwarded-For`; the routes use
+   that value for callback, v2-refresh, predicate, and sponsorship rate limiting.
+5. Add edge quotas and a daily faucet-spend alarm for `/api/sponsored-mint`. Process-local quotas are
+   defense in depth for the required single replica, not a substitute for ingress controls.
+6. Health-check `/`, `/verify`, and `/developers`; alert on restarts and 5xx responses from the API routes.
 
 Serverless and multi-replica targets become valid only after the callback handoff is moved to a
 reviewed shared encrypted store. That is an application release gate, not a contract blocker.
@@ -112,6 +141,10 @@ reviewed shared encrypted store. That is an application release gate, not a cont
 - If v2 is enabled, deliberately consume the observed next slot with a competing test issuance,
   confirm the stale authorization fails without consuming its key/commitment, PATCH with the original
   address/session, and confirm the refreshed authorization succeeds before the original ten-minute expiry.
+- If sponsorship is enabled, mint once per allowlisted testnet from an unfunded dedicated credential
+  account. Verify the transaction sender is the isolated sponsor, the token owner is the proof-bound
+  account, the UI receipt links to the confirmed transaction, and a repeated POST returns the same
+  evidence without a second transaction. Confirm a mainnet id, mismatched session, and body all fail.
 
 ## Security
 
@@ -124,6 +157,10 @@ reviewed shared encrypted store. That is an application release gate, not a cont
 - The routes use bounded, process-local rate limits and a 10-minute callback handoff. They limit
   abuse on a single replica but are not distributed controls. Put edge rate limits at the trusted
   proxy and require a shared, reviewed limiter before horizontal scaling.
+- The sponsor is a deliberately lossy testnet hot wallet, not a trust root. Keep only a bounded faucet
+  balance, alert on spend/low reserve, rotate it independently, and never reuse the issuer/deployer/owner.
+  The route has per-request gas and fee caps, but distributed edge quotas and durable idempotency are
+  required before any horizontally scaled or production-value sponsorship design.
 - v1 predicates are issuer-attested. The holder-side ZK prover is not implemented or deployed;
   `PredicateVerifier.prover()` must remain visibly zero until that separate release is audited.
 - The currently recorded Phase 2 PredicateVerifier addresses predate the v2 consumer-forwarding and

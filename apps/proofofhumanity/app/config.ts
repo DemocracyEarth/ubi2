@@ -25,6 +25,8 @@ function configuredAddress(value: string | undefined, fallback: Address = ZERO_A
 export interface ChainConfig {
   chainId: number;
   name: string;
+  /** Security classification used by server-side sponsorship. Never infer this from a chain name. */
+  network: "local" | "testnet" | "mainnet";
   rpcUrl: string;
   /** The ProofOfHumanity deployment on this chain. */
   pohAddress: Address;
@@ -46,6 +48,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: Number(process.env.NEXT_PUBLIC_LOCAL_CHAIN_ID ?? 31337),
     name: process.env.NEXT_PUBLIC_LOCAL_CHAIN_NAME ?? "Anvil (local)",
+    network: "local",
     rpcUrl: process.env.NEXT_PUBLIC_LOCAL_RPC_URL ?? "http://127.0.0.1:8545",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_LOCAL_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_LOCAL_PREDICATE),
@@ -53,6 +56,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 11155111,
     name: "Ethereum Sepolia",
+    network: "testnet",
     rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
     pohAddress: configuredAddress(
       process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_POH,
@@ -67,6 +71,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 84532,
     name: "Base Sepolia",
+    network: "testnet",
     rpcUrl: process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org",
     pohAddress: configuredAddress(
       process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH,
@@ -81,6 +86,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 11142220,
     name: "Celo Sepolia",
+    network: "testnet",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_SEPOLIA_RPC_URL ?? "https://forno.celo-sepolia.celo-testnet.org",
     pohAddress: configuredAddress(
       process.env.NEXT_PUBLIC_CELO_SEPOLIA_POH,
@@ -95,6 +101,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 4801,
     name: "World Chain Sepolia",
+    network: "testnet",
     rpcUrl: process.env.NEXT_PUBLIC_WORLD_SEPOLIA_RPC_URL ?? "https://worldchain-sepolia.g.alchemy.com/public",
     pohAddress: configuredAddress(
       process.env.NEXT_PUBLIC_WORLD_SEPOLIA_POH,
@@ -109,6 +116,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 46630,
     name: "Robinhood Chain Testnet",
+    network: "testnet",
     rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_RPC_URL ?? "https://rpc.testnet.chain.robinhood.com",
     pohAddress: configuredAddress(
       process.env.NEXT_PUBLIC_ROBINHOOD_TESTNET_POH,
@@ -123,6 +131,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 1,
     name: "Ethereum",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ETHEREUM_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ETHEREUM_PREDICATE),
@@ -131,6 +140,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 8453,
     name: "Base",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_BASE_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_BASE_PREDICATE),
@@ -139,6 +149,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 42220,
     name: "Celo",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_CELO_RPC_URL ?? "https://forno.celo.org",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_CELO_PREDICATE),
@@ -147,6 +158,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 10,
     name: "Optimism",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_OP_RPC_URL ?? "https://mainnet.optimism.io",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_OP_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_OP_PREDICATE),
@@ -155,6 +167,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 480,
     name: "World Chain",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_WORLD_RPC_URL ?? "https://worldchain-mainnet.g.alchemy.com/public",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_WORLD_PREDICATE),
@@ -163,6 +176,7 @@ export const CHAINS: ChainConfig[] = [
   {
     chainId: 4663,
     name: "Robinhood Chain",
+    network: "mainnet",
     rpcUrl: process.env.NEXT_PUBLIC_ROBINHOOD_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com",
     pohAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_POH),
     predicateAddress: configuredAddress(process.env.NEXT_PUBLIC_ROBINHOOD_PREDICATE),
@@ -173,6 +187,11 @@ export const CHAINS: ChainConfig[] = [
 /** A chain is mintable only once its ProofOfHumanity address is set (non-zero). */
 export function isDeployed(chain: ChainConfig): boolean {
   return /^0x0{40}$/i.test(chain.pohAddress) === false;
+}
+
+/** Sponsorship is deliberately restricted to explicitly classified public testnets. */
+export function isSponsoredMintTestnet(chain: ChainConfig): boolean {
+  return chain.network === "testnet" && isDeployed(chain);
 }
 
 /** A predicate target is usable only when both halves of the trust binding are deployed. */

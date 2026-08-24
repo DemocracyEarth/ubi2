@@ -38,6 +38,7 @@ import {
   scanAccountPrivacy,
   type AccountPrivacyAssessment,
 } from "./lib/account-privacy";
+import type { SponsoredMintEvidence, SponsoredMintPublicEvidence } from "./lib/sponsored-mint";
 import { PredicateCenter } from "./predicates/predicate-center";
 
 /*//////////////////////////////////////////////////////////////
@@ -224,6 +225,7 @@ interface RelayReady {
   credential?: SerializedHumanCredential;
   credentialSig?: Hex;
   issuer?: Address;
+  sponsoredChainIds: number[];
 }
 
 type Phase = "connect" | "scan" | "waiting" | "ready" | "minting" | "minted";
@@ -235,6 +237,7 @@ interface Minted {
   valid: boolean;
   locked: boolean;
   nullifier: bigint;
+  sponsoredEvidence?: SponsoredMintEvidence;
 }
 
 function getInjected(): Injected | null {
@@ -287,6 +290,7 @@ function MintFlow() {
   const [selectedChainId, setSelectedChainId] = useState<number | null>(null);
   const [note, setNote] = useState<{ kind: "ok" | "err" | "warn"; text: string } | null>(null);
   const [minted, setMinted] = useState<Minted | null>(null);
+  const [mintMethod, setMintMethod] = useState<"sponsored" | "wallet" | null>(null);
   const [verificationSession, setVerificationSession] = useState<string | null>(null);
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
   const [privacyScan, setPrivacyScan] = useState<AccountPrivacyUiState>({ status: "idle" });
@@ -341,6 +345,7 @@ function MintFlow() {
       setReady(null);
       setSelectedChainId(null);
       setMinted(null);
+      setMintMethod(null);
       setPhase("connect");
       setNote(nextNote);
     },
@@ -508,6 +513,7 @@ function MintFlow() {
           credential?: SerializedHumanCredential;
           credentialSig?: Hex;
           issuer?: Address;
+          sponsoredChainIds?: number[];
           error?: string;
         };
         if (verificationBindingRef.current !== binding) return;
@@ -525,6 +531,7 @@ function MintFlow() {
             credential: data.credential,
             credentialSig: data.credentialSig,
             issuer: data.issuer,
+            sponsoredChainIds: data.sponsoredChainIds ?? [],
           };
           setReady(nextReady);
           if (data.credential && data.credentialSig) {
@@ -567,6 +574,10 @@ function MintFlow() {
   const selected = useMemo<SignedForChain | null>(
     () => ready?.vouchers.find((v) => v.chainId === selectedChainId) ?? null,
     [ready, selectedChainId],
+  );
+  const selectedChain = useMemo(
+    () => (selected ? CHAINS.find((chain) => chain.chainId === selected.chainId) ?? null : null),
+    [selected],
   );
 
   // The chain menu shown inside step 3: every marketed chain, each paired with its
@@ -633,6 +644,7 @@ function MintFlow() {
         return;
       }
       setPhase("minting");
+      setMintMethod("wallet");
       setNote(null);
       await ensureChain(chain);
       if (verificationBindingRef.current !== binding) return;
@@ -683,6 +695,7 @@ function MintFlow() {
       if (verificationBindingRef.current !== binding) return;
       setNote({ kind: "err", text: errMessage(e) });
       setPhase("ready");
+      setMintMethod(null);
     }
   }, [
     injected,
@@ -692,6 +705,147 @@ function MintFlow() {
     ensureChain,
     resetAccountSession,
     verificationSession,
+  ]);
+
+  const sponsoredMint = useCallback(async () => {
+    if (!injected || !account || !selected || !privacyAcknowledged || !verificationSession) return;
+    const binding = verificationBindingRef.current;
+    if (binding === null) return;
+    const chainCfg = CHAINS.find((chain) => chain.chainId === selected.chainId);
+    if (!chainCfg || chainCfg.network !== "testnet") {
+      setNote({ kind: "err", text: "Sponsored minting is available only on configured testnets." });
+      return;
+    }
+
+    try {
+      const activeAccounts = (await injected.request({ method: "eth_accounts" })) as unknown[];
+      const activeAccount = resolveWalletAccountChange(account, activeAccounts).account;
+      if (!sameWalletAccount(activeAccount, account)) {
+        resetAccountSession(activeAccount, {
+          kind: "warn",
+          text: "The wallet account changed before sponsorship. The previous voucher was discarded; verify again with the intended credential account.",
+        });
+        return;
+      }
+      if (!sameWalletAccount(selected.voucher.to, account)) {
+        setNote({ kind: "err", text: "The selected voucher belongs to a different wallet account." });
+        return;
+      }
+
+      setPhase("minting");
+      setMintMethod("sponsored");
+      setNote({ kind: "ok", text: "Requesting testnet sponsorship for the proof-bound credential account…" });
+
+      const url = `/api/sponsored-mint?address=${account}&chainId=${selected.chainId}`;
+      const request = async (method: "POST" | "GET") => {
+        const response = await fetch(url, {
+          method,
+          headers: { "x-poh-verification-session": verificationSession },
+        });
+        const data = (await response.json()) as {
+          ok?: boolean;
+          status?: string;
+          evidence?: SponsoredMintPublicEvidence | null;
+          error?: string;
+        };
+        if (!response.ok && response.status !== 202) {
+          throw new Error(data.error ?? "Testnet sponsorship is unavailable.");
+        }
+        return { response, data };
+      };
+
+      let result = await request("POST");
+      for (let poll = 0; result.response.status === 202 && poll < 40; poll += 1) {
+        if (verificationBindingRef.current !== binding) return;
+        const submission = result.data.evidence;
+        setNote({
+          kind: "ok",
+          text:
+            submission?.status === "submitted"
+              ? `Sponsor submitted · tx ${short(submission.transactionHash)} · waiting for confirmation…`
+              : "Sponsor is preparing the bound testnet transaction…",
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 3_000));
+        result = await request("GET");
+      }
+      if (verificationBindingRef.current !== binding) return;
+      const evidence = result.data.evidence;
+      if (!evidence || evidence.status !== "confirmed") {
+        throw new Error("The sponsor transaction is still pending. Retry to recover its receipt.");
+      }
+      if (
+        evidence.chainId !== chainCfg.chainId ||
+        !sameWalletAccount(evidence.contract, chainCfg.pohAddress) ||
+        !sameWalletAccount(evidence.recipient, account)
+      ) {
+        throw new Error("Sponsored receipt evidence does not match the selected account and chain.");
+      }
+
+      const tokenId = BigInt(evidence.tokenId);
+      const nullifier = BigInt(selected.voucher.nullifier);
+      const pub = createPublicClient({ chain: viemChain(chainCfg), transport: http(chainCfg.rpcUrl) });
+      const [owner, onchainTokenId, tokenURI, valid, locked] = await Promise.all([
+        pub.readContract({
+          address: chainCfg.pohAddress,
+          abi: proofOfHumanityAbi,
+          functionName: "ownerOf",
+          args: [tokenId],
+        }),
+        pub.readContract({
+          address: chainCfg.pohAddress,
+          abi: proofOfHumanityAbi,
+          functionName: "tokenOfNullifier",
+          args: [nullifier],
+        }),
+        pub.readContract({
+          address: chainCfg.pohAddress,
+          abi: proofOfHumanityAbi,
+          functionName: "tokenURI",
+          args: [tokenId],
+        }),
+        pub.readContract({
+          address: chainCfg.pohAddress,
+          abi: proofOfHumanityAbi,
+          functionName: "isValid",
+          args: [tokenId],
+        }),
+        pub.readContract({
+          address: chainCfg.pohAddress,
+          abi: proofOfHumanityAbi,
+          functionName: "locked",
+          args: [tokenId],
+        }),
+      ]);
+      if (!sameWalletAccount(owner, account) || onchainTokenId !== tokenId || !valid || !locked) {
+        throw new Error("The confirmed sponsor receipt does not match the credential contract state.");
+      }
+
+      setMinted({
+        tokenId,
+        tokenURI: tokenURI as string,
+        valid: valid as boolean,
+        locked: locked as boolean,
+        nullifier,
+        sponsoredEvidence: evidence,
+      });
+      setPhase("minted");
+      setNote({
+        kind: "ok",
+        text: `Sponsored Proof of Humanity #${tokenId} on ${chainCfg.name}; no credential-account gas was required.`,
+      });
+    } catch (error) {
+      if (verificationBindingRef.current !== binding) return;
+      setNote({ kind: "err", text: errMessage(error) });
+      setPhase("ready");
+      setMintMethod(null);
+    }
+  }, [
+    injected,
+    account,
+    selected,
+    privacyAcknowledged,
+    verificationSession,
+    resetAccountSession,
   ]);
 
   const decodedMetadata = useMemo(() => {
@@ -954,20 +1108,45 @@ function MintFlow() {
               })}
             </div>
 
-            <button
-              className="btn primary sm"
-              onClick={mint}
-              disabled={!ready || phase === "minting" || !selected}
-              style={{ marginTop: "1rem" }}
-            >
-              {!ready
-                ? "Complete the Self proof first"
-                : phase === "minting"
-                  ? "Minting…"
-                  : selected
-                    ? `Mint on ${chainStyle(selected.name).label}`
-                    : "Select a deployed chain"}
-            </button>
+            {selectedChain?.network === "testnet" && ready?.sponsoredChainIds.includes(selectedChain.chainId) ? (
+              <div className="sponsored-mint-choice">
+                <button
+                  className="btn primary sm"
+                  onClick={sponsoredMint}
+                  disabled={!ready || phase === "minting" || !selected}
+                >
+                  {phase === "minting" && mintMethod === "sponsored"
+                    ? "Sponsor minting…"
+                    : `Sponsored mint on ${chainStyle(selected?.name ?? selectedChain.name).label}`}
+                </button>
+                <p className="muted small">
+                  Recommended for a dedicated credential account: the testnet sponsor pays gas, so you do not need
+                  to fund this account from another wallet. Availability is rate- and budget-limited.
+                </p>
+                <button
+                  className="btn ghost sm"
+                  onClick={mint}
+                  disabled={!ready || phase === "minting" || !selected}
+                >
+                  {phase === "minting" && mintMethod === "wallet" ? "Wallet minting…" : "Mint with wallet instead"}
+                </button>
+              </div>
+            ) : (
+              <button
+                className="btn primary sm"
+                onClick={mint}
+                disabled={!ready || phase === "minting" || !selected}
+                style={{ marginTop: "1rem" }}
+              >
+                {!ready
+                  ? "Complete the Self proof first"
+                  : phase === "minting"
+                    ? "Minting…"
+                    : selected
+                      ? `Mint on ${chainStyle(selected.name).label}`
+                      : "Select a deployed chain"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -992,6 +1171,41 @@ function MintFlow() {
                 <span className="k">Transfer</span>
                 <span>{minted.locked ? "Soulbound (ERC-5192)" : "transferable"}</span>
               </div>
+              {minted.sponsoredEvidence && (
+                <div className="sponsored-receipt" aria-label="Sponsored mint receipt evidence">
+                  <div className="account-privacy-head">
+                    <b>Sponsored mint receipt</b>
+                    <span className="pill ok">confirmed</span>
+                  </div>
+                  <div className="kv">
+                    <span className="k">Transaction</span>
+                    {CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer ? (
+                      <a
+                        className="mono tech-link"
+                        href={`${CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer}/tx/${minted.sponsoredEvidence.transactionHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {short(minted.sponsoredEvidence.transactionHash)} ↗
+                      </a>
+                    ) : (
+                      <span className="mono">{short(minted.sponsoredEvidence.transactionHash)}</span>
+                    )}
+                  </div>
+                  <div className="kv">
+                    <span className="k">Block</span>
+                    <span className="mono">{minted.sponsoredEvidence.blockNumber}</span>
+                  </div>
+                  <div className="kv">
+                    <span className="k">Recipient</span>
+                    <span className="mono">{short(minted.sponsoredEvidence.recipient)}</span>
+                  </div>
+                  <p className="muted small">
+                    Bound to this account, contract, chain, voucher event, and confirmed block. The sponsor key was
+                    used only on the server and was never exposed to this browser.
+                  </p>
+                </div>
+              )}
               {decodedMetadata && <pre className="json">{decodedMetadata}</pre>}
             </div>
           </>

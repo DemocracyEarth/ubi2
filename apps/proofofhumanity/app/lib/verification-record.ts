@@ -3,6 +3,7 @@ import type { ZkSelfIssuanceArtifact } from "@ubi2/sdk";
 import type { SerializedHumanCredential } from "./predicate";
 import type { SerializedVoucher } from "./voucher";
 import type { ZkSelfIssuanceGrant } from "./server/zk-self-issuance";
+import type { SponsoredMintAttempt } from "./sponsored-mint";
 
 /** A v1 voucher signed for one specific chain. */
 export interface SignedForChain {
@@ -28,12 +29,14 @@ export interface RelayRecord {
   zkIssuance?: ZkSelfIssuanceArtifact;
   /** Server-private refresh capability. It must never cross the API boundary. */
   zkIssuanceGrant?: ZkSelfIssuanceGrant;
+  /** Server-private one-use sponsor state, keyed by testnet chain id. */
+  sponsoredMints?: Record<string, SponsoredMintAttempt>;
   issuer?: Address;
   error?: string;
   receivedAt: number;
 }
 
-export type PublicRelayRecord = Omit<RelayRecord, "zkIssuanceGrant">;
+export type PublicRelayRecord = Omit<RelayRecord, "zkIssuanceGrant" | "sponsoredMints">;
 
 /** Explicit public allowlist so future private record fields fail closed. */
 export function publicRelayRecord(record: RelayRecord): PublicRelayRecord {
