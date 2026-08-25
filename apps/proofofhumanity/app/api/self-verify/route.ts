@@ -57,7 +57,7 @@ import {
   type DisclosureProfile,
 } from "../../lib/disclosure-profile";
 import { CHAINS, SELF_SCOPE, SELF_ENDPOINT, SELF_MOCK_PASSPORT } from "../../config";
-import { getIssuerPrivateKey } from "../../server-config";
+import { getIssuerPrivateKey, getSponsoredMintServerConfig } from "../../server-config";
 import {
   deleteVerificationRecord,
   getVerificationRecord,
@@ -77,24 +77,11 @@ import {
   type RelayRecord,
   type SignedForChain,
 } from "../../lib/verification-record";
+import { verificationCapability } from "../../lib/server/verification-capability";
 
 // Node.js runtime: the process-local handoff must persist across requests, and @selfxyz/core pulls in
 // Node-only crypto (snarkjs, node-forge) that the edge runtime cannot run.
 export const runtime = "nodejs";
-
-interface VerificationCapability {
-  address: Address;
-  session: string;
-}
-
-function verificationCapability(req: NextRequest): VerificationCapability | null {
-  const address = req.nextUrl.searchParams.get("address")?.toLowerCase();
-  const session = req.headers.get("x-poh-verification-session")?.toLowerCase();
-  if (!address || !/^0x[0-9a-f]{40}$/.test(address) || !session || !/^[0-9a-f]{32}$/.test(session)) {
-    return null;
-  }
-  return { address: address as Address, session };
-}
 
 /**
  * Self asks the store for a config id derived from the proof-bound userDefinedData before it
@@ -359,7 +346,21 @@ export async function GET(req: NextRequest) {
   }
   const record = getVerificationRecord<RelayRecord>(capability.address, capability.session);
   if (!record) return NextResponse.json({ status: "pending" }, { headers: { "cache-control": "no-store" } });
-  return NextResponse.json(publicRelayRecord(record), { headers: { "cache-control": "no-store" } });
+  let sponsoredChainIds: number[] = [];
+  if (record.status === "ready" && record.vouchers) {
+    try {
+      const config = getSponsoredMintServerConfig();
+      sponsoredChainIds = config
+        ? config.enabledChainIds.filter((chainId) => record.vouchers?.some((voucher) => voucher.chainId === chainId))
+        : [];
+    } catch {
+      // Malformed or partial sponsor configuration disables the UI path without breaking proof polling.
+    }
+  }
+  return NextResponse.json(
+    { ...publicRelayRecord(record), sponsoredChainIds },
+    { headers: { "cache-control": "no-store" } },
+  );
 }
 
 /**

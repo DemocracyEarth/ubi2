@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add testnet-only sponsored PoH minting to the proof-bound credential account, with a separate
+  server-only transaction signer, explicit testnet allowlist, capability/voucher/contract binding,
+  process-local quotas and one-use locks, gas/fee/balance controls, recoverable versioned receipt
+  evidence, client-side ownership checks, and real-contract relay tests.
+- Add dedicated credential-account privacy guidance before Self verification, explicit public-address
+  acknowledgment, fail-closed wallet-switch session invalidation, and an opt-in warning-only activity scan that
+  never claims to prove account freshness.
 - Add capability-authenticated v2 issuance refresh for transaction expiry and slot/epoch races. The
   server retains no raw Self nullifier, fixes every proof-derived/trust field, preserves the original
   ten-minute verification expiry, filters its private grant from API responses, and rejects consumed grants.

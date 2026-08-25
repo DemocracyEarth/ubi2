@@ -9,6 +9,24 @@
  */
 export const proofOfHumanityAbi = [
   {
+    type: "event",
+    name: "HumanityMinted",
+    inputs: [
+      { name: "tokenId", type: "uint256", indexed: true },
+      { name: "nullifier", type: "uint256", indexed: true },
+      { name: "to", type: "address", indexed: true },
+    ],
+  },
+  {
+    type: "event",
+    name: "HumanityRefreshed",
+    inputs: [
+      { name: "tokenId", type: "uint256", indexed: true },
+      { name: "nullifier", type: "uint256", indexed: true },
+      { name: "epoch", type: "uint32", indexed: false },
+    ],
+  },
+  {
     type: "function",
     name: "mintWithVoucher",
     stateMutability: "nonpayable",
@@ -88,6 +106,13 @@ export const proofOfHumanityAbi = [
   {
     type: "function",
     name: "issuer",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "owner",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],

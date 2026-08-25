@@ -1,41 +1,25 @@
 import "server-only";
 
 import { ExpiringStore } from "../expiring-store";
+import { FixedWindowRateLimiter } from "../fixed-window-rate-limit";
 
 export const VERIFICATION_RECORD_TTL_MS = 10 * 60 * 1_000;
 const MAX_RECORDS = 5_000;
 
-interface LimitValue {
-  count: number;
-  expiresAt: number;
-}
-
 const processState = globalThis as typeof globalThis & {
   __pohVerificationRecords?: ExpiringStore<unknown>;
-  __pohRateLimits?: Map<string, LimitValue>;
+  __pohRateLimiter?: FixedWindowRateLimiter;
 };
 
 const records =
   processState.__pohVerificationRecords instanceof ExpiringStore
     ? processState.__pohVerificationRecords
     : (processState.__pohVerificationRecords = new ExpiringStore(MAX_RECORDS));
-const limits = (processState.__pohRateLimits ??= new Map());
+const limiter = (processState.__pohRateLimiter ??= new FixedWindowRateLimiter(20_000));
 
 function recordKey(address: string, session: string): string {
   if (!/^[0-9a-f]{32}$/.test(session)) throw new Error("Invalid verification session.");
   return `poh:verification:v1:${address.toLowerCase()}:${session}`;
-}
-
-function prune<T extends { expiresAt: number }>(map: Map<string, T>, max: number): void {
-  const now = Date.now();
-  for (const [key, entry] of map) {
-    if (entry.expiresAt <= now) map.delete(key);
-  }
-  while (map.size >= max) {
-    const oldest = map.keys().next().value as string | undefined;
-    if (!oldest) break;
-    map.delete(oldest);
-  }
 }
 
 /**
@@ -69,6 +53,22 @@ export function updateVerificationRecord<T>(address: string, session: string, va
   return records.update(recordKey(address, session), value);
 }
 
+/**
+ * Atomically replace a live value only when it is still the exact record previously read.
+ * JavaScript runs this read/compare/write section without an await, so concurrent handlers cannot
+ * both claim the same verification record before one of them publishes its submitting state.
+ */
+export function compareAndUpdateVerificationRecord<T>(
+  address: string,
+  session: string,
+  expected: T,
+  value: T,
+): boolean {
+  const key = recordKey(address, session);
+  if (records.get(key) !== expected) return false;
+  return records.update(key, value);
+}
+
 export function deleteVerificationRecord(address: string, session: string): void {
   records.delete(recordKey(address, session));
 }
@@ -79,14 +79,5 @@ export function rateLimit(
   limit: number,
   windowSeconds: number,
 ): { allowed: boolean; retryAfter: number } {
-  prune(limits, 20_000);
-  const safeIdentity = identity.toLowerCase().replace(/[^a-z0-9:._-]/g, "").slice(0, 160) || "unknown";
-  const windowMs = windowSeconds * 1_000;
-  const window = Math.floor(Date.now() / windowMs);
-  const key = `poh:limit:${scope}:${safeIdentity}:${window}`;
-  const expiresAt = (window + 1) * windowMs;
-  const entry = limits.get(key);
-  const count = entry ? entry.count + 1 : 1;
-  limits.set(key, { count, expiresAt });
-  return { allowed: count <= limit, retryAfter: Math.max(1, Math.ceil((expiresAt - Date.now()) / 1_000)) };
+  return limiter.take(scope, identity, limit, windowSeconds);
 }

@@ -64,3 +64,16 @@ assertEqual(
   '{"status":"ready","receivedAt":1000}',
   "the public record remains JSON-safe even though the private grant contains bigint",
 );
+
+const sponsoredPrivateRecord = {
+  status: "ready",
+  sponsoredMints: {
+    "11155111": { status: "submitting", attempts: 1, startedAt: 1_000 },
+  },
+  receivedAt: 1_000,
+} as RelayRecord;
+assertEqual(
+  "sponsoredMints" in publicRelayRecord(sponsoredPrivateRecord),
+  false,
+  "internal sponsorship locks and attempt counters never cross the verification API boundary",
+);

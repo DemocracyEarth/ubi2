@@ -839,6 +839,120 @@ section.band {
   font-weight: 700;
 }
 
+.account-privacy-card {
+  margin: 0.7rem 0 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(255, 154, 85, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 226, 75, 0.06), rgba(255, 107, 138, 0.05));
+}
+
+.account-privacy-card p {
+  max-width: 62ch;
+  margin: 0.55rem 0 0;
+  line-height: 1.55;
+  font-size: 0.84rem;
+  color: var(--ink-2);
+}
+
+.account-privacy-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.account-privacy-head .pill {
+  color: var(--gold);
+  border-color: rgba(255, 154, 85, 0.38);
+}
+
+.account-connect-action p {
+  margin: 0 0 0.65rem;
+}
+
+.account-privacy-actions {
+  margin-top: 0.75rem;
+}
+
+.account-privacy-disclosure {
+  max-width: 66ch;
+  margin: 0.65rem 0 0;
+  line-height: 1.5;
+}
+
+.account-privacy-findings {
+  margin: 0.45rem 0;
+  padding-left: 1.2rem;
+}
+
+.account-privacy-findings li + li {
+  margin-top: 0.25rem;
+}
+
+.account-privacy-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.account-privacy-ack input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 0.05rem;
+  accent-color: #ff9a55;
+}
+
+.account-privacy-ack:has(input:checked) {
+  border-color: rgba(52, 211, 153, 0.38);
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.sponsored-mint-choice {
+  display: grid;
+  justify-items: start;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 14px;
+  background: rgba(52, 211, 153, 0.05);
+}
+
+.sponsored-mint-choice p {
+  max-width: 58ch;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.sponsored-receipt {
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  border-radius: 14px;
+  background: rgba(52, 211, 153, 0.05);
+}
+
+.sponsored-receipt .kv:first-of-type {
+  margin-top: 0.55rem;
+}
+
+.sponsored-receipt p {
+  margin: 0.65rem 0 0;
+  line-height: 1.5;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;
