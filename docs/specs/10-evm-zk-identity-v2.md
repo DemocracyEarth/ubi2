@@ -266,8 +266,9 @@ The country root above is a deliberately small parity fixture, not a production 
   native/R1CS and TypeScript parity vectors. A strict SDK flow recovers the transitional Self authorization signer,
   decodes exact allocation/snapshot receipt logs and emits a sanitized, deterministic transcript without private
   claims, secrets, raw nullifier, duplicate key or bridge signature. No public signal, ABI or status format changed.
-  ADR-0012 does not ratify this measured Poseidon profile for production. Production commitment/hash selection,
-  the slot/epoch race-refresh conflict and the issuer-authentication envelope remain explicit integration decisions.
+  ADR-0013 later ratifies the production cryptographic profile and resolves a losing slot/epoch race by discarding
+  the unsigned candidate and repeating passport binding. ADR-0014 ratifies the issuer-authenticated production
+  vault payload and private broadcast-snapshot status-witness refresh contract without changing the public ABI.
   See [`v2-holder-credential-commitment.md`](v2-holder-credential-commitment.md).
 - Benchmark signature/accumulator and proof-system candidates on desktop, mid-range mobile and EVM L1/L2.
 - **Desktop authentication baseline implemented:** the isolated
@@ -426,9 +427,10 @@ pre-deployment transitional trust root, not an on-chain Self verifier or product
 
 **Holder commitment candidate/transcript implemented (2026-08-16):** the local Rust/WASM lane produces the exact
 slot/epoch-bound reference commitment, and the SDK verifies signed bridge authorization plus allocation/snapshot
-receipt evidence into an encrypted-vault transcript. ADR-0012 does not production-ratify the measured Poseidon
-profile. The existing grant-preserving slot/epoch refresh cannot remain valid for this candidate; it is labeled
-`NEEDS-INTEGRATION-DECISION` with alternatives in the holder spec.
+receipt evidence into an encrypted-vault transcript. ADR-0013 subsequently ratifies the selected profile and makes
+recommit/rebind, never mutation of a signed commitment, the slot/epoch race rule. ADR-0014 subsequently selects a
+new production payload with first issuance from the reference format only when the production duplicate key is
+unused, plus local private status-witness refresh. Reissuance after allocation remains blocked pending supersession.
 
 **Production-profile admission gate implemented (2026-08-17):** the release SDK now strictly binds audited circuit,
 setup, runtime, mobile and target-chain evidence in a content-addressed manifest. Its read-only live preflight

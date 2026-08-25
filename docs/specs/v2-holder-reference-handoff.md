@@ -136,16 +136,18 @@ slice adds no NFT attribute, credential ciphertext or linkable presentation fiel
 - The candidate Poseidon commitment scheme and existing transcript remain explicitly unratified.
 - The reference vault payload is SDK-local test scaffolding, not a frozen cross-lane or production storage format.
 
-## NEEDS-INTEGRATION-DECISION
+## Integration decision — resolved additively
 
-The circuit/verifier lane must publish a selected, versioned manifest covering the credential commitment
-parameters, issuer-authentication envelope, status hash/profile and deterministic cross-language vectors. The
-integration lead must then decide whether the selected scheme can migrate this reference payload or requires a
-new production payload and reissuance. Until that decision merges, product code must not route live enrollment
-claims into `sealReferenceVault` or treat its decrypted payload as prover-ready.
+[ADR-0013](adr/0013-v2-production-cryptographic-profile.md) ratifies the selected commitment, issuer
+authentication and packed-status profile. [ADR-0014](adr/0014-v2-production-vault-and-private-status-refresh.md)
+ratifies a new issuer-authenticated production payload and private broadcast-snapshot refresh contract. This
+reference payload cannot migrate in place: it requires new passport verification and a first production issuance
+only when the production duplicate key is unused, because it never carried a production issuer signature. An
+experimental allocation which already consumed that key remains blocked pending supersession.
+`sealReferenceVault` and every payload it created remain reference-only and non-presentable.
 
-The separate slot/epoch race alternatives in the parent holder specification also remain unresolved. This slice
-does not reinterpret refreshed transitional authorizations.
+ADR-0013 also resolves a losing slot/epoch race by discarding the unsigned candidate, recommitting to the newly
+observed slot/epoch and repeating passport binding. A signed commitment is never rewritten or refreshed.
 
 ## Deterministic and adversarial evidence
 
