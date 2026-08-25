@@ -176,6 +176,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   it excludes local/secret inputs, verifies offline and explicitly denies live readiness. Receipt authenticity,
   physical independence and authoritative timestamps remain external. No hosted canonical-testnet bundle, real
   external receipt, page acknowledgement or completed drill is claimed yet.
+  The sanctions-clear production circuit ID now has a byte-frozen source review package and a complete canonical
+  28,499-constraint matrix artifact, with CI reproducing both. A fail-closed ceremony record requires two separate
+  independent audit organizations, three or more chained real contributions, a future-value final beacon,
+  content-addressed keys, public timestamps and an organizationally independent source-to-verifier reproduction.
+  No auditor, contributor, ceremony transcript, beacon, production key or approval is claimed yet, and the record
+  cannot authorize deployment or activation.
   A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
   per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
   circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.

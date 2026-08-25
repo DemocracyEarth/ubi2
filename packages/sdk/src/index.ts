@@ -28,6 +28,7 @@ export * from "./zk-self-issuance";
 export * from "./zk-holder-credential";
 export * from "./zk-holder-reference-handoff";
 export * from "./zk-production-profile";
+export * from "./zk-sanctions-ceremony";
 export * from "./zk-holder-reference-prover-worker";
 export * from "./zk-holder-reference-browser-runtime";
 export * from "./zk-holder-profile-prover-worker";

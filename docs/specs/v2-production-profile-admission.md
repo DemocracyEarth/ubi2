@@ -22,6 +22,14 @@ content-addressed vectors and the exact manifest-input checklist, but it does no
 audits, device evidence or live target identities. Research circuit identifiers, public-toxic-waste verifier
 artifacts and the five existing v1-only Phase 2 hosts remain inadmissible.
 
+The sanctions-clear source and complete canonical R1CS matrices are now frozen for independent review in
+[`sanctions-clear-source-freeze-v1.json`](../../fixtures/v2-production-crypto/sanctions-clear-source-freeze-v1.json).
+This is an immutable audit target, not production approval. The strict external evidence record and ordered
+coordination procedure are documented in
+[`v2-sanctions-clear-audit-and-ceremony.md`](../runbooks/v2-sanctions-clear-audit-and-ceremony.md). No record exists
+until two genuinely independent approvals, at least three real Phase 2 contributions, a public final beacon,
+content-addressed keys and an independent source-to-verifier reproduction have all been observed.
+
 ## Manifest V1
 
 The canonical runtime schema is `org.proofofhumanity.zk-production-profile/1`. Parsing is strict: missing fields,

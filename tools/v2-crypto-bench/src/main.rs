@@ -3,9 +3,10 @@ use ubi2_v2_crypto_bench::{
     advance_packed_status_snapshot_from_json, build_packed_status_snapshot_from_json,
     generate_dynamic_status_evm_fixture, generate_packed_status_evm_fixture,
     holder_credential_commitment_from_json, production_crypto_parameter_manifest,
-    run_registry_depth_suite, run_registry_transport_estimates, run_status_distribution_bakeoff,
-    run_suite, synthetic_holder_credential_reference_vector,
-    synthetic_production_crypto_reference_vector,
+    production_sanctions_canonical_constraints, production_sanctions_constraint_manifest,
+    production_sanctions_source_freeze_manifest, run_registry_depth_suite,
+    run_registry_transport_estimates, run_status_distribution_bakeoff, run_suite,
+    synthetic_holder_credential_reference_vector, synthetic_production_crypto_reference_vector,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -18,6 +19,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!(
             "{}",
             serde_json::to_string_pretty(&production_crypto_parameter_manifest())?
+        );
+    } else if let Some(index) = arguments
+        .iter()
+        .position(|arg| arg == "--write-production-sanctions-constraints")
+    {
+        let output = arguments
+            .get(index + 1)
+            .ok_or("--write-production-sanctions-constraints requires an output path")?;
+        std::fs::write(output, production_sanctions_canonical_constraints()?)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&production_sanctions_constraint_manifest()?)?
+        );
+    } else if arguments
+        .iter()
+        .any(|arg| arg == "--production-sanctions-constraint-manifest")
+    {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&production_sanctions_constraint_manifest()?)?
+        );
+    } else if arguments
+        .iter()
+        .any(|arg| arg == "--production-sanctions-source-freeze")
+    {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&production_sanctions_source_freeze_manifest())?
         );
     } else if arguments
         .iter()

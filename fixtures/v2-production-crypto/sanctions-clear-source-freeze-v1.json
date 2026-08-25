@@ -1,0 +1,81 @@
+{
+  "schema": "org.proofofhumanity.v2-sanctions-clear-source-freeze/1",
+  "status": "frozen-for-independent-audit-not-production-approved",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "circuitName": "sanctions-clear",
+  "circuitId": "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+  "mutationRule": "any source, parameter, compiler, constraint, or public-signal byte change requires a new circuit ID, new independent audits, and a new Phase 2 ceremony",
+  "sourceFiles": [
+    {
+      "path": "tools/v2-crypto-bench/src/lib.rs",
+      "sha256": "0x6cfc487c5fc3be11af435fbcf0a91f2b6c30fdc7890680ad58ea22242b94112a",
+      "bytes": 121079
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/holder_credential.rs",
+      "sha256": "0x6cda72a4a517aedf51ee90609eb29f53b74bffd33d4acb7c6eeaa3acb36bdb1c",
+      "bytes": 17851
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/production_profile.rs",
+      "sha256": "0x94ccc4cd9a0f0819145edc99dafed13a5c6a2068cdf72f7afa00384bb266b89c",
+      "bytes": 22108
+    },
+    {
+      "path": "tools/v2-crypto-bench/src/main.rs",
+      "sha256": "0x3ab5828f16ae572489b2c003bb17620cb3d4db495af010679f4a51a11e96cd35",
+      "bytes": 5280
+    },
+    {
+      "path": "tools/v2-crypto-bench/Cargo.toml",
+      "sha256": "0xdaab8ab0ac8e599190cff15f4293c48bc6e0a6cd403f63aed63ab39f1d7ef8c6",
+      "bytes": 1532
+    },
+    {
+      "path": "tools/v2-crypto-bench/Cargo.lock",
+      "sha256": "0xfa0c91c58b6764d35d2d29582698ebaa90103e785b5379aff797f31e3bc3512e",
+      "bytes": 21261
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "0x33006023b8293beae18a6041f66bebe392a0108765e3605fe4f302513bdc987f",
+      "bytes": 246
+    },
+    {
+      "path": "fixtures/v2-production-crypto/parameters-v1.json",
+      "sha256": "0xb328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb",
+      "bytes": 24831
+    },
+    {
+      "path": "fixtures/v2-production-crypto/compiler-lock-v1.json",
+      "sha256": "0x789932b37fdf49209e561e66217d4f9817b385c67da3df2fbbe921fe4e1b1708",
+      "bytes": 1263
+    },
+    {
+      "path": "fixtures/v2-production-crypto/circuit-set-v1.json",
+      "sha256": "0x9059b6e55cd1b1a63d9a6b077d26f34f5d67008a19dfd984ddf76492345e199d",
+      "bytes": 2422
+    },
+    {
+      "path": "fixtures/v2-production-crypto/public-signals-v1.json",
+      "sha256": "0x9b28661b00a32d27647f524702cb8a7348ff81b93603d94719ea729ba08fce58",
+      "bytes": 2527
+    }
+  ],
+  "constraintManifest": {
+    "path": "fixtures/v2-production-crypto/sanctions-clear-constraint-system-v1.json",
+    "sha256": "0xcad6ad1a430e4c62d974e2c3128668444044e7753e9d672771519e57c3c4ecba",
+    "bytes": 872
+  },
+  "compressedConstraintSystem": {
+    "path": "fixtures/v2-production-crypto/sanctions-clear-r1cs-v1.bin.gz",
+    "sha256": "0x48983b02719eb0eacbb5cd934df909752d94a235eeec8bb67443c2c6c672876f",
+    "bytes": 2784555
+  },
+  "canonicalConstraintSystemSha256": "0x605b6511f4045f9447b018f7e7ab4d9c96a984afd94d2db9f2ac0bc4d636dbe8",
+  "canonicalConstraintSystemBytes": 20467203,
+  "compression": "gzip-without-name-or-timestamp",
+  "productionApproved": false,
+  "ceremonyComplete": false,
+  "deploymentAuthorized": false
+}
