@@ -21,12 +21,14 @@ use ark_r1cs_std::{
     prelude::*,
 };
 use ark_relations::r1cs::{
-    ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, SynthesisError,
+    ConstraintMatrices, ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, Matrix,
+    SynthesisError,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 #[cfg(not(all(target_arch = "wasm32", feature = "browser")))]
 use std::time::Instant;
 use std::{error::Error, fmt};
@@ -127,6 +129,12 @@ pub const SIGNATURE_AND_PACKED_STATUS_CONSTRAINTS: usize = 27_157;
 pub const SIGNATURE_AND_PACKED_STATUS_WITNESS_VARIABLES: usize = 26_253;
 pub const DYNAMIC_STATUS_PRESENTATION_CONSTRAINTS: usize = 28_499;
 pub const DYNAMIC_STATUS_PRESENTATION_WITNESS_VARIABLES: usize = 27_561;
+pub const PRODUCTION_SANCTIONS_CONSTRAINT_SCHEMA: &str =
+    "org.proofofhumanity.v2-sanctions-clear-constraint-system/1";
+pub const PRODUCTION_SANCTIONS_CONSTRAINT_ENCODING: &str =
+    "arkworks-r1cs-matrices-v1: u64be metadata; A/B/C rows; u64be column; canonical 32-byte BN254-Fr coefficient";
+pub const PRODUCTION_SANCTIONS_SOURCE_FREEZE_SCHEMA: &str =
+    "org.proofofhumanity.v2-sanctions-clear-source-freeze/1";
 
 const CREDENTIAL_DOMAIN: u64 = 1;
 const NULLIFIER_DOMAIN: u64 = 2;
@@ -224,6 +232,55 @@ pub struct DynamicStatusPresentationCircuit {
     inner: SpikeCircuit,
     expected_circuit_id: [u128; 2],
     public_signals: [CircuitField; DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT],
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionSanctionsConstraintManifest {
+    pub schema: &'static str,
+    pub profile_id: &'static str,
+    pub circuit_name: &'static str,
+    pub circuit_id: &'static str,
+    pub source_status: &'static str,
+    pub constraint_encoding: &'static str,
+    pub field_modulus: String,
+    pub public_signal_count: usize,
+    pub instance_variables: usize,
+    pub witness_variables: usize,
+    pub constraints: usize,
+    pub a_non_zero: usize,
+    pub b_non_zero: usize,
+    pub c_non_zero: usize,
+    pub canonical_bytes: usize,
+    pub canonical_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionSanctionsFrozenFile {
+    pub path: &'static str,
+    pub sha256: String,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionSanctionsSourceFreezeManifest {
+    pub schema: &'static str,
+    pub status: &'static str,
+    pub profile_id: &'static str,
+    pub circuit_name: &'static str,
+    pub circuit_id: &'static str,
+    pub mutation_rule: &'static str,
+    pub source_files: Vec<ProductionSanctionsFrozenFile>,
+    pub constraint_manifest: ProductionSanctionsFrozenFile,
+    pub compressed_constraint_system: ProductionSanctionsFrozenFile,
+    pub canonical_constraint_system_sha256: &'static str,
+    pub canonical_constraint_system_bytes: usize,
+    pub compression: &'static str,
+    pub production_approved: bool,
+    pub ceremony_complete: bool,
+    pub deployment_authorized: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1553,6 +1610,181 @@ pub fn generate_synthetic_profile_browser_proof(
     })
 }
 
+fn encode_u64(output: &mut Vec<u8>, value: usize) {
+    output.extend_from_slice(&(value as u64).to_be_bytes());
+}
+
+fn encode_constraint_matrix(output: &mut Vec<u8>, label: u8, matrix: &Matrix<CircuitField>) {
+    output.push(label);
+    encode_u64(output, matrix.len());
+    for row in matrix {
+        let mut entries = row.clone();
+        entries.sort_by_key(|(_, column)| *column);
+        encode_u64(output, entries.len());
+        for (coefficient, column) in entries {
+            encode_u64(output, column);
+            let encoded = coefficient.into_bigint().to_bytes_be();
+            let mut canonical = [0u8; 32];
+            canonical[32 - encoded.len()..].copy_from_slice(&encoded);
+            output.extend_from_slice(&canonical);
+        }
+    }
+}
+
+fn canonical_constraint_bytes(matrices: &ConstraintMatrices<CircuitField>) -> Vec<u8> {
+    let mut output = Vec::with_capacity(
+        128 + (matrices.a_num_non_zero + matrices.b_num_non_zero + matrices.c_num_non_zero) * 40,
+    );
+    output.extend_from_slice(b"ubi2-v2-sanctions-clear-r1cs-v1\0");
+    for value in [
+        matrices.num_instance_variables,
+        matrices.num_witness_variables,
+        matrices.num_constraints,
+        matrices.a_num_non_zero,
+        matrices.b_num_non_zero,
+        matrices.c_num_non_zero,
+    ] {
+        encode_u64(&mut output, value);
+    }
+    encode_constraint_matrix(&mut output, b'A', &matrices.a);
+    encode_constraint_matrix(&mut output, b'B', &matrices.b);
+    encode_constraint_matrix(&mut output, b'C', &matrices.c);
+    output
+}
+
+fn production_sanctions_constraint_matrices(
+) -> Result<ConstraintMatrices<CircuitField>, SynthesisError> {
+    let input = production_profile::synthetic_production_holder_input();
+    let circuit = DynamicStatusPresentationCircuit::synthetic_production_profile_fixture(&input)
+        .map_err(|_| SynthesisError::Unsatisfiable)?;
+    let cs = ConstraintSystem::<CircuitField>::new_ref();
+    circuit.generate_constraints(cs.clone())?;
+    cs.finalize();
+    cs.to_matrices().ok_or(SynthesisError::MissingCS)
+}
+
+/// Canonical, witness-free encoding of the frozen-for-audit production
+/// sanctions-clear R1CS matrices. It contains no setup contribution, proving
+/// key, proof, credential, issuer secret or other private material.
+pub fn production_sanctions_canonical_constraints() -> Result<Vec<u8>, SynthesisError> {
+    Ok(canonical_constraint_bytes(
+        &production_sanctions_constraint_matrices()?,
+    ))
+}
+
+/// Reproduce the exact constraint identity reviewed before any Phase 2
+/// ceremony. This is a source freeze input, not audit approval or setup
+/// evidence.
+pub fn production_sanctions_constraint_manifest(
+) -> Result<ProductionSanctionsConstraintManifest, SynthesisError> {
+    let matrices = production_sanctions_constraint_matrices()?;
+    let canonical = canonical_constraint_bytes(&matrices);
+    Ok(ProductionSanctionsConstraintManifest {
+        schema: PRODUCTION_SANCTIONS_CONSTRAINT_SCHEMA,
+        profile_id: PRODUCTION_CRYPTO_PROFILE_ID,
+        circuit_name: "sanctions-clear",
+        circuit_id: "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+        source_status: "frozen-for-independent-audit-not-production-approved",
+        constraint_encoding: PRODUCTION_SANCTIONS_CONSTRAINT_ENCODING,
+        field_modulus: CircuitField::MODULUS.to_string(),
+        public_signal_count: DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT,
+        instance_variables: matrices.num_instance_variables,
+        witness_variables: matrices.num_witness_variables,
+        constraints: matrices.num_constraints,
+        a_non_zero: matrices.a_num_non_zero,
+        b_non_zero: matrices.b_num_non_zero,
+        c_non_zero: matrices.c_num_non_zero,
+        canonical_bytes: canonical.len(),
+        canonical_sha256: format!("0x{:x}", Sha256::digest(&canonical)),
+    })
+}
+
+fn frozen_file(path: &'static str, bytes: &'static [u8]) -> ProductionSanctionsFrozenFile {
+    ProductionSanctionsFrozenFile {
+        path,
+        sha256: format!("0x{:x}", Sha256::digest(bytes)),
+        bytes: bytes.len(),
+    }
+}
+
+/// Exact file-level boundary offered to independent circuit and cryptography
+/// auditors. Any byte change invalidates the freeze and requires a new circuit
+/// identifier before setup may begin.
+pub fn production_sanctions_source_freeze_manifest() -> ProductionSanctionsSourceFreezeManifest {
+    let source_files = vec![
+        frozen_file("tools/v2-crypto-bench/src/lib.rs", include_bytes!("lib.rs")),
+        frozen_file(
+            "tools/v2-crypto-bench/src/holder_credential.rs",
+            include_bytes!("holder_credential.rs"),
+        ),
+        frozen_file(
+            "tools/v2-crypto-bench/src/production_profile.rs",
+            include_bytes!("production_profile.rs"),
+        ),
+        frozen_file(
+            "tools/v2-crypto-bench/src/main.rs",
+            include_bytes!("main.rs"),
+        ),
+        frozen_file(
+            "tools/v2-crypto-bench/Cargo.toml",
+            include_bytes!("../Cargo.toml"),
+        ),
+        frozen_file(
+            "tools/v2-crypto-bench/Cargo.lock",
+            include_bytes!("../Cargo.lock"),
+        ),
+        frozen_file(
+            "rust-toolchain.toml",
+            include_bytes!("../../../rust-toolchain.toml"),
+        ),
+        frozen_file(
+            "fixtures/v2-production-crypto/parameters-v1.json",
+            include_bytes!("../../../fixtures/v2-production-crypto/parameters-v1.json"),
+        ),
+        frozen_file(
+            "fixtures/v2-production-crypto/compiler-lock-v1.json",
+            include_bytes!("../../../fixtures/v2-production-crypto/compiler-lock-v1.json"),
+        ),
+        frozen_file(
+            "fixtures/v2-production-crypto/circuit-set-v1.json",
+            include_bytes!("../../../fixtures/v2-production-crypto/circuit-set-v1.json"),
+        ),
+        frozen_file(
+            "fixtures/v2-production-crypto/public-signals-v1.json",
+            include_bytes!("../../../fixtures/v2-production-crypto/public-signals-v1.json"),
+        ),
+    ];
+    ProductionSanctionsSourceFreezeManifest {
+        schema: PRODUCTION_SANCTIONS_SOURCE_FREEZE_SCHEMA,
+        status: "frozen-for-independent-audit-not-production-approved",
+        profile_id: PRODUCTION_CRYPTO_PROFILE_ID,
+        circuit_name: "sanctions-clear",
+        circuit_id: "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+        mutation_rule: "any source, parameter, compiler, constraint, or public-signal byte change requires a new circuit ID, new independent audits, and a new Phase 2 ceremony",
+        source_files,
+        constraint_manifest: frozen_file(
+            "fixtures/v2-production-crypto/sanctions-clear-constraint-system-v1.json",
+            include_bytes!(
+                "../../../fixtures/v2-production-crypto/sanctions-clear-constraint-system-v1.json"
+            ),
+        ),
+        compressed_constraint_system: ProductionSanctionsFrozenFile {
+            path: "fixtures/v2-production-crypto/sanctions-clear-r1cs-v1.bin.gz",
+            sha256:
+                "0x48983b02719eb0eacbb5cd934df909752d94a235eeec8bb67443c2c6c672876f"
+                    .to_owned(),
+            bytes: 2_784_555,
+        },
+        canonical_constraint_system_sha256:
+            "0x605b6511f4045f9447b018f7e7ab4d9c96a984afd94d2db9f2ac0bc4d636dbe8",
+        canonical_constraint_system_bytes: 20_467_203,
+        compression: "gzip-without-name-or-timestamp",
+        production_approved: false,
+        ceremony_complete: false,
+        deployment_authorized: false,
+    }
+}
+
 fn export_packed_status_evm_fixture_with_key(
     proving_key_bytes: &[u8],
 ) -> Result<PackedStatusEvmFixtureReport, BrowserBenchmarkError> {
@@ -2145,6 +2377,50 @@ fn status_path_index_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_sanctions_constraint_system_is_canonical_and_pinned() {
+        let first = production_sanctions_canonical_constraints().unwrap();
+        let second = production_sanctions_canonical_constraints().unwrap();
+        assert_eq!(
+            first, second,
+            "canonical R1CS encoding must reproduce byte-for-byte"
+        );
+        let manifest = production_sanctions_constraint_manifest().unwrap();
+        assert_eq!(
+            manifest.public_signal_count,
+            DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT
+        );
+        assert_eq!(
+            manifest.instance_variables,
+            DYNAMIC_STATUS_PUBLIC_SIGNAL_COUNT + 1
+        );
+        assert_eq!(
+            manifest.constraints,
+            DYNAMIC_STATUS_PRESENTATION_CONSTRAINTS
+        );
+        assert_eq!(
+            manifest.witness_variables,
+            DYNAMIC_STATUS_PRESENTATION_WITNESS_VARIABLES
+        );
+        assert_eq!(manifest.canonical_bytes, first.len());
+        assert_eq!(
+            manifest.canonical_sha256,
+            "0x605b6511f4045f9447b018f7e7ab4d9c96a984afd94d2db9f2ac0bc4d636dbe8",
+            "constraint drift requires a new circuit id and fresh independent audit"
+        );
+    }
+
+    #[test]
+    fn production_sanctions_relation_rejects_another_circuit_id() {
+        let input = production_profile::synthetic_production_holder_input();
+        let mut circuit =
+            DynamicStatusPresentationCircuit::synthetic_production_profile_fixture(&input).unwrap();
+        circuit.set_public_signal(1, CircuitField::from(DYNAMIC_STATUS_CIRCUIT_ID[0]));
+        let cs = ConstraintSystem::<CircuitField>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
 
     #[test]
     fn all_candidate_relations_are_satisfied() {

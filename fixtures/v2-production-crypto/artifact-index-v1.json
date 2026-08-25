@@ -8,8 +8,8 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "6041accb123ce305884cb54dc6a2560151bf775458ea4ff079af484f99328f16",
-      "bytes": 9621
+      "sha256": "3019b70bdf5d20688eb4801cec915acd4178dc03d8480403e329cb6ae8346b5c",
+      "bytes": 10476
     },
     {
       "path": "docs/specs/adr/0012-v2-cross-lane-interface-freeze.md",
@@ -38,8 +38,8 @@
     },
     {
       "path": "docs/specs/v2-production-profile-admission.md",
-      "sha256": "ef95308e9ca600f2bde2c4eb3a23a00b588d8b627784d55807225b70d1531e7a",
-      "bytes": 8670
+      "sha256": "3a9ae2e5391c5ef2faec33a0affe63416e99e1bfd7074aeec1f9d8f2a1785c8a",
+      "bytes": 9367
     },
     {
       "path": "fixtures/v2-production-crypto/admission-inputs-v1.json",
@@ -83,13 +83,13 @@
     },
     {
       "path": "packages/sdk/package.json",
-      "sha256": "e95ebec874d92156c0c77a25f81e5fca6b5a39f1ce5aa73ec89a621a595182a4",
-      "bytes": 1382
+      "sha256": "46ad0d8e24ce40e05395aee9693256c58a140245f2eb941292b0336905147056",
+      "bytes": 1423
     },
     {
       "path": "packages/sdk/src/index.ts",
-      "sha256": "0989e91ec2d1109788687a88c8f4911f5e46fffb93db8e7ea2f60a6a5f5f3c78",
-      "bytes": 6614
+      "sha256": "c030d33a299cd132a5d2d538faa2ac275c33931d3ea4a08ca42d8c132f3a2c36",
+      "bytes": 6655
     },
     {
       "path": "packages/sdk/src/zk-holder-profile-browser-runtime.test.ts",
@@ -158,18 +158,48 @@
     },
     {
       "path": "tools/v2-crypto-bench/src/lib.rs",
-      "sha256": "2cb8a9fb859ebff288ea876fd5be2c6c13d7c020997f95a758659289486d002a",
-      "bytes": 109661
+      "sha256": "6cfc487c5fc3be11af435fbcf0a91f2b6c30fdc7890680ad58ea22242b94112a",
+      "bytes": 121079
     },
     {
       "path": "tools/v2-crypto-bench/src/main.rs",
-      "sha256": "f9cea8301f8c8eaa9dace70d73ce2df0b0192dd3c6e767694ae0fdf9c5cbe74d",
-      "bytes": 4141
+      "sha256": "3ab5828f16ae572489b2c003bb17620cb3d4db495af010679f4a51a11e96cd35",
+      "bytes": 5280
     },
     {
       "path": "tools/v2-crypto-bench/src/production_profile.rs",
       "sha256": "94ccc4cd9a0f0819145edc99dafed13a5c6a2068cdf72f7afa00384bb266b89c",
       "bytes": 22108
+    },
+    {
+      "path": "docs/runbooks/v2-sanctions-clear-audit-and-ceremony.md",
+      "sha256": "d5644a06755daa5ceab27f15ea83c01f4e35918bb34c9e4cebeab646a22a4da3",
+      "bytes": 8596
+    },
+    {
+      "path": "fixtures/v2-production-crypto/sanctions-clear-constraint-system-v1.json",
+      "sha256": "cad6ad1a430e4c62d974e2c3128668444044e7753e9d672771519e57c3c4ecba",
+      "bytes": 872
+    },
+    {
+      "path": "fixtures/v2-production-crypto/sanctions-clear-r1cs-v1.bin.gz",
+      "sha256": "48983b02719eb0eacbb5cd934df909752d94a235eeec8bb67443c2c6c672876f",
+      "bytes": 2784555
+    },
+    {
+      "path": "fixtures/v2-production-crypto/sanctions-clear-source-freeze-v1.json",
+      "sha256": "3bd8fcc626a104bc71386a4f1f4bc6f9997fb041bd30a1812392e63dece44996",
+      "bytes": 3220
+    },
+    {
+      "path": "packages/sdk/src/zk-sanctions-ceremony.ts",
+      "sha256": "861cbae0aa9b13c81612c46fb02a88208141d1df00a43d4e76f343a2b18614f0",
+      "bytes": 24075
+    },
+    {
+      "path": "packages/sdk/src/zk-sanctions-ceremony.test.ts",
+      "sha256": "3e2e923e66ffa0bdf80f5f3dc8522002e8cbf015f0d622564fed77a5de011727",
+      "bytes": 9966
     }
   ]
 }

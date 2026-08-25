@@ -1,0 +1,18 @@
+{
+  "schema": "org.proofofhumanity.v2-sanctions-clear-constraint-system/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "circuitName": "sanctions-clear",
+  "circuitId": "0xe04e432671953a25e6aadbb5e59cfa0ff347108e31aac4a5599cb08f5cce11d2",
+  "sourceStatus": "frozen-for-independent-audit-not-production-approved",
+  "constraintEncoding": "arkworks-r1cs-matrices-v1: u64be metadata; A/B/C rows; u64be column; canonical 32-byte BN254-Fr coefficient",
+  "fieldModulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "publicSignalCount": 18,
+  "instanceVariables": 19,
+  "witnessVariables": 27561,
+  "constraints": 28499,
+  "aNonZero": 170109,
+  "bNonZero": 297194,
+  "cNonZero": 27275,
+  "canonicalBytes": 20467203,
+  "canonicalSha256": "0x605b6511f4045f9447b018f7e7ab4d9c96a984afd94d2db9f2ac0bc4d636dbe8"
+}
