@@ -1,0 +1,373 @@
+{
+  "schema": "org.proofofhumanity.v2-production-vault-status-contract-vector/1",
+  "warning": "synthetic reserved-country and public test-key contract vector only; never use its identity, keys, signature or status path in production",
+  "payload": {
+    "schema": "org.proofofhumanity.zk-holder-production-vault-payload/1",
+    "version": 1,
+    "profile": {
+      "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+      "parameterManifestSha256": "b328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb"
+    },
+    "credential": {
+      "schema": "org.proofofhumanity.zk-holder-credential-input/1",
+      "issuerKeyId": "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412",
+      "statusId": 7,
+      "holderSecret": "123456789",
+      "credentialBlinding": "987654321",
+      "dateOfBirth": "2000-01-01",
+      "nationality": "XAA",
+      "issuingState": "XAB",
+      "expiryDate": "2030-01-01",
+      "documentClass": "epassport",
+      "assurance": "chip-auth",
+      "issuedAtEpoch": 230
+    },
+    "commitment": {
+      "schema": "org.proofofhumanity.zk-holder-credential-commitment/1",
+      "credentialSchema": "org.proofofhumanity.zk-private-credential/1",
+      "commitmentScheme": "poseidon-bn254-arkworks-0.5-x5-rate2/1",
+      "issuerKeyId": "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412",
+      "statusId": 7,
+      "issuedAtEpoch": 230,
+      "commitment": "0x0ce7959a840b1c85a45ed247536ddbc6715fcb1bfbae6270210198676ad02b3d"
+    },
+    "issuerAuthentication": {
+      "schema": "org.proofofhumanity.zk-issuer-schnorr-artifact/1",
+      "scheme": "schnorr-babyjubjub-poseidon-sha512-nonce/1",
+      "issuerKeyId": "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412",
+      "credentialCommitment": "0x0ce7959a840b1c85a45ed247536ddbc6715fcb1bfbae6270210198676ad02b3d",
+      "issuerPublicKey": {
+        "x": "7583731150242430113775139992337509480330849632778552691762195984057043314356",
+        "y": "20054645305780310574301832730928540803230863784309090620182710817855278744580"
+      },
+      "nonceCommitment": {
+        "x": "17536389990649732425386889092323707214356571370150242599884150631269200166991",
+        "y": "5122279745024734316684334576350750454273909770234112571235737722542463923114"
+      },
+      "responseScalar": "1167591152426627965195832401782903351919020641827662263310770111980718877814"
+    },
+    "issuanceTranscript": {
+      "schema": "org.proofofhumanity.zk-holder-issuance-transcript/1",
+      "version": 1,
+      "state": "snapshot-covered",
+      "commitment": {
+        "schema": "org.proofofhumanity.zk-holder-credential-commitment/1",
+        "credentialSchema": "org.proofofhumanity.zk-private-credential/1",
+        "commitmentScheme": "poseidon-bn254-arkworks-0.5-x5-rate2/1",
+        "issuerKeyId": "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412",
+        "statusId": 7,
+        "issuedAtEpoch": 230,
+        "commitment": "0x0ce7959a840b1c85a45ed247536ddbc6715fcb1bfbae6270210198676ad02b3d"
+      },
+      "authorization": {
+        "chainId": "84532",
+        "issuanceRegistry": "0x2222222222222222222222222222222222222222",
+        "issuanceBridge": "0x1111111111111111111111111111111111111111",
+        "issuanceDomain": "0x54ee0d706887daaeb8449c3e906125bdd1cc5119225e63a334195871480f36aa",
+        "subject": "0x3333333333333333333333333333333333333333",
+        "verificationAuthority": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "selfConfigId": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "authorizationDigest": "0x9bd9fa3561424ee0041f6d5977fe200e3f97faee4680539d44c66e074c165cf6"
+      },
+      "allocation": {
+        "transactionHash": "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "blockNumber": "12345",
+        "blockHash": "0x7777777777777777777777777777777777777777777777777777777777777777",
+        "logIndex": 4,
+        "statusId": 7,
+        "issuedAtEpoch": 230
+      },
+      "statusSnapshot": {
+        "transactionHash": "0x8888888888888888888888888888888888888888888888888888888888888888",
+        "blockNumber": "12350",
+        "blockHash": "0x9999999999999999999999999999999999999999999999999999999999999999",
+        "logIndex": 2,
+        "snapshotId": 3,
+        "root": "0x296df26b86b0f16398c12c9865cf57006cd90e7abd1b08d6fbc1ea471a04fcba",
+        "activatedThroughStatusId": 7,
+        "publishedAt": "1788480000"
+      },
+      "transcriptHash": "0x57a1df074a12b5cbb48c94896c0db225e4c756ae5e292c667114706d38a432dc"
+    },
+    "statusWitness": {
+      "schema": "org.proofofhumanity.zk-packed-status-witness/1",
+      "scheme": "poseidon-bn254-packed-status-depth24/1",
+      "issuerKeyId": "0x0446b5caa8a2f7a9ed023dc9d2bc9f3a32a1515fce6450231ffd870b4d3fb412",
+      "statusId": 7,
+      "snapshot": {
+        "chainId": "84532",
+        "issuanceRegistry": "0x2222222222222222222222222222222222222222",
+        "snapshotId": 3,
+        "root": "0x296df26b86b0f16398c12c9865cf57006cd90e7abd1b08d6fbc1ea471a04fcba",
+        "activatedThroughStatusId": 7,
+        "publishedAt": "1788480000"
+      },
+      "chunkLimbsLittleEndian": [
+        "340282366920938463463374607431768211327",
+        "340282366920938463463374607431768211455"
+      ],
+      "siblingsBottomUp": [
+        "7000001",
+        "14000002",
+        "21000003",
+        "28000004",
+        "35000005",
+        "42000006",
+        "49000007",
+        "56000008",
+        "63000009",
+        "70000010",
+        "77000011",
+        "84000012",
+        "91000013",
+        "98000014",
+        "105000015",
+        "112000016",
+        "119000017",
+        "126000018",
+        "133000019",
+        "140000020",
+        "147000021",
+        "154000022",
+        "161000023",
+        "168000024"
+      ]
+    }
+  },
+  "refreshPrivacyContract": {
+    "schema": "org.proofofhumanity.zk-holder-private-status-refresh/1",
+    "version": 1,
+    "requestFields": [
+      "schema",
+      "version",
+      "jobId",
+      "priorVaultSha256",
+      "vault",
+      "unlock",
+      "cohortBundles"
+    ],
+    "cohortBundleFields": [
+      "resolution",
+      "snapshotBytes",
+      "attestationBytes"
+    ],
+    "resolutionFields": [
+      "chainId",
+      "issuanceRegistry",
+      "registryRuntimeCodehash",
+      "issuerKeyId",
+      "issuerActive",
+      "snapshotId",
+      "snapshotHash",
+      "snapshotContentSha256",
+      "attestationSetSha256",
+      "root",
+      "activatedThroughStatusId",
+      "publishedAt",
+      "revoked",
+      "accepted",
+      "observationBlockNumber",
+      "observationBlockHash",
+      "observationBlockTimestamp",
+      "validUntil",
+      "finalityRuleId",
+      "resolverConfigHash",
+      "reconcilerConfigHash"
+    ],
+    "trustBundle": {
+      "schema": "org.proofofhumanity.zk-holder-status-refresh-trust-bundle/1",
+      "version": 1,
+      "fields": [
+        "schema",
+        "version",
+        "snapshotAttestations",
+        "resolutionAttestations"
+      ],
+      "attestationFields": [
+        "signer",
+        "signature"
+      ],
+      "resolverEip712Domain": {
+        "name": "ProofOfHumanityStatusResolution",
+        "version": "1",
+        "fields": [
+          "chainId",
+          "verifyingContract"
+        ]
+      },
+      "resolverPrimaryType": [
+        "bytes32 configHash",
+        "bytes32 registryRuntimeCodehash",
+        "bytes32 issuerKeyId",
+        "bool issuerActive",
+        "uint32 snapshotId",
+        "bytes32 snapshotHash",
+        "bytes32 root",
+        "uint32 activatedThroughStatusId",
+        "uint32 publishedAt",
+        "bool revoked",
+        "bool accepted",
+        "uint64 observationBlockNumber",
+        "bytes32 observationBlockHash",
+        "uint64 observationBlockTimestamp",
+        "uint64 validUntil",
+        "bytes32 finalityRuleId"
+      ]
+    },
+    "resourceLimits": {
+      "cohortBundles": 32,
+      "totalSnapshotBytes": 67108864,
+      "totalSnapshotChunks": 1000000,
+      "totalAttestationBytes": 131072,
+      "attestationsPerKind": 32,
+      "jsonNestingLevels": 64,
+      "workerMemoryBytes": 268435456,
+      "jobMilliseconds": 60000,
+      "vaultPlaintextBytes": 262144
+    },
+    "publicDownloadSelectors": [
+      "workerAdmittedCohortSet",
+      "snapshotId",
+      "snapshotHash",
+      "snapshotContentSha256"
+    ],
+    "privateWorkerSelectors": [
+      "statusId",
+      "chunkIndex",
+      "bitIndex",
+      "chunkLimbsLittleEndian",
+      "siblingsBottomUp"
+    ],
+    "forbiddenRemoteSelectors": [
+      "statusId",
+      "chunkIndex",
+      "bitIndex",
+      "credentialCommitment",
+      "subject",
+      "merklePath"
+    ],
+    "networkAfterDecrypt": false,
+    "progressAfterDecrypt": false,
+    "cas": {
+      "input": "priorVaultSha256",
+      "hash": "sha256-rfc8785-entire-portable-credential-vault",
+      "returned": false,
+      "commit": "atomic-old-or-complete-new"
+    },
+    "result": {
+      "schema": "org.proofofhumanity.zk-holder-private-status-refresh-result/1",
+      "version": 1,
+      "commonFields": [
+        "schema",
+        "version",
+        "jobId",
+        "status"
+      ],
+      "updatedFields": [
+        "replacementVault"
+      ],
+      "unchangedFields": [],
+      "failedFields": [
+        "code"
+      ],
+      "failureCodes": [
+        "INVALID_REQUEST",
+        "PROFILE_REJECTED",
+        "VAULT_REJECTED",
+        "SNAPSHOT_REJECTED",
+        "CREDENTIAL_UNUSABLE",
+        "RESOURCE_LIMIT",
+        "CANCELLED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL_ERROR"
+      ]
+    }
+  },
+  "frozenPublicSignalNames": [
+    "layoutVersion",
+    "circuitIdHi",
+    "circuitIdLo",
+    "issuerKeyIdHi",
+    "issuerKeyIdLo",
+    "activeRootHi",
+    "activeRootLo",
+    "policyHashHi",
+    "policyHashLo",
+    "presentationBindingHashHi",
+    "presentationBindingHashLo",
+    "nullifierScopeHashHi",
+    "nullifierScopeHashLo",
+    "scopedNullifier",
+    "subject",
+    "result",
+    "credentialEpoch",
+    "statusEpoch"
+  ],
+  "forbiddenPayloadKeys": [
+    "issuerSecretScalar",
+    "nonceScalar",
+    "nonceCounter",
+    "auxiliaryRandomness",
+    "challengeField",
+    "challengeScalar",
+    "directionsBottomUp",
+    "duplicateKey",
+    "rawNullifier"
+  ],
+  "migrationCases": [
+    {
+      "change": "same-profile-status-root",
+      "operation": "refresh-private-witness",
+      "reissue": false,
+      "authorizedNow": true
+    },
+    {
+      "change": "passkey-or-vault-key-rotation",
+      "operation": "rewrap-or-reseal",
+      "reissue": false,
+      "authorizedNow": true
+    },
+    {
+      "change": "preallocation-slot-epoch-race",
+      "operation": "discard-unsigned-candidate-recommit-and-repeat-passport-binding",
+      "reissue": false,
+      "authorizedNow": true
+    },
+    {
+      "change": "reference-or-unknown-payload",
+      "operation": "first-production-issuance-only-if-duplicate-key-unused",
+      "reissue": true,
+      "authorizedNow": true
+    },
+    {
+      "change": "allocated-issuer-key-rotation",
+      "operation": "blocked-pending-ratified-registry-supersession-and-nullifier-continuity",
+      "reissue": true,
+      "authorizedNow": false
+    },
+    {
+      "change": "allocated-status-slot-or-epoch",
+      "operation": "blocked-pending-ratified-registry-supersession-and-nullifier-continuity",
+      "reissue": true,
+      "authorizedNow": false
+    },
+    {
+      "change": "allocated-passport-attribute-correction",
+      "operation": "blocked-pending-ratified-registry-supersession-and-nullifier-continuity",
+      "reissue": true,
+      "authorizedNow": false
+    },
+    {
+      "change": "allocated-cryptographic-profile-or-payload-schema",
+      "operation": "blocked-pending-versioned-profile-and-ratified-registry-supersession",
+      "reissue": true,
+      "authorizedNow": false
+    },
+    {
+      "change": "public-signal-layout",
+      "operation": "blocked-pending-new-layout-circuit-and-ratified-registry-supersession",
+      "reissue": true,
+      "authorizedNow": false
+    }
+  ]
+}

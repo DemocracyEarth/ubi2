@@ -1,0 +1,35 @@
+name: v2-vault-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
+      - "fixtures/v2-identity/production-vault-status-v1.json"
+      - "packages/sdk/src/zk-production-vault-status-contract.test.ts"
+      - "package.json"
+      - ".github/workflows/v2-vault-contract.yml"
+  pull_request:
+    paths:
+      - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
+      - "fixtures/v2-identity/production-vault-status-v1.json"
+      - "packages/sdk/src/zk-production-vault-status-contract.test.ts"
+      - "package.json"
+      - ".github/workflows/v2-vault-contract.yml"
+  workflow_dispatch:
+
+jobs:
+  contract:
+    name: private payload + refresh contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:v2-vault-contract
+      - run: pnpm --filter @ubi2/sdk typecheck

@@ -226,11 +226,12 @@ and v2 proof generation are not enabled yet.
   verifier configuration through a short-lived EIP-712 authorization. A capability-authenticated refresh now
   recovers slot/epoch/expiry races for the transitional pre-commitment flow without retaining the raw Self
   nullifier or extending the original ten-minute verification window; the pinned holder-reference commitment
-  candidate binds slot/epoch and therefore requires a separate recorded race-resolution decision. Bridge plus
-  allocation costs 140,108 local gas. On-chain/native passport proof verification, the production
-  issuer-authentication envelope, public snapshot
-  builder/distribution, mobile proving, alternate hash/proof-system, production ceremony and target-chain gas,
-  transport/privacy hardening, and the final ADR remain. The raw
+  candidate binds slot/epoch; ADR-0013 later selects recommit/rebind for a losing pre-allocation race. Bridge plus
+  allocation costs 140,108 local gas. ADR-0014 now ratifies the issuer-authenticated production vault payload and
+  private all-cohort depth-24 witness refresh contract without changing the frozen 18 signals; allocated
+  reissuance remains blocked pending a separate registry supersession/nullifier-continuity decision. On-chain/native
+  passport proof verification, public snapshot builder/distribution, runtime payload/refresh implementation,
+  mobile proving, production ceremony and target-chain gas, and independent audits remain. The raw
   five-input arkworks fixture now verifies through the EVM BN254 precompiles at a pinned 230,657 gas with a
   2,211-byte runtime. A fail-closed governance prototype also pins additive circuit IDs/verifier codehashes and
   issuer-scoped monotonic roots with explicit overlap/revocation and irreversible retirement. Both remain
@@ -267,9 +268,10 @@ and v2 proof generation are not enabled yet.
   to production. An expiring one-shot SDK handoff now generates holder material,
   binds synthetic issuance evidence and seals an explicitly non-presentable reference payload through the
   encrypted vault; live persistence remains disabled. Independent hosting, real externally verified timestamp and
-  provider-independence receipts, observed host attestations/actions and real paging/drills, production commitment
-  and issuer-authentication ratification,
-  the slot/epoch race decision and canonical testnet evidence remain.
+  provider-independence receipts, observed host attestations/actions and real paging/drills, production
+  payload/refresh implementation, allocated-credential supersession, and canonical testnet evidence remain.
+  ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
+  for implementation only.
   A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain evidence
   required for production, verifies exact live codehashes plus timelocked ownership, and emits only unsubmitted
   governance calldata; no current candidate satisfies that admission gate.

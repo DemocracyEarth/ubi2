@@ -137,10 +137,13 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   pinned at 140,108 local gas. The exact slot/epoch-bound Poseidon holder-commitment candidate, Rust/WASM reference
   vector and sanitized live-receipt transcript are pinned without a public-interface change or production-profile
   ratification. An expiring one-shot reference handoff now generates holder material, binds the transcript and
-  seals only a hard-gated non-presentable synthetic payload through the encrypted vault. Remaining: resolve the
-  commitment versus slot/epoch-refresh decision, ratify the production
-  commitment and issuer-authentication envelope,
-  on-chain/native passport proof verification, independently hosted snapshot operators and real paging/drills,
+  seals only a hard-gated non-presentable synthetic payload through the encrypted vault. ADR-0013 subsequently
+  ratifies the cryptographic profile and recommit/rebind slot-race rule. ADR-0014 now ratifies, with internal
+  QA/security/privacy/reliability approval, the separate issuer-authenticated production payload and private
+  all-cohort depth-24 witness refresh contract while preserving all 18 signals. Allocated reissuance is explicitly
+  blocked pending registry supersession and scoped-nullifier continuity. Remaining: implement and gate that exact
+  payload/refresh Worker, on-chain/native passport proof verification, independently hosted snapshot operators and
+  real paging/drills,
   mobile, alternate
   hash/proof-system,
   production ceremony/target-chain gas,
@@ -176,7 +179,7 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
   per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
   circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.
-  Independent ratification, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
+  Production activation, attribute circuits, corrected-host testnet redeploy, timelocked ownership, mobile and
   target-chain measurements, production ceremony and audits remain.
 - **ZKID-V2-T2 · architect/protocol/security** — one-time issuance and uniqueness foundation. *Accepts:* issuance
   keys and authorities are additive/retirable; contract authorities are codehash-pinned; status slots are assigned
