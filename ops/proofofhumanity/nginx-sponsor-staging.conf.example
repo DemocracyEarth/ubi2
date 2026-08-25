@@ -1,0 +1,56 @@
+# `http {}` scope. These are distributed ingress quotas; the application limits
+# remain defense in depth. Empty map keys bypass the non-matching method's zone.
+map $request_method $poh_sponsor_post_key {
+    default "";
+    POST $binary_remote_addr;
+}
+map $request_method $poh_sponsor_get_key {
+    default "";
+    GET $binary_remote_addr;
+}
+limit_req_zone $poh_sponsor_post_key zone=poh_sponsor_post:10m rate=2r/m;
+limit_req_zone $poh_sponsor_get_key zone=poh_sponsor_get:10m rate=12r/m;
+limit_conn_zone $binary_remote_addr zone=poh_sponsor_connections:10m;
+
+upstream poh_staging_node {
+    server 127.0.0.1:3000;
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    server_name staging.proofofhumanity.example;
+
+    # Supply the deployment's reviewed TLS configuration here.
+    ssl_certificate /etc/ssl/poh-staging/fullchain.pem;
+    ssl_certificate_key /etc/ssl/poh-staging/key.pem;
+
+    location = /api/sponsored-mint {
+        limit_except GET POST { deny all; }
+        limit_req zone=poh_sponsor_post burst=2 nodelay;
+        limit_req zone=poh_sponsor_get burst=4 nodelay;
+        limit_conn poh_sponsor_connections 2;
+        limit_req_status 429;
+        limit_conn_status 429;
+        client_max_body_size 1k;
+
+        proxy_pass http://poh_staging_node;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # Never append a caller-provided forwarding chain. The app deliberately
+        # uses the first X-Forwarded-For value for its source quota.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+    }
+
+    location / {
+        proxy_pass http://poh_staging_node;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+    }
+}

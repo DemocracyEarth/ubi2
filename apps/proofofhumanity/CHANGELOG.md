@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a Base Sepolia sponsored-mint staging profile with trusted-proxy quotas, a stateful
+  reserve/overfunding/native-spend monitor (including OP Stack L1 fees), a secret-safe encrypted-
+  keystore rehearsal, recoverable receipt verification, and checked-in live unfunded-account evidence.
 - Add testnet-only sponsored PoH minting to the proof-bound credential account, with a separate
   server-only transaction signer, explicit testnet allowlist, capability/voucher/contract binding,
   process-local quotas and one-use locks, gas/fee/balance controls, recoverable versioned receipt
