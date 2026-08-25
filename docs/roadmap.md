@@ -257,15 +257,18 @@ and v2 proof generation are not enabled yet.
   finalized-RPC ingestion, content-addressed EIP-712 envelopes and two-party root reconciliation are now implemented
   as reference tooling. A deployable single-writer operator, immutable artifact server, third-RPC fleet gate,
   end-to-end immutable retrieval check, non-overwriting offline-verifiable evidence bundle, reviewed-config trust
-  binding, intrinsic restart/withholding/divergence evidence gate, systemd/drill runbooks and a secretless
-  three-finalized-RPC deployment/topology preflight and a preflight-chained, secretless per-host source/executable/
-  keystore attestation are implemented. The
+  binding, intrinsic restart/withholding/divergence evidence gate, systemd/drill runbooks, a secretless
+  three-finalized-RPC deployment/topology preflight, a preflight-chained secretless per-host source/executable/
+  keystore attestation, and a strict offline-reproducible manifest binding exactly two ready host records to
+  authoritative timestamp and provider-independence receipt references are implemented. The manifest rejects
+  secret-bearing inputs and explicitly makes no live-readiness or external-receipt-authenticity claim. The
   versioned holder-commitment candidate, Rust/WASM reference generator and sanitized SDK issuance transcript are
   pinned without changing public signals, ABI or status format and without promoting the measured Poseidon profile
   to production. An expiring one-shot SDK handoff now generates holder material,
   binds synthetic issuance evidence and seals an explicitly non-presentable reference payload through the
-  encrypted vault; live persistence remains disabled. Independent hosting, externally anchored timestamps, observed
-  host attestations/actions and real paging/drills, production commitment and issuer-authentication ratification,
+  encrypted vault; live persistence remains disabled. Independent hosting, real externally verified timestamp and
+  provider-independence receipts, observed host attestations/actions and real paging/drills, production commitment
+  and issuer-authentication ratification,
   the slot/epoch race decision and canonical testnet evidence remain.
   A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain evidence
   required for production, verifies exact live codehashes plus timelocked ownership, and emits only unsubmitted

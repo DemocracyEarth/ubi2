@@ -3,6 +3,7 @@ export * from "./artifact";
 export * from "./config";
 export * from "./drills";
 export * from "./evidence";
+export * from "./external-anchor";
 export * from "./fleet";
 export * from "./host-attestation";
 export * from "./operator";

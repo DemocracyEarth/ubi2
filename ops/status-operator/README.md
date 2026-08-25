@@ -135,6 +135,49 @@ excludes RPC URLs, every filesystem path, subprocess errors and all secret conte
 observation by that process; separately prove the named hosts, volumes and providers are physically independent,
 and anchor both evidence hashes and capture times in an authoritative external system.
 
+## Strict external-anchor manifest
+
+After both host records verify, obtain one authoritative timestamp receipt for each host-evidence SHA-256 and one
+provider-independence receipt for the exact public topology subject. The package does not contact either authority.
+It computes the topology subject locally and then binds already-issued public receipt references into a strict,
+non-overwriting manifest:
+
+```shell
+pnpm --filter @ubi2/status-operator start -- provider-independence-subject \
+  --preflight /var/lib/ubi2-status-evidence/canonical-testnet/preflight.json
+
+pnpm --filter @ubi2/status-operator start -- build-anchor-manifest \
+  --preflight /var/lib/ubi2-status-evidence/canonical-testnet/preflight.json \
+  --host-a /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a.json \
+  --host-b /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-b.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json \
+  --references /var/lib/ubi2-status-evidence/canonical-testnet/external-anchor-references.json \
+  --manifest /var/lib/ubi2-status-evidence/canonical-testnet/external-anchor-manifest.json
+
+pnpm --filter @ubi2/status-operator start -- verify-anchor-manifest \
+  --input /var/lib/ubi2-status-evidence/canonical-testnet/external-anchor-manifest.json \
+  --preflight /var/lib/ubi2-status-evidence/canonical-testnet/preflight.json \
+  --host-a /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-a.json \
+  --host-b /var/lib/ubi2-status-evidence/canonical-testnet/host-reconciler-b.json \
+  --operator-a /etc/ubi2/status-operator/reconciler-a.json \
+  --operator-b /etc/ubi2/status-operator/reconciler-b.json
+```
+
+Copy [`external-anchor-references.example.json`](external-anchor-references.example.json) and replace every fixture.
+Each reference requires a canonical public HTTPS receipt URL, its SHA-256, the issuing authority's public label,
+canonical issue time and the exact subject SHA-256. URLs with credentials, query strings, fragments, nonstandard
+ports, IP literals, local hostnames or root-only paths fail closed. The two timestamp receipts and the independence
+receipt must use distinct URLs and hashes. Never paste an access token into a URL or place a receipt password,
+private inventory, RPC URL, local path or secret material in the references file.
+
+`intrinsicEvidenceValid: true` proves only that exactly two `ready: true` host records verify against their configs
+and the same `ready: true` preflight, and that their public hashes/topology digest match the three receipt references.
+The tool intentionally returns `liveReadinessClaimed: false` and lists receipt authenticity as external. A human or
+separate verifier must validate each receipt with its authority and confirm its public URL still serves bytes whose
+SHA-256 matches the manifest. Missing hosts, files, public receipts, receipt-verification procedures or topology
+inventory are blockers; do not create placeholder production evidence or call the canonical testnet ready.
+
 ## Independent fleet gate
 
 Install [`fleet.example.json`](fleet.example.json) only on a third monitoring host. Its two `baseUrl` values must be

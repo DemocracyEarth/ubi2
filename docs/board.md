@@ -168,8 +168,11 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   publisher at each of three finalized RPC views before archiving a secretless non-overwriting report. A separate
   per-host gate now requires that public preflight, checks the reviewed commit/clean tracked tree, actual executable
   hashes, private local-file permissions, secret-file separation and public keystore address, and emits only
-  secretless non-overwriting evidence. Physical independence and authoritative timestamps remain external. No
-  hosted canonical-testnet bundle, real page acknowledgement or completed drill is claimed yet.
+  secretless non-overwriting evidence. A strict non-overwriting manifest now binds exactly two ready host records
+  to that same preflight plus two timestamp-receipt references and one public-topology provider-independence receipt;
+  it excludes local/secret inputs, verifies offline and explicitly denies live readiness. Receipt authenticity,
+  physical independence and authoritative timestamps remain external. No hosted canonical-testnet bundle, real
+  external receipt, page acknowledgement or completed drill is claimed yet.
   A release-owned production-profile gate now binds audited source/setup/runtime artifacts, mobile evidence and
   per-chain gas/integration reports to exact deployed codehashes and timelocked ownership before emitting any
   circuit-registration or proof-path activation calldata. It approves no current research or candidate profile.

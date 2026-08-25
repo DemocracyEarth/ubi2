@@ -134,14 +134,18 @@ No production deployment is authorized by this pre-deployment implementation.
   state across all three RPC paths, and archives a secretless non-overwriting report. A transaction-free per-host
   attestation now requires that public preflight to be ready, pins its checksum, and fail-closed checks the reviewed
   commit, clean tracked source, executable hashes, private config/keystore/password permissions, secret-file
-  separation and public signer address without archiving paths or errors. Physical independence and authoritative
-  timestamps remain external; no canonical testnet host or completed drill is claimed yet.
+  separation and public signer address without archiving paths or errors. A strict external-anchor manifest now
+  requires exactly two ready host records against that same preflight, one authoritative timestamp receipt reference
+  per host and a provider-independence receipt bound to the public topology digest. It excludes local/secret inputs,
+  reproduces offline and always denies a live-readiness claim because receipt authenticity remains external. No
+  canonical testnet host, external receipt or completed drill is claimed yet.
 - The local Cancun allocation and first snapshot-publication writes are pinned at 129,886 and 103,407 gas. They
   exclude passport-proof verification and Poseidon tree construction and are not target-chain budgets.
 
 ## Next implementation slice
 
-Capture and externally anchor both host attestations against one observed canonical-testnet preflight, then run the
+When canonical-testnet infrastructure is available, capture both host attestations against one observed preflight,
+obtain and independently verify the three public receipts required by the external-anchor manifest, then run the
 packaged reconciler instances and fleet gate on three independent trust paths, connect real paging to non-ready
 fleet reports, and capture restart/withholding/divergence drills. The holder-side
 commitment candidate and sanitized receipt transcript are now pinned as reference tooling in

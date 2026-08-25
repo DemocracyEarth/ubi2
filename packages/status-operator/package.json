@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx src/status-operator.test.ts && tsx src/readiness.test.ts && tsx src/host-attestation.test.ts",
+    "test": "tsx src/status-operator.test.ts && tsx src/readiness.test.ts && tsx src/host-attestation.test.ts && tsx src/external-anchor.test.ts",
     "test:cast": "tsx src/cast-adapter.test.ts",
     "start": "tsx src/cli.ts"
   },
