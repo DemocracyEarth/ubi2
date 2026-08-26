@@ -157,7 +157,7 @@ jobs:
           fi
       - run: pnpm -r build
       - run: pnpm -r typecheck
-      - name: TypeScript SDK + V2 cross-lane contract tests
+      - name: TypeScript SDK tests
         run: pnpm --filter @ubi2/sdk test
       - name: Packed-status operator tests
         run: pnpm --filter @ubi2/status-operator test
