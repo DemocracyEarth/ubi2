@@ -141,7 +141,9 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   ratifies the cryptographic profile and recommit/rebind slot-race rule. ADR-0014 now ratifies, with internal
   QA/security/privacy/reliability approval, the separate issuer-authenticated production payload and private
   all-cohort depth-24 witness refresh contract while preserving all 18 signals. Allocated reissuance is explicitly
-  blocked pending registry supersession and scoped-nullifier continuity. Remaining: implement and gate that exact
+  blocked pending registry supersession and scoped-nullifier continuity. Its byte-exact contract vector now runs
+  in the standard SDK test command and required interfaces CI job, so cross-lane drift fails before merge.
+  Remaining: implement and gate that exact
   payload/refresh Worker, on-chain/native passport proof verification, independently hosted snapshot operators and
   real paging/drills,
   mobile, alternate

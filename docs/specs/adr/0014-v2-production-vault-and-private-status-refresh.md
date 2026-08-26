@@ -478,6 +478,11 @@ tests, atomic storage tests, restore/recovery drills and adversarial browser tes
 security and independent production audits. Until those gates and a `production-approved` circuit manifest are
 green, product code must reject this schema for live persistence and presentation.
 
+The contract vector test is part of the standard `@ubi2/sdk` test command and the required interfaces CI job.
+Any payload, issuer-authentication, status-witness, refresh-envelope, migration-rule or frozen-signal drift must
+therefore fail the same gate used by holder, circuit, status and release changes; the standalone
+`pnpm test:v2-vault-contract` command remains available for focused review.
+
 ## Consequences
 
 The holder lane now has one exact target and can implement without inventing a signature or witness envelope. Root

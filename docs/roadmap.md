@@ -271,7 +271,9 @@ and v2 proof generation are not enabled yet.
   provider-independence receipts, observed host attestations/actions and real paging/drills, production
   payload/refresh implementation, allocated-credential supersession, and canonical testnet evidence remain.
   ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
-  for implementation only.
+  for implementation only. The byte-exact ADR-0014 production vault/private-refresh contract vector is now part
+  of the standard SDK test command and required interfaces CI job, so cross-lane schema, migration and frozen-signal
+  drift fails before merge.
   A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain evidence
   required for production, verifies exact live codehashes plus timelocked ownership, and emits only unsubmitted
   governance calldata; no current candidate satisfies that admission gate.
