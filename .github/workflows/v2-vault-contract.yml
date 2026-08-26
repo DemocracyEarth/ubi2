@@ -42,4 +42,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:v2-vault-contract
+      - run: pnpm test:v2-holder-refresh
       - run: pnpm --filter @ubi2/sdk typecheck

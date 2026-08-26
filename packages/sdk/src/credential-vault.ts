@@ -72,6 +72,14 @@ export interface PasskeyPrfUnlock {
   prfOutput: Uint8Array;
 }
 
+export type CredentialVaultPayloadTransform =
+  | { status: "unchanged" }
+  | { status: "updated"; payload: unknown };
+
+export type CredentialVaultPayloadTransformResult =
+  | { status: "unchanged" }
+  | { status: "updated"; vault: PortableCredentialVault };
+
 function webCrypto(): Crypto {
   if (!globalThis.crypto?.subtle || !globalThis.crypto.getRandomValues) {
     throw new Error("Web Crypto is required for the private credential vault");
@@ -389,6 +397,44 @@ export async function unlockCredentialVault(vaultValue: unknown, unlock: Passkey
   try {
     return await decryptPayload(vault, vaultKey);
   } finally {
+    vaultKey.fill(0);
+  }
+}
+
+/**
+ * Decrypt, transform and reseal a payload under the existing vault key.
+ *
+ * This is intended for isolated Workers. The callback must not retain, log or
+ * transmit the decrypted value. An update replaces only the complete payload
+ * ciphertext with a fresh AES-GCM IV; vault id, binding and key slots are kept
+ * byte-for-byte semantically unchanged.
+ */
+export async function transformCredentialVaultPayload(
+  vaultValue: unknown,
+  unlock: PasskeyPrfUnlock,
+  transform: (payload: unknown) => Promise<CredentialVaultPayloadTransform> | CredentialVaultPayloadTransform,
+): Promise<CredentialVaultPayloadTransformResult> {
+  if (typeof transform !== "function") throw new Error("credential vault transform callback is required");
+  const vault = parseCredentialVault(vaultValue);
+  const vaultKey = await unwrapVaultKey(vault, unlock);
+  let payload: unknown;
+  try {
+    payload = await decryptPayload(vault, vaultKey);
+    const transformed = await transform(payload);
+    payload = undefined;
+    if (!transformed || typeof transformed !== "object" || Array.isArray(transformed)) {
+      throw new Error("credential vault transform returned an invalid result");
+    }
+    if (transformed.status === "unchanged" && Object.keys(transformed).length === 1) {
+      return { status: "unchanged" };
+    }
+    if (transformed.status !== "updated" || Object.keys(transformed).sort().join(",") !== "payload,status") {
+      throw new Error("credential vault transform returned an invalid result");
+    }
+    const replacement = await encryptPayload(transformed.payload, vault.vaultId, vault.binding, vaultKey);
+    return { status: "updated", vault: { ...vault, payload: replacement } };
+  } finally {
+    payload = undefined;
     vaultKey.fill(0);
   }
 }
