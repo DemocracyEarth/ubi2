@@ -124,6 +124,10 @@ testnet targets in a deployment. A malformed address also fails closed to zero.
    defense in depth for the required single replica, not a substitute for ingress controls.
 6. Health-check `/`, `/verify`, and `/developers`; alert on restarts and 5xx responses from the API routes.
 
+The checked-in Base Sepolia staging profile, trusted-proxy example, spend/reserve monitor, and
+secret-safe live rehearsal procedure are in
+[`ops/proofofhumanity/SPONSORED_MINT_STAGING.md`](../../ops/proofofhumanity/SPONSORED_MINT_STAGING.md).
+
 Serverless and multi-replica targets become valid only after the callback handoff is moved to a
 reviewed shared encrypted store. That is an application release gate, not a contract blocker.
 

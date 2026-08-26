@@ -1,0 +1,96 @@
+{
+  "schema": "poh-sponsored-mint-staging-rollout-evidence",
+  "version": 1,
+  "capturedAt": "2026-08-25T23:00:36.727Z",
+  "mainnetEnabled": false,
+  "scope": {
+    "chainId": 84532,
+    "chainName": "Base Sepolia",
+    "contract": "0x06BD253009F74ad934A4DaEac133b153d9Fe8029",
+    "explorer": "https://sepolia.basescan.org"
+  },
+  "accounts": {
+    "sponsor": "0x912Ea311b4dCF8D3663C8C125Dc1Ca896519252E",
+    "recipient": "0x2A40253b10B885c418dFA98f85774Ba2F3657b36",
+    "issuer": "0x1D6cB99ff20223d730Ae5D4680EC5154B7FdAefe",
+    "owner": "0x26250e47500943464290A77ae3508a3001d9B69d",
+    "rolesDistinct": true
+  },
+  "fundingReceipt": {
+    "status": "success",
+    "transactionHash": "0x0c882bbd57494974b363f39fcb220b64d33f1d3f119980b30c6b237b98da239f",
+    "blockHash": "0x164af30d0d3eac89991cd201139b000b9b892b3a4ec8b5333e4bc91422939185",
+    "blockNumber": "45964967",
+    "from": "0x26250e47500943464290A77ae3508a3001d9B69d",
+    "to": "0x912Ea311b4dCF8D3663C8C125Dc1Ca896519252E",
+    "valueWei": "2000000000000000",
+    "explorerUrl": "https://sepolia.basescan.org/tx/0x0c882bbd57494974b363f39fcb220b64d33f1d3f119980b30c6b237b98da239f"
+  },
+  "monitorBefore": {
+    "throughBlock": "45965142",
+    "sponsorBalanceWei": "2000000000000000",
+    "sponsorNonce": 0,
+    "dailySpendWei": "0",
+    "alerts": [],
+    "ok": true
+  },
+  "rehearsal": {
+    "schema": "poh-sponsored-mint-rehearsal-evidence",
+    "version": 1,
+    "claim": "Live-chain sponsor-path rehearsal; not evidence of a human passport scan.",
+    "voucherSource": "synthetic-staging-voucher-no-passport-claim",
+    "voucherEpoch": 229,
+    "recoveryMode": true,
+    "preflight": {
+      "blockNumber": "45965183",
+      "recipientBalanceWei": "0",
+      "recipientNonce": 0,
+      "recipientCode": "0x",
+      "recipientCredentialBalance": "0",
+      "sponsorBalanceWei": "2000000000000000",
+      "accountVoucherBindingValidated": true
+    },
+    "receipt": {
+      "schema": "poh-sponsored-mint-receipt",
+      "version": 1,
+      "status": "confirmed",
+      "event": "minted",
+      "recipient": "0x2A40253b10B885c418dFA98f85774Ba2F3657b36",
+      "tokenId": "2",
+      "transactionHash": "0xa0ea1148bc4a04f1d3b466599237751689af949faeda068914e4ffe4ff904275",
+      "blockHash": "0x0d819a8a0c478d2884491a3acff00267453b9912194cb8bad213389a61549107",
+      "blockNumber": "45965184",
+      "confirmedAt": "2026-08-25T22:57:36.000Z",
+      "explorerUrl": "https://sepolia.basescan.org/tx/0xa0ea1148bc4a04f1d3b466599237751689af949faeda068914e4ffe4ff904275"
+    },
+    "postState": {
+      "blockNumber": "45965184",
+      "recipientBalanceWei": "0",
+      "recipientNonce": 0,
+      "recipientCredentialBalance": "1",
+      "sponsorBalanceWei": "1999067492789010",
+      "sponsorSpendWei": "932507210990",
+      "receiptGasCostWei": "932507210990",
+      "rollupL1FeeWei": "10415210990"
+    }
+  },
+  "monitorAfter": {
+    "throughBlock": "45965261",
+    "sponsorBalanceWei": "1999067492789010",
+    "sponsorNonce": 1,
+    "dailySpendWei": "932507210990",
+    "transactionsObserved": 1,
+    "transactionHashes": [
+      "0xa0ea1148bc4a04f1d3b466599237751689af949faeda068914e4ffe4ff904275"
+    ],
+    "minimumReserveWei": "1000000000000000",
+    "maximumBalanceWei": "5000000000000000",
+    "dailySpendLimitWei": "500000000000000",
+    "alerts": [],
+    "ok": true
+  },
+  "limitations": [
+    "The staging voucher uses a synthetic unique nullifier and does not claim a completed Self passport scan.",
+    "A separate human-in-the-loop Self staging acceptance check is required before user rollout."
+  ]
+}
