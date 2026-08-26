@@ -83,13 +83,13 @@
     },
     {
       "path": "packages/sdk/package.json",
-      "sha256": "46ad0d8e24ce40e05395aee9693256c58a140245f2eb941292b0336905147056",
-      "bytes": 1423
+      "sha256": "6518b30758a99393b39c60d6a3a9751f1d020c8f44020dca489e4fa1b2f4901b",
+      "bytes": 1475
     },
     {
       "path": "packages/sdk/src/index.ts",
-      "sha256": "c030d33a299cd132a5d2d538faa2ac275c33931d3ea4a08ca42d8c132f3a2c36",
-      "bytes": 6655
+      "sha256": "44b60892f98f748b43cbc46e7dde48dfc5d9c2e948c8a778c77b890bffc1da51",
+      "bytes": 6753
     },
     {
       "path": "packages/sdk/src/zk-holder-profile-browser-runtime.test.ts",
