@@ -6,14 +6,24 @@ on:
     paths:
       - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
       - "fixtures/v2-identity/production-vault-status-v1.json"
-      - "packages/sdk/src/zk-production-vault-status-contract.test.ts"
+      - "fixtures/v2-identity/interface-v1.json"
+      - "fixtures/v2-production-crypto/artifact-index-v1.json"
+      - "fixtures/v2-production-crypto/parameters-v1.json"
+      - "fixtures/v2-production-crypto/public-signals-v1.json"
+      - "fixtures/v2-production-crypto/reference-vector-v1.json"
+      - "packages/sdk/src/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   pull_request:
     paths:
       - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
       - "fixtures/v2-identity/production-vault-status-v1.json"
-      - "packages/sdk/src/zk-production-vault-status-contract.test.ts"
+      - "fixtures/v2-identity/interface-v1.json"
+      - "fixtures/v2-production-crypto/artifact-index-v1.json"
+      - "fixtures/v2-production-crypto/parameters-v1.json"
+      - "fixtures/v2-production-crypto/public-signals-v1.json"
+      - "fixtures/v2-production-crypto/reference-vector-v1.json"
+      - "packages/sdk/src/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   workflow_dispatch:

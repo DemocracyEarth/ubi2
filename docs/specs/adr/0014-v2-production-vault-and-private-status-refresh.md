@@ -478,6 +478,12 @@ tests, atomic storage tests, restore/recovery drills and adversarial browser tes
 security and independent production audits. Until those gates and a `production-approved` circuit manifest are
 green, product code must reject this schema for live persistence and presentation.
 
+The required `v2-vault-contract` CI workflow watches every fixture and holder-runtime source consumed by the
+contract test. It also pins the payload profile and reference circuit to the holder Worker constants and asserts
+that the current browser engine fails closed for this production schema. Payload, issuer-authentication,
+status-witness, refresh-envelope, migration-rule, frozen-signal or holder-boundary drift must therefore pass the
+focused `pnpm test:v2-vault-contract` gate before merge.
+
 ## Consequences
 
 The holder lane now has one exact target and can implement without inventing a signature or witness envelope. Root

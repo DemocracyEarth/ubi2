@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parseZkHolderIssuanceTranscript } from "./zk-holder-credential";
+import { ZkHolderProfileBrowserWasmEngine } from "./zk-holder-profile-browser-runtime";
+import {
+  ZK_HOLDER_PROFILE_ID,
+  ZK_HOLDER_PROFILE_SANCTIONS_CIRCUIT_ID,
+} from "./zk-holder-profile-prover-worker";
 
 const repository = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -67,6 +72,28 @@ assert.equal(payload.version, 1);
 const profile = record(payload.profile, "profile");
 exactKeys(profile, ["profileId", "parameterManifestSha256"], "profile");
 assert.equal(profile.profileId, reference.profileId);
+assert.equal(profile.profileId, ZK_HOLDER_PROFILE_ID, "vault profile must match the holder Worker");
+const referenceSignals = reference.publicSignals as string[];
+assert.equal(
+  fieldHex((BigInt(referenceSignals[1]) << 128n) | BigInt(referenceSignals[2])),
+  ZK_HOLDER_PROFILE_SANCTIONS_CIRCUIT_ID,
+  "reference circuit must match the holder Worker",
+);
+
+const browserEngine = new ZkHolderProfileBrowserWasmEngine(() => {
+  throw new Error("the contract boundary test must not load synthetic WASM");
+});
+assert.equal(browserEngine.admitsProductionProfile(), false);
+assert.equal(
+  browserEngine.acceptsVaultBinding("production", String(payload.schema)),
+  false,
+  "the current browser build must fail closed for the production vault schema",
+);
+assert.throws(
+  () => browserEngine.parseVaultPayload("production", payload),
+  /production vault schema is not admitted/u,
+);
+browserEngine.destroy();
 const parameterBytes = await readFile(
   `${repository}/fixtures/v2-production-crypto/parameters-v1.json`,
 );
