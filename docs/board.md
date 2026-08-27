@@ -144,8 +144,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   blocked pending registry supersession and scoped-nullifier continuity. Its required dedicated CI gate now
   watches every byte-exact contract input, pins the payload profile and reference circuit to the holder Worker,
   and preserves the browser's fail-closed production boundary until that implementation is admitted.
-  Remaining: implement and gate that exact
-  payload/refresh Worker, on-chain/native passport proof verification, independently hosted snapshot operators and
+  The exact strict payload parser and one-job all-cohort refresh Worker/client boundary now validate every public
+  cohort before decrypt, transfer and zero the PRF copy, reseal only the witness under a fresh IV, and expose a
+  whole-vault atomic-CAS contract with adversarial privacy/resource/race tests. Its checked-in engine remains
+  production-disabled; circuit-native Poseidon/Schnorr/path WASM and browser/recovery admission evidence are still
+  required. Remaining: implement and gate that audited cryptographic engine, on-chain/native passport proof
+  verification, independently hosted snapshot operators and
   real paging/drills,
   mobile, alternate
   hash/proof-system,

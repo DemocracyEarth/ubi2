@@ -267,9 +267,13 @@ and v2 proof generation are not enabled yet.
   pinned without changing public signals, ABI or status format and without promoting the measured Poseidon profile
   to production. An expiring one-shot SDK handoff now generates holder material,
   binds synthetic issuance evidence and seals an explicitly non-presentable reference payload through the
-  encrypted vault; live persistence remains disabled. Independent hosting, real externally verified timestamp and
-  provider-independence receipts, observed host attestations/actions and real paging/drills, production
-  payload/refresh implementation, allocated-credential supersession, and canonical testnet evidence remain.
+  encrypted vault; live persistence remains disabled. The strict ADR-0014 payload parser and one-job all-cohort
+  Worker/client boundary now implement pre-decrypt trust validation, transferred PRF lifetime, fresh-IV
+  witness-only resealing, bounded privacy errors and whole-envelope atomic CAS with adversarial resource/race tests;
+  the checked-in engine and browser remain production-disabled. Independent hosting, real externally verified
+  timestamp and provider-independence receipts, observed host attestations/actions and real paging/drills, the
+  audited circuit-native refresh engine/browser packaging, allocated-credential supersession, and canonical
+  testnet evidence remain.
   ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
   for implementation only. Its required dedicated CI gate watches every byte-exact contract input, pins the
   payload profile and reference circuit to the holder Worker, and preserves the browser's fail-closed production

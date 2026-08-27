@@ -10,6 +10,9 @@
   [security](../../reports/security-v2-vault-status-adr.md),
   [privacy](../../reports/privacy-v2-vault-status-adr.md) and
   [reliability](../../reports/reliability-v2-vault-status-adr.md)
+- **Boundary implementation evidence:** [QA](../../reports/qa-v2-holder-private-status-refresh.md),
+  [security](../../reports/security-v2-holder-private-status-refresh.md) and
+  [reliability](../../reports/reliability-v2-holder-private-status-refresh.md)
 - **Parents:** [ADR-0012](0012-v2-cross-lane-interface-freeze.md),
   [ADR-0013](0013-v2-production-cryptographic-profile.md) and
   [ADR-0011](0011-dynamic-status-freshness.md)
@@ -483,6 +486,16 @@ contract test. It also pins the payload profile and reference circuit to the hol
 that the current browser engine fails closed for this production schema. Payload, issuer-authentication,
 status-witness, refresh-envelope, migration-rule, frozen-signal or holder-boundary drift must therefore pass the
 focused `pnpm test:v2-vault-contract` gate before merge.
+
+The SDK now implements the strict payload parser, the exact one-job all-cohort Worker/client protocol, pre-decrypt
+snapshot and threshold-attestation validation, transferred PRF lifetime, bounded result codes, fresh-IV payload
+resealing and a whole-envelope atomic-CAS storage interface. The focused `pnpm test:v2-holder-refresh` suite uses
+the contract vector and real EIP-712 recovery to exercise two complete cohorts, invalid-decoy rejection before
+decrypt, resource bounds, unchanged/equivocation behavior, zeroization and concurrent key-slot races. Poseidon
+root/path construction plus credential-commitment and Baby-Jubjub Schnorr verification remain behind the required
+locally bundled cryptographic engine. The only checked-in generic engine rejects production admission, and the
+browser prover continues to reject the production schema. Supplying an audited production WASM engine, locking
+down its content-addressed browser Worker and completing browser/recovery/audit gates remain separate work.
 
 ## Consequences
 
