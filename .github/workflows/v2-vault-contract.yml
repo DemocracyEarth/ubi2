@@ -8,10 +8,15 @@ on:
       - "fixtures/v2-identity/production-vault-status-v1.json"
       - "fixtures/v2-identity/interface-v1.json"
       - "fixtures/v2-production-crypto/artifact-index-v1.json"
+      - "fixtures/v2-production-crypto/holder-refresh-engine*"
       - "fixtures/v2-production-crypto/parameters-v1.json"
       - "fixtures/v2-production-crypto/public-signals-v1.json"
       - "fixtures/v2-production-crypto/reference-vector-v1.json"
       - "packages/sdk/src/**"
+      - "packages/sdk/browser/**"
+      - "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts"
+      - "tools/v2-crypto-bench/src/lib.rs"
+      - "tools/v2-holder-refresh-engine/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   pull_request:
@@ -20,10 +25,15 @@ on:
       - "fixtures/v2-identity/production-vault-status-v1.json"
       - "fixtures/v2-identity/interface-v1.json"
       - "fixtures/v2-production-crypto/artifact-index-v1.json"
+      - "fixtures/v2-production-crypto/holder-refresh-engine*"
       - "fixtures/v2-production-crypto/parameters-v1.json"
       - "fixtures/v2-production-crypto/public-signals-v1.json"
       - "fixtures/v2-production-crypto/reference-vector-v1.json"
       - "packages/sdk/src/**"
+      - "packages/sdk/browser/**"
+      - "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts"
+      - "tools/v2-crypto-bench/src/lib.rs"
+      - "tools/v2-holder-refresh-engine/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   workflow_dispatch:
@@ -43,4 +53,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:v2-vault-contract
       - run: pnpm test:v2-holder-refresh
+      - run: pnpm test:v2-holder-refresh-wasm
       - run: pnpm --filter @ubi2/sdk typecheck
+      - name: Typecheck content-addressed Worker entry
+        run: >-
+          pnpm exec tsc --noEmit --target ES2022 --module ESNext
+          --moduleResolution Bundler --lib ES2022,DOM --strict --skipLibCheck
+          tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts

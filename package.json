@@ -9,7 +9,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test:v2-vault-contract": "node --import tsx packages/sdk/src/zk-production-vault-status-contract.test.ts",
-    "test:v2-holder-refresh": "node --import tsx packages/sdk/src/zk-holder-private-status-refresh.test.ts"
+    "test:v2-holder-refresh": "node --import tsx packages/sdk/src/zk-holder-private-status-refresh.test.ts",
+    "test:v2-holder-refresh-wasm": "node --import tsx packages/sdk/src/zk-holder-private-status-refresh-browser-runtime.test.ts"
   },
   "packageManager": "pnpm@10.2.1"
 }

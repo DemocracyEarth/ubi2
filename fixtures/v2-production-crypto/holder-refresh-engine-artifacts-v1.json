@@ -1,0 +1,39 @@
+{
+  "schema": "org.proofofhumanity.v2-holder-refresh-engine-artifacts/1",
+  "profileId": "org.proofofhumanity.v2-crypto.groth16-bn254-poseidon/1",
+  "parameterManifestSha256": "b328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb",
+  "engine": "circuit-native-poseidon-bn254-babyjubjub-packed-status-depth24/1",
+  "build": "isolated tools/v2-holder-refresh-engine crate; wasm-pack 0.15.0; wasm-bindgen 0.2.125; Rust 1.96.0; release; browser feature; locked; wasm-opt",
+  "productionApproved": false,
+  "admissionBlocker": "independent cryptographic, browser-isolation and reproducibility audit required",
+  "worker": {
+    "sourcePath": "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts",
+    "sourceSha256": "ae57f9b95b7f53fc20bf77c3a77b103a37815b65232fff408e0458dd10ad008d",
+    "sourceBytes": 3772,
+    "requiredRuntimeBasename": "holder-private-status-refresh-worker.ae57f9b95b7f53fc20bf77c3a77b103a37815b65232fff408e0458dd10ad008d.js",
+    "sameOriginOnly": true,
+    "disposablePerJob": true,
+    "networkLockedBeforeVaultDecrypt": true,
+    "progressEvents": false
+  },
+  "artifacts": [
+    {
+      "role": "wasmModule",
+      "path": "fixtures/v2-production-crypto/holder-refresh-engine.42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee.wasm",
+      "sha256": "42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee",
+      "bytes": 326583
+    },
+    {
+      "role": "wasmBindings",
+      "path": "packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.js",
+      "sha256": "f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb",
+      "bytes": 8622
+    },
+    {
+      "role": "wasmBindingTypes",
+      "path": "packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.d.ts",
+      "sha256": "40d5031485d2a4dd6191df7e392faa3095dcbec47dad037e1f71b4f54d717862",
+      "bytes": 2057
+    }
+  ]
+}

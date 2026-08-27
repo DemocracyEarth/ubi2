@@ -470,4 +470,33 @@ assert.deepEqual(cancelled.status === "failed" && cancelled.code, "CANCELLED");
 assert.equal(workerCreated, false);
 assert.equal(cancelledRequest.unlock.prfOutput.byteLength, 32);
 
+// Mid-flight cancellation detaches the public/private transfer set, kills the
+// disposable Worker and returns no partial result even when the Worker stalls.
+const inFlightRequest = await request();
+const inFlightAbort = new AbortController();
+let inFlightTerminated = false;
+let inFlightPosted = false;
+const stalledWorker: ZkHolderPrivateStatusRefreshWorkerLike = {
+  onmessage: null,
+  onerror: null,
+  postMessage(message, transfer = []) {
+    structuredClone(message, { transfer: [...transfer] });
+    inFlightPosted = true;
+  },
+  terminate() { inFlightTerminated = true; },
+};
+const inFlight = new ZkHolderPrivateStatusRefreshClient(() => stalledWorker).refresh(
+  inFlightRequest,
+  { signal: inFlightAbort.signal },
+);
+assert.equal(inFlightPosted, true);
+inFlightAbort.abort();
+const inFlightCancelled = await inFlight;
+assert.deepEqual(inFlightCancelled.status === "failed" && inFlightCancelled.code, "CANCELLED");
+assert.equal(inFlightTerminated, true);
+assert.equal(inFlightRequest.unlock.prfOutput.byteLength, 0);
+assert(inFlightRequest.cohortBundles.every(({ snapshotBytes, attestationBytes }) =>
+  snapshotBytes.byteLength === 0 && attestationBytes.byteLength === 0
+));
+
 console.log("zk holder private status refresh: parser + all-cohort privacy + CAS + limits PASS");

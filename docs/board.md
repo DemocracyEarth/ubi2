@@ -146,9 +146,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   and preserves the browser's fail-closed production boundary until that implementation is admitted.
   The exact strict payload parser and one-job all-cohort refresh Worker/client boundary now validate every public
   cohort before decrypt, transfer and zero the PRF copy, reseal only the witness under a fresh IV, and expose a
-  whole-vault atomic-CAS contract with adversarial privacy/resource/race tests. Its checked-in engine remains
-  production-disabled; circuit-native Poseidon/Schnorr/path WASM and browser/recovery admission evidence are still
-  required. Remaining: implement and gate that audited cryptographic engine, on-chain/native passport proof
+  whole-vault atomic-CAS contract with adversarial privacy/resource/race tests. A pinned circuit-native Rust/WASM
+  candidate now verifies the exact Poseidon commitment/root/path and Baby-Jubjub subgroup/key-id/Schnorr relations,
+  derives real sparse paths, enforces measured memory and cancellation, and ships behind a hash-pinned same-origin
+  Worker which masks network capabilities before decrypt. Both independent-audit/production bits remain false.
+  Remaining: independent cryptographic/browser reproducibility audits, real Chromium/mobile and recovery evidence,
+  on-chain/native passport proof
   verification, independently hosted snapshot operators and
   real paging/drills,
   mobile, alternate
