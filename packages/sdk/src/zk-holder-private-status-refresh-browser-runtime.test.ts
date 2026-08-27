@@ -6,7 +6,7 @@ import init, {
   validatePackedStatusSnapshot,
   verifyProductionVaultPayload,
   wasmLinearMemoryBytes,
-} from "../browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js";
+} from "../browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.js";
 import { BN254_SCALAR_FIELD } from "./zk-identity-encoding";
 import { parseZkIdentityPackedStatusSnapshot } from "./zk-identity-status-snapshot";
 import {

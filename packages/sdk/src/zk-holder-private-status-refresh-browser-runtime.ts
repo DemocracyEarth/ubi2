@@ -25,12 +25,12 @@ import {
 import { ZK_HOLDER_PROFILE_ID } from "./zk-holder-profile-prover-worker";
 
 export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_WASM_SHA256 =
-  "bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27" as const;
-export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_WASM_BYTES = 1_150_052 as const;
+  "42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee" as const;
+export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_WASM_BYTES = 326_583 as const;
 export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_BINDINGS_SHA256 =
-  "42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c" as const;
+  "f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb" as const;
 export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_WORKER_SOURCE_SHA256 =
-  "d67b8e68336bdb81099eb1c8417c026d13f45b4f65b623ec8d00864dca42ba6c" as const;
+  "ae57f9b95b7f53fc20bf77c3a77b103a37815b65232fff408e0458dd10ad008d" as const;
 export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_WORKER_NAME =
   "ubi2-v2-holder-private-status-refresh" as const;
 export const ZK_HOLDER_PRIVATE_STATUS_REFRESH_INDEPENDENT_AUDIT_APPROVED = false as const;

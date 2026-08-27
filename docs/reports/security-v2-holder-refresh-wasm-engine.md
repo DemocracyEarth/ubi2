@@ -19,6 +19,8 @@ No open Critical/High finding remains in this implementation slice.
   canonical snapshot reconstruction and stored root.
 - The same-origin Worker fetches the immutable WASM without credentials/referrer, checks length and SHA-256 before
   compilation, and locks ordinary network capabilities before private payload verification/path derivation.
+- The holder engine is isolated from the frozen sanctions ceremony crate, preventing this package from silently
+  rewriting that circuit's source provenance.
 - Worker source contains no logging/progress path. The existing boundary continues to collapse every decrypted
   cryptographic/status failure to `CREDENTIAL_UNUSABLE` and terminates the Worker.
 - Defense in depth keeps admission closed twice: the SDK's compile-time independent-audit constant is false and

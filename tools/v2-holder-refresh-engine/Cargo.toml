@@ -1,0 +1,30 @@
+[package]
+name = "ubi2-v2-holder-refresh-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+browser = ["dep:js-sys", "dep:wasm-bindgen"]
+
+[workspace]
+
+[dependencies]
+ark-bn254 = { version = "=0.5.0", default-features = false, features = ["curve", "std"] }
+ark-crypto-primitives = { version = "=0.5.0", default-features = false, features = ["crh", "sponge", "std"] }
+ark-ec = { version = "=0.5.0", default-features = false }
+ark-ed-on-bn254 = { version = "=0.5.0", default-features = false, features = ["std"] }
+ark-ff = { version = "=0.5.0", default-features = false }
+circuit = { package = "ubi2-v2-crypto-bench", path = "../v2-crypto-bench" }
+js-sys = { version = "=0.3.102", optional = true }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+wasm-bindgen = { version = "=0.2.125", optional = true }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

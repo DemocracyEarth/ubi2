@@ -498,7 +498,9 @@ the contract vector and real EIP-712 recovery to exercise two complete cohorts, 
 decrypt, resource bounds, unchanged/equivocation behavior, zeroization, cancellation and concurrent key-slot
 races. A content-addressed Rust/WASM candidate now implements the circuit-native Poseidon credential/root/path
 relations and Baby-Jubjub on-curve, nonzero, prime-subgroup, key-id and Schnorr checks behind that exact engine
-interface. Its same-origin Worker package hash-checks the WASM before use, reports real linear memory and
+interface. It is built from the isolated `tools/v2-holder-refresh-engine` crate so holder packaging cannot mutate
+the frozen sanctions-ceremony source manifest. Its same-origin Worker package hash-checks the WASM before use,
+reports real linear memory and
 irreversibly masks ordinary fetch/socket/import capabilities before decrypt. Real WASM tests cover the ratified
 vector, signature mutation, the order-two subgroup point, sparse-path/root reconstruction, resource limits and
 cancellation. Both the engine's compile-time independent-audit bit and the packaged Worker's production policy bit

@@ -1,34 +1,6 @@
-/* @ts-self-types="./ubi2_v2_crypto_bench.d.ts" */
+/* @ts-self-types="./ubi2_v2_holder_refresh_engine.d.ts" */
 
 /**
- * Browser-local commitment entry point. The JSON source is consumed in WASM
- * memory and the returned descriptor contains no private fields.
- * @param {string} source
- * @returns {string}
- */
-export function buildHolderCredentialCommitment(source) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.buildHolderCredentialCommitment(ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Derive the private depth-24 path wholly inside WASM/Worker memory.
  * @param {string} source
  * @param {number} status_id
  * @returns {string}
@@ -55,137 +27,6 @@ export function buildPackedStatusPath(source, status_id) {
 }
 
 /**
- * @returns {Uint8Array}
- */
-export function generatePackedStatusProvingKey() {
-    const ret = wasm.generatePackedStatusProvingKey();
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v1;
-}
-
-/**
- * @param {number} depth
- * @returns {Uint8Array}
- */
-export function generateRegistryProvingKey(depth) {
-    const ret = wasm.generateRegistryProvingKey(depth);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v1;
-}
-
-/**
- * Reference-only 18-signal proof entry point. The deterministic fixture,
- * toxic-waste setup, proof and verification key stay inside WASM/Worker memory.
- * @returns {string}
- */
-export function proveDynamicStatusReference() {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ret = wasm.proveDynamicStatusReference();
-        var ptr1 = ret[0];
-        var len1 = ret[1];
-        if (ret[3]) {
-            ptr1 = 0; len1 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred2_0 = ptr1;
-        deferred2_1 = len1;
-        return getStringFromWasm0(ptr1, len1);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * @param {Uint8Array} proving_key
- * @returns {string}
- */
-export function provePackedStatus(proving_key) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passArray8ToWasm0(proving_key, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.provePackedStatus(ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * @param {number} depth
- * @param {Uint8Array} proving_key
- * @returns {string}
- */
-export function proveRegistryDepth(depth, proving_key) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passArray8ToWasm0(proving_key, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.proveRegistryDepth(depth, ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Profile-specific holder entry point. Only the exact synthetic credential is
- * accepted until production ceremony artifacts and a production vault schema
- * have passed admission.
- * @param {string} private_credential_json
- * @returns {string}
- */
-export function proveSyntheticHolderProfile(private_credential_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(private_credential_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.proveSyntheticHolderProfile(ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Validate a complete canonical sparse status snapshot and its Poseidon root.
  * @param {string} source
  */
 export function validatePackedStatusSnapshot(source) {
@@ -198,8 +39,6 @@ export function validatePackedStatusSnapshot(source) {
 }
 
 /**
- * ADR-0014 payload verifier. Errors remain inside the disposable Worker and
- * are collapsed to the bounded public failure enum by the TypeScript boundary.
  * @param {string} source
  */
 export function verifyProductionVaultPayload(source) {
@@ -236,10 +75,6 @@ function __wbg_get_imports() {
             const ret = arg0.byteLength;
             return ret;
         },
-        __wbg_now_d2e0afbad4edbe82: function() {
-            const ret = Date.now();
-            return ret;
-        },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
@@ -257,13 +92,8 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./ubi2_v2_crypto_bench_bg.js": import0,
+        "./ubi2_v2_holder_refresh_engine_bg.js": import0,
     };
-}
-
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -276,13 +106,6 @@ function getUint8ArrayMemory0() {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
-}
-
-function passArray8ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 1, 1) >>> 0;
-    getUint8ArrayMemory0().set(arg, ptr / 1);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
@@ -435,7 +258,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('ubi2_v2_crypto_bench_bg.wasm', import.meta.url);
+        module_or_path = new URL('ubi2_v2_holder_refresh_engine_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

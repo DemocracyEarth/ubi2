@@ -14,6 +14,7 @@ No blocking correctness finding remains in this slice.
   Baby-Jubjub challenge/scalar conversion and depth-24 Merkle relation.
 - The ratified ADR-0014 vector verifies through the committed WASM. Credential, Schnorr response and sibling
   mutations reject.
+- The holder engine builds from its own crate; the sanctions circuit source-freeze digest remains byte-exact.
 - Issuer and nonce points require canonical coordinates, on-curve, nonzero and prime-subgroup membership. The
   nonzero Baby-Jubjub order-two point rejects.
 - Full sparse snapshots enforce exact canonical parsing, sorted unique chunks, fail-closed omitted chunks and tail
@@ -25,8 +26,8 @@ No blocking correctness finding remains in this slice.
 
 ## Required validation
 
-- `cargo test --release --locked holder_refresh_engine::tests` — PASS
-- `cargo clippy --release --locked --all-targets -- -D warnings` — PASS
+- `cargo test --release --locked --manifest-path tools/v2-holder-refresh-engine/Cargo.toml` — PASS
+- `cargo clippy --release --locked --manifest-path tools/v2-holder-refresh-engine/Cargo.toml --all-targets -- -D warnings` — PASS
 - `pnpm test:v2-holder-refresh` — PASS
 - `pnpm test:v2-holder-refresh-wasm` — PASS
 - `pnpm --filter @ubi2/sdk typecheck` — PASS

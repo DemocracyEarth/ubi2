@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn sparse_snapshot_validation_and_path_are_exact() {
-        let snapshot = include_str!("../fixtures/packed-status-snapshot.json");
+        let snapshot = include_str!("../../v2-crypto-bench/fixtures/packed-status-snapshot.json");
         validate_packed_status_snapshot_json(snapshot).unwrap();
         let path: Value =
             serde_json::from_str(&build_packed_status_path_json(snapshot, 2).unwrap()).unwrap();

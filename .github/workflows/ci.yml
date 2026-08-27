@@ -66,28 +66,36 @@ jobs:
         with:
           node-version: 22
       - name: Format
-        run: cargo fmt -- --check
+        run: |
+          cargo fmt -- --check
+          cargo fmt --manifest-path ../v2-holder-refresh-engine/Cargo.toml -- --check
       - name: Lint
-        run: cargo clippy --release --locked --all-targets -- -D warnings
+        run: |
+          cargo clippy --release --locked --all-targets -- -D warnings
+          cargo clippy --release --locked --manifest-path ../v2-holder-refresh-engine/Cargo.toml --all-targets -- -D warnings
       - name: Compile browser prover bridge
-        run: cargo build --release --locked --target wasm32-unknown-unknown --lib --features browser
+        run: |
+          cargo build --release --locked --target wasm32-unknown-unknown --lib --features browser
+          cargo build --release --locked --manifest-path ../v2-holder-refresh-engine/Cargo.toml --target wasm32-unknown-unknown --lib --features browser
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
       - name: Build bridge and verify content-addressed holder profile and refresh WASM
         run: |
-          wasm-pack build . --target web --out-dir browser/pkg --release -- --features browser --locked
+          wasm-pack build ../v2-holder-refresh-engine --target web --out-dir browser/pkg --release -- --features browser --locked
           echo "1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e  ../../fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm" | sha256sum --check
-          echo "bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27  ../../fixtures/v2-production-crypto/holder-refresh-engine.bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27.wasm" | sha256sum --check
+          echo "42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee  ../../fixtures/v2-production-crypto/holder-refresh-engine.42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee.wasm" | sha256sum --check
           # wasm-opt output is not byte-stable across its macOS and Linux binaries. The
           # source bridge must compile here, while the separately content-addressed bytes
           # are hash-checked above and executed by the real-WASM vault contract gate.
-          cmp browser/pkg/ubi2_v2_crypto_bench.js ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js
-          cmp browser/pkg/ubi2_v2_crypto_bench.d.ts ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.d.ts
-          echo "42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c  ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js" | sha256sum --check
-          echo "ef26b563a629934261bf3d135863acb5e472ec946a088befc8361fa519e3f42d  ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.d.ts" | sha256sum --check
+          cmp ../v2-holder-refresh-engine/browser/pkg/ubi2_v2_holder_refresh_engine.js ../../packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.js
+          cmp ../v2-holder-refresh-engine/browser/pkg/ubi2_v2_holder_refresh_engine.d.ts ../../packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.d.ts
+          echo "f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb  ../../packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.js" | sha256sum --check
+          echo "40d5031485d2a4dd6191df7e392faa3095dcbec47dad037e1f71b4f54d717862  ../../packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.d.ts" | sha256sum --check
       - name: Relation tests and pinned constraint budgets
-        run: cargo test --release --locked
+        run: |
+          cargo test --release --locked
+          cargo test --release --locked --manifest-path ../v2-holder-refresh-engine/Cargo.toml
       - name: Generate and verify every Groth16 candidate proof
         run: >-
           cargo test --release --locked

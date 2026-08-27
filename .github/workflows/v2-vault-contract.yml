@@ -15,8 +15,8 @@ on:
       - "packages/sdk/src/**"
       - "packages/sdk/browser/**"
       - "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts"
-      - "tools/v2-crypto-bench/src/holder_refresh_engine.rs"
       - "tools/v2-crypto-bench/src/lib.rs"
+      - "tools/v2-holder-refresh-engine/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   pull_request:
@@ -32,8 +32,8 @@ on:
       - "packages/sdk/src/**"
       - "packages/sdk/browser/**"
       - "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts"
-      - "tools/v2-crypto-bench/src/holder_refresh_engine.rs"
       - "tools/v2-crypto-bench/src/lib.rs"
+      - "tools/v2-holder-refresh-engine/**"
       - "package.json"
       - ".github/workflows/v2-vault-contract.yml"
   workflow_dispatch:
