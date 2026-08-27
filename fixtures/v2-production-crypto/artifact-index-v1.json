@@ -8,8 +8,13 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "3019b70bdf5d20688eb4801cec915acd4178dc03d8480403e329cb6ae8346b5c",
-      "bytes": 10476
+      "sha256": "f6a04b11330ea8ddd295351c1b70ca86cf7c38dd012cf5dfe4ab3c244b6caba0",
+      "bytes": 11256
+    },
+    {
+      "path": ".github/workflows/v2-vault-contract.yml",
+      "sha256": "99349579bc62a89666beb606accb72a7b944d526ebf03d5084a208506c54e5da",
+      "bytes": 2576
     },
     {
       "path": "docs/specs/adr/0012-v2-cross-lane-interface-freeze.md",
@@ -20,6 +25,11 @@
       "path": "docs/specs/adr/0013-v2-production-cryptographic-profile.md",
       "sha256": "bb2226e31f324bf60fc10f9453718d8d82ccdc785fc099d4a28def85b7d54bb4",
       "bytes": 9051
+    },
+    {
+      "path": "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md",
+      "sha256": "4195b92b9cdeb0f67859fcba0b5e4ce9d8baf9ebbcee542a0a0746f8a93c7d82",
+      "bytes": 35477
     },
     {
       "path": "docs/specs/v2-holder-credential-commitment.md",
@@ -67,6 +77,16 @@
       "bytes": 1061830
     },
     {
+      "path": "fixtures/v2-production-crypto/holder-refresh-engine-artifacts-v1.json",
+      "sha256": "527b2f76c603ef07a45dde5bc7466a8ebd347d95566b66a02a5ac61e2a41077a",
+      "bytes": 1947
+    },
+    {
+      "path": "fixtures/v2-production-crypto/holder-refresh-engine.bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27.wasm",
+      "sha256": "bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27",
+      "bytes": 1150052
+    },
+    {
       "path": "fixtures/v2-production-crypto/parameters-v1.json",
       "sha256": "b328af00b6d2cff39b5796b5abb37019dfaad5952fe23e10ba96913ab2a624bb",
       "bytes": 24831
@@ -82,14 +102,44 @@
       "bytes": 5059
     },
     {
+      "path": "package.json",
+      "sha256": "cceb4ca06f2d5eaf8da08848baea9863e985f228118201451a4c47a73a5f7ae3",
+      "bytes": 711
+    },
+    {
+      "path": "packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.d.ts",
+      "sha256": "ef26b563a629934261bf3d135863acb5e472ec946a088befc8361fa519e3f42d",
+      "bytes": 4059
+    },
+    {
+      "path": "packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js",
+      "sha256": "42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c",
+      "bytes": 13983
+    },
+    {
       "path": "packages/sdk/package.json",
-      "sha256": "6518b30758a99393b39c60d6a3a9751f1d020c8f44020dca489e4fa1b2f4901b",
-      "bytes": 1475
+      "sha256": "461bb0e50f7f73c0b123af880b5d27fdc9c204e61e5f190364e745f1392a1b8e",
+      "bytes": 1543
     },
     {
       "path": "packages/sdk/src/index.ts",
-      "sha256": "44b60892f98f748b43cbc46e7dde48dfc5d9c2e948c8a778c77b890bffc1da51",
-      "bytes": 6753
+      "sha256": "a8931cc5dd491b7442a673c978588d5e7d2063c283cc2f8847dd23bf3d934a10",
+      "bytes": 6821
+    },
+    {
+      "path": "packages/sdk/src/zk-holder-private-status-refresh-browser-runtime.test.ts",
+      "sha256": "b578de526824a6f6a64f2f1ab9b315841c1b003f395240bf01dbb8d8c365f86b",
+      "bytes": 10345
+    },
+    {
+      "path": "packages/sdk/src/zk-holder-private-status-refresh-browser-runtime.ts",
+      "sha256": "9b99d6b17020f2958f2a652ab437b8de9226162c26b86abfb5cfa0583a326ab3",
+      "bytes": 13393
+    },
+    {
+      "path": "packages/sdk/src/zk-holder-private-status-refresh.test.ts",
+      "sha256": "cbcea29f491321e9cacdcbd3dff16995f5d26ff08cd8b9dd67ceb14d84576a55",
+      "bytes": 21973
     },
     {
       "path": "packages/sdk/src/zk-holder-profile-browser-runtime.test.ts",
@@ -152,14 +202,24 @@
       "bytes": 420
     },
     {
+      "path": "tools/v2-crypto-bench/browser/holder-private-status-refresh-worker.ts",
+      "sha256": "d67b8e68336bdb81099eb1c8417c026d13f45b4f65b623ec8d00864dca42ba6c",
+      "bytes": 3772
+    },
+    {
       "path": "tools/v2-crypto-bench/src/holder_credential.rs",
       "sha256": "6cda72a4a517aedf51ee90609eb29f53b74bffd33d4acb7c6eeaa3acb36bdb1c",
       "bytes": 17851
     },
     {
+      "path": "tools/v2-crypto-bench/src/holder_refresh_engine.rs",
+      "sha256": "b17dc6da38d3c6a8f4c410a551ceb69006c41a77a084799a059b1b89d62308c5",
+      "bytes": 22040
+    },
+    {
       "path": "tools/v2-crypto-bench/src/lib.rs",
-      "sha256": "6cfc487c5fc3be11af435fbcf0a91f2b6c30fdc7890680ad58ea22242b94112a",
-      "bytes": 121079
+      "sha256": "91fabbbbdd3de60463098616a0d24df18e2df395a7063d794a2a38babe7b1a89",
+      "bytes": 122540
     },
     {
       "path": "tools/v2-crypto-bench/src/main.rs",

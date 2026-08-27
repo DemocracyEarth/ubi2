@@ -36,6 +36,7 @@ use std::{error::Error, fmt};
 use wasm_bindgen::{prelude::*, JsCast};
 
 mod holder_credential;
+mod holder_refresh_engine;
 mod production_profile;
 mod status_distribution;
 mod status_registry;
@@ -48,6 +49,11 @@ pub use holder_credential::{
     HolderCredentialCommitmentInput, HolderCredentialError, HolderCredentialReferenceVector,
     HOLDER_CREDENTIAL_COMMITMENT_SCHEMA, HOLDER_CREDENTIAL_COMMITMENT_SCHEME,
     HOLDER_CREDENTIAL_INPUT_SCHEMA, HOLDER_CREDENTIAL_PRIVATE_SCHEMA,
+};
+
+pub use holder_refresh_engine::{
+    build_packed_status_path_json, validate_packed_status_snapshot_json,
+    verify_production_vault_payload_json, HolderRefreshEngineError,
 };
 
 pub use production_profile::{
@@ -80,6 +86,31 @@ pub use status_snapshot::{
 #[wasm_bindgen(js_name = buildHolderCredentialCommitment)]
 pub fn build_holder_credential_commitment_wasm(source: &str) -> Result<String, JsValue> {
     holder_credential_commitment_from_json(source)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// ADR-0014 payload verifier. Errors remain inside the disposable Worker and
+/// are collapsed to the bounded public failure enum by the TypeScript boundary.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = verifyProductionVaultPayload)]
+pub fn verify_production_vault_payload_wasm(source: &str) -> Result<(), JsValue> {
+    verify_production_vault_payload_json(source)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Validate a complete canonical sparse status snapshot and its Poseidon root.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = validatePackedStatusSnapshot)]
+pub fn validate_packed_status_snapshot_wasm(source: &str) -> Result<(), JsValue> {
+    validate_packed_status_snapshot_json(source)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Derive the private depth-24 path wholly inside WASM/Worker memory.
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+#[wasm_bindgen(js_name = buildPackedStatusPath)]
+pub fn build_packed_status_path_wasm(source: &str, status_id: u32) -> Result<String, JsValue> {
+    build_packed_status_path_json(source, status_id)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

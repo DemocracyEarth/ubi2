@@ -269,10 +269,14 @@ and v2 proof generation are not enabled yet.
   binds synthetic issuance evidence and seals an explicitly non-presentable reference payload through the
   encrypted vault; live persistence remains disabled. The strict ADR-0014 payload parser and one-job all-cohort
   Worker/client boundary now implement pre-decrypt trust validation, transferred PRF lifetime, fresh-IV
-  witness-only resealing, bounded privacy errors and whole-envelope atomic CAS with adversarial resource/race tests;
-  the checked-in engine and browser remain production-disabled. Independent hosting, real externally verified
+  witness-only resealing, bounded privacy errors and whole-envelope atomic CAS with adversarial resource/race tests.
+  The circuit-native Rust/WASM refresh candidate now verifies the exact Poseidon commitment/root/path and
+  Baby-Jubjub subgroup/key-id/Schnorr relations, derives sparse paths under real memory/cancellation limits and is
+  packaged behind hash-pinned same-origin Worker loading plus pre-decrypt network lockdown; its independent-audit
+  and production bits remain false. Independent hosting, real externally verified
   timestamp and provider-independence receipts, observed host attestations/actions and real paging/drills, the
-  audited circuit-native refresh engine/browser packaging, allocated-credential supersession, and canonical
+  independent cryptographic/browser reproducibility audits, real Chromium/mobile/recovery evidence,
+  allocated-credential supersession, and canonical
   testnet evidence remain.
   ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
   for implementation only. Its required dedicated CI gate watches every byte-exact contract input, pins the

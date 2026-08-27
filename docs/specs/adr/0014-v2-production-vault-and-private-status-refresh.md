@@ -13,6 +13,9 @@
 - **Boundary implementation evidence:** [QA](../../reports/qa-v2-holder-private-status-refresh.md),
   [security](../../reports/security-v2-holder-private-status-refresh.md) and
   [reliability](../../reports/reliability-v2-holder-private-status-refresh.md)
+- **Circuit-native engine evidence:** [QA](../../reports/qa-v2-holder-refresh-wasm-engine.md),
+  [security](../../reports/security-v2-holder-refresh-wasm-engine.md) and
+  [reliability](../../reports/reliability-v2-holder-refresh-wasm-engine.md)
 - **Parents:** [ADR-0012](0012-v2-cross-lane-interface-freeze.md),
   [ADR-0013](0013-v2-production-cryptographic-profile.md) and
   [ADR-0011](0011-dynamic-status-freshness.md)
@@ -32,10 +35,11 @@ learns which public issuance `statusId` belongs to this vault, selects the chunk
 seals the replacement payload. No remote request or host message may be selected by status slot, chunk index, bit
 index, commitment, subject or path.
 
-This ADR ratifies the storage and refresh contracts **for implementation**. It does not implement their runtime
-parser, allow live credential persistence, admit a proving key or verifier, or authorize a production rollout.
-Those remain behind the production-profile gate, independent audits, mobile evidence, recovery testing and the
-normal QA/reliability/security gates.
+This ADR ratifies the storage and refresh contracts **for implementation**. The strict runtime parser, private
+Worker boundary and circuit-native refresh-engine candidate are now implemented, but this decision does not allow
+live credential persistence, admit a proving key or verifier, or authorize a production rollout. Those remain
+behind the production-profile gate, independent audits, mobile evidence, recovery testing and the normal
+QA/reliability/security gates.
 
 ## Context
 
@@ -491,11 +495,16 @@ The SDK now implements the strict payload parser, the exact one-job all-cohort W
 snapshot and threshold-attestation validation, transferred PRF lifetime, bounded result codes, fresh-IV payload
 resealing and a whole-envelope atomic-CAS storage interface. The focused `pnpm test:v2-holder-refresh` suite uses
 the contract vector and real EIP-712 recovery to exercise two complete cohorts, invalid-decoy rejection before
-decrypt, resource bounds, unchanged/equivocation behavior, zeroization and concurrent key-slot races. Poseidon
-root/path construction plus credential-commitment and Baby-Jubjub Schnorr verification remain behind the required
-locally bundled cryptographic engine. The only checked-in generic engine rejects production admission, and the
-browser prover continues to reject the production schema. Supplying an audited production WASM engine, locking
-down its content-addressed browser Worker and completing browser/recovery/audit gates remain separate work.
+decrypt, resource bounds, unchanged/equivocation behavior, zeroization, cancellation and concurrent key-slot
+races. A content-addressed Rust/WASM candidate now implements the circuit-native Poseidon credential/root/path
+relations and Baby-Jubjub on-curve, nonzero, prime-subgroup, key-id and Schnorr checks behind that exact engine
+interface. Its same-origin Worker package hash-checks the WASM before use, reports real linear memory and
+irreversibly masks ordinary fetch/socket/import capabilities before decrypt. Real WASM tests cover the ratified
+vector, signature mutation, the order-two subgroup point, sparse-path/root reconstruction, resource limits and
+cancellation. Both the engine's compile-time independent-audit bit and the packaged Worker's production policy bit
+remain false; the generic disabled engine and browser prover also continue to reject production. Independent
+cryptographic/browser reproducibility audits plus real Chromium, mobile, persistence and recovery evidence remain
+mandatory before admission.
 
 ## Consequences
 

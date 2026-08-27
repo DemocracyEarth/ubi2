@@ -74,10 +74,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
-      - name: Build bridge and verify content-addressed holder profile WASM
+      - name: Build bridge and verify content-addressed holder profile and refresh WASM
         run: |
           wasm-pack build . --target web --out-dir browser/pkg --release -- --features browser --locked
           echo "1a931e60b3bea49c709747906671ea74b60cd1a877d1a8d7bc962db1d6be009e  ../../fixtures/v2-production-crypto/holder-profile-synthetic-v1.wasm" | sha256sum --check
+          cmp browser/pkg/ubi2_v2_crypto_bench_bg.wasm ../../fixtures/v2-production-crypto/holder-refresh-engine.bd919b45eb7fcbfdffe10b460d660467944cdb921c953f00e76ca7d354d3ec27.wasm
+          cmp browser/pkg/ubi2_v2_crypto_bench.js ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js
+          cmp browser/pkg/ubi2_v2_crypto_bench.d.ts ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.d.ts
+          echo "42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c  ../../packages/sdk/browser/holder-refresh-engine-bindings.42ad599db7812a1108c9cb980b6ec68ac71a4050a921d1a271fecd82c3539e9c.js" | sha256sum --check
       - name: Relation tests and pinned constraint budgets
         run: cargo test --release --locked
       - name: Generate and verify every Groth16 candidate proof
