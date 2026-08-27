@@ -1,0 +1,22 @@
+{
+  "name": "@ubi2/holder-browser-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Synthetic Chromium/PWA hardening harness for the V2 private holder refresh boundary.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "start": "node server.mjs",
+    "test:chromium": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ubi2/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22",
+    "typescript": "^5.5.0",
+    "vite": "^6.3.5"
+  }
+}

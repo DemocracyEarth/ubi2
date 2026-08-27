@@ -1,0 +1,13 @@
+{
+  "name": "ubi2 V2 Holder Boundary Harness",
+  "short_name": "Holder Harness",
+  "description": "Synthetic release evidence for the private holder refresh browser boundary.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

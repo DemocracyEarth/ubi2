@@ -273,9 +273,13 @@ and v2 proof generation are not enabled yet.
   The circuit-native Rust/WASM refresh candidate now verifies the exact Poseidon commitment/root/path and
   Baby-Jubjub subgroup/key-id/Schnorr relations, derives sparse paths under real memory/cancellation limits and is
   packaged behind hash-pinned same-origin Worker loading plus pre-decrypt network lockdown; its independent-audit
-  and production bits remain false. Independent hosting, real externally verified
+  and production bits remain false. A production-header Chromium/PWA harness now covers exact Worker/WASM loading,
+  CSP/Trusted Types, malicious service-worker substitution, extension/network boundaries, multi-tab IndexedDB CAS,
+  synthetic crash/restart, authenticated backup restore and throttled emulated-mobile memory/cancellation. Both
+  admission bits remain false. Independent hosting, real externally verified
   timestamp and provider-independence receipts, observed host attestations/actions and real paging/drills, the
-  independent cryptographic/browser reproducibility audits, real Chromium/mobile/recovery evidence,
+  independent cryptographic/browser/source-to-WASM audits, representative physical-mobile evidence and
+  holder-facing WebAuthn/recovery UX,
   allocated-credential supersession, and canonical
   testnet evidence remain.
   ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
@@ -285,7 +289,9 @@ and v2 proof generation are not enabled yet.
   A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain evidence
   required for production, verifies exact live codehashes plus timelocked ownership, and emits only unsubmitted
   governance calldata; no current candidate satisfies that admission gate.
-- **Stage 3 ⬜** — local WASM prover, WebAuthn PRF UX, multi-device E2EE backup and recovery.
+- **Stage 3 🚧** — the production-disabled local WASM refresh harness, atomic IndexedDB vault store and synthetic
+  E2EE backup/recovery drills are implemented. Holder-facing WebAuthn PRF UX, representative physical-mobile
+  proving and multi-device recovery UX remain.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
 
