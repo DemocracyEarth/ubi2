@@ -10,8 +10,10 @@
 
 - Native and WASM paths consume the same canonical snapshot bytes and produce the same fail-closed sparse tree and
   depth-24 witness; no status selector is needed to fetch the public input.
-- The committed WASM, generated binding and Worker source have explicit SHA-256/byte pins. CI rebuilds and byte-
-  compares the WASM under the pinned Rust/wasm-pack toolchain.
+- The committed WASM, generated binding and Worker source have explicit SHA-256/byte pins. CI hash-checks and runs
+  the committed WASM, rebuilds the bridge under the pinned Rust/wasm-pack toolchain and byte-compares the generated
+  JavaScript/TypeScript interface. It deliberately does not claim a cross-OS `wasm-opt` byte reproduction: the
+  optimizer's macOS and Linux binaries diverge, and independent source-to-WASM reproduction remains a release gate.
 - The adapter rejects substituted artifact identities and linear memory above 256 MiB. Existing host/Worker byte,
   chunk, JSON-depth and 60-second job limits remain unchanged.
 - Pre-start abort performs no load. An abort while loading suppresses the circuit call. Mid-flight host abort

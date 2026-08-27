@@ -8,8 +8,8 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "f6a04b11330ea8ddd295351c1b70ca86cf7c38dd012cf5dfe4ab3c244b6caba0",
-      "bytes": 11256
+      "sha256": "c7c0c2d872d1d65f271b0a29b7aa873ee39134b680789166e465252bd8991290",
+      "bytes": 11799
     },
     {
       "path": ".github/workflows/v2-vault-contract.yml",
