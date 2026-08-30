@@ -60,7 +60,8 @@ const CONTRACTS_DIR = path.resolve(__dirname, "../../../contracts");
 const ARTIFACT = path.join(CONTRACTS_DIR, "out/ProofOfHumanity.sol/ProofOfHumanity.json");
 
 const RPC = "http://127.0.0.1:8545";
-const CHAIN_ID = 11_155_111;
+// The local node emulates the exact Quick Launch EIP-712 chain domain. It never contacts Base Sepolia.
+const CHAIN_ID = 84_532;
 
 // Well-known Anvil accounts (NOT secrets).
 const OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex; // acct #0
@@ -349,8 +350,8 @@ async function main() {
 
     // 8) Exercise the real Next route: capability binding, no-body contract, idempotency and quotas.
     console.log("[8/9] sponsored-mint HTTP route binding + idempotency + abuse controls …");
-    process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL = RPC;
-    process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_POH = poh;
+    process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL = RPC;
+    process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH = poh;
     process.env.POH_SPONSOR_PRIVATE_KEY = RELAYER_KEY;
     process.env.POH_SPONSOR_TESTNET_CHAIN_IDS = String(CHAIN_ID);
     process.env.POH_SPONSOR_MAX_GAS = "350000";
@@ -373,7 +374,7 @@ async function main() {
       vouchers: [
         {
           chainId: CHAIN_ID,
-          name: "Ethereum Sepolia",
+          name: "Base Sepolia local fixture",
           pohAddress: poh,
           voucher: serializeVoucher(routeVoucher),
           signature: routeSignature,
@@ -431,7 +432,7 @@ async function main() {
       vouchers: [
         {
           chainId: CHAIN_ID,
-          name: "Ethereum Sepolia",
+          name: "Base Sepolia local fixture",
           pohAddress: poh,
           voucher: serializeVoucher(tamperedVoucher),
           signature: await signVoucher(ISSUER_KEY, tamperedVoucher, CHAIN_ID, poh),
@@ -480,7 +481,7 @@ async function main() {
         },
       }),
     );
-    assertEq(mainnetResponse.status, 403, "mainnet sponsorship fails closed before spending");
+    assertEq(mainnetResponse.status, 400, "mainnet sponsorship fails closed before spending");
 
     let withinSourceLimit = true;
     for (let requestNumber = 0; requestNumber < 28; requestNumber += 1) {
@@ -504,7 +505,7 @@ async function main() {
       vouchers: [
         {
           chainId: CHAIN_ID,
-          name: "Ethereum Sepolia",
+          name: "Base Sepolia local fixture",
           pohAddress: poh,
           voucher: serializeVoucher(concurrentVoucher),
           signature: await signVoucher(ISSUER_KEY, concurrentVoucher, CHAIN_ID, poh),

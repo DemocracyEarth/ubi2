@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: "/",
     name: "Proof of Humanity",
     short_name: "PoH",
-    description: "A private, passkey-protected Proof of Humanity holder and testnet minting app.",
+    description: "Self passport proof, soulbound humanity mint, and private predicates on Base Sepolia.",
     start_url: "/#mint",
     scope: "/",
     display: "standalone",

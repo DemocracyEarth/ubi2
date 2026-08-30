@@ -4,7 +4,6 @@ import {
   decodeDisclosureRequest,
   encodeDisclosureProfile,
   encodeDisclosureRequest,
-  encodeV2IssuanceRequest,
   verificationConfigFor,
   type DisclosureProfile,
 } from "../app/lib/disclosure-profile";
@@ -14,13 +13,9 @@ import {
   verificationGuidance,
   type VerificationStateInput,
 } from "../app/predicates/verify-state";
-import {
-  countrySetCommitment,
-  normalizeZkIdentityPolicy,
-  predicateDescriptorHash,
-  zkIdentityPolicyHash,
-} from "@ubi2/sdk";
-import { CHAINS, isPredicateDeployed } from "../app/config";
+import { predicateDescriptorHash } from "@ubi2/sdk";
+import { isPredicateDeployed } from "../app/config";
+import { QUICK_LAUNCH_CHAINS } from "../app/quick-launch";
 
 for (const profile of [
   { age: null, nationality: false },
@@ -44,29 +39,6 @@ for (const profile of [
 assert.equal(decodeDisclosureProfile("poh-predicates-v1:19:1"), null);
 assert.equal(decodeDisclosureRequest("poh-predicates-v1:18:1:guessable"), null);
 
-const commitment = "0x00000000000000000000000000000000000000000000000000000000075bcd15" as const;
-const v2Profile = { age: 21, nationality: true } satisfies DisclosureProfile;
-const issuanceRequest = encodeV2IssuanceRequest(
-  v2Profile,
-  "0123456789abcdef0123456789abcdef",
-  commitment,
-);
-assert.deepEqual(decodeDisclosureRequest(issuanceRequest), {
-  profile: v2Profile,
-  session: "0123456789abcdef0123456789abcdef",
-  credentialCommitment: commitment,
-});
-assert.deepEqual(decodeDisclosureRequest(Buffer.from(issuanceRequest).toString("hex")), {
-  profile: v2Profile,
-  session: "0123456789abcdef0123456789abcdef",
-  credentialCommitment: commitment,
-});
-assert.equal(
-  decodeDisclosureRequest(
-    "poh-v2-issuance:18:1:0123456789abcdef0123456789abcdef:0000000000000000000000000000000000000000000000000000000000000000",
-  ),
-  null,
-);
 assert.deepEqual(verificationConfigFor({ age: 21, nationality: true }), { minimumAge: 21, ofac: true });
 assert.deepEqual(verificationConfigFor({ age: null, nationality: false }), { ofac: true });
 
@@ -121,27 +93,8 @@ assert.equal(guidance({ contextValid: false }).title, "Name this verification co
 assert.equal(guidance({ consumerValid: false }).title, "Enter the receiving app or contract");
 assert.equal(guidance({}).canIssue, true);
 
-const v2Policy = normalizeZkIdentityPolicy({
-  kind: "country-set",
-  attribute: "nationality",
-  operator: "in",
-  setId: "mercosur:2026-08",
-  setRoot: countrySetCommitment({ setId: "mercosur:2026-08", members: ["ARG", "BOL", "BRA", "PRY", "URY"] }),
-});
-assert.equal(v2Policy.kind, "country-set");
-assert.match(zkIdentityPolicyHash(v2Policy), /^0x[0-9a-f]{64}$/);
+assert.equal(QUICK_LAUNCH_CHAINS.length, 1);
+assert.equal(QUICK_LAUNCH_CHAINS[0].chainId, 84532);
+assert.ok(isPredicateDeployed(QUICK_LAUNCH_CHAINS[0]));
 
-const ethereumSepolia = CHAINS.find((chain) => chain.chainId === 11155111);
-const baseSepolia = CHAINS.find((chain) => chain.chainId === 84532);
-const celoSepolia = CHAINS.find((chain) => chain.chainId === 11142220);
-const worldSepolia = CHAINS.find((chain) => chain.chainId === 4801);
-const robinhoodTestnet = CHAINS.find((chain) => chain.chainId === 46630);
-const ethereumMainnet = CHAINS.find((chain) => chain.chainId === 1);
-assert.ok(ethereumSepolia && isPredicateDeployed(ethereumSepolia));
-assert.ok(baseSepolia && isPredicateDeployed(baseSepolia));
-assert.ok(celoSepolia && isPredicateDeployed(celoSepolia));
-assert.ok(worldSepolia && isPredicateDeployed(worldSepolia));
-assert.ok(robinhoodTestnet && isPredicateDeployed(robinhoodTestnet));
-assert.ok(ethereumMainnet && !isPredicateDeployed(ethereumMainnet));
-
-console.log("predicate product: disclosures + country selector + guidance + deployments PASS");
+console.log("predicate product: disclosures + country selector + guidance + Base Sepolia release PASS");

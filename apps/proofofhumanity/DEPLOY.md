@@ -1,178 +1,125 @@
-# Deploying proofofhumanity.org
+# Deploying PoH Quick Launch v1
 
-`@ubi2/proofofhumanity` is a **Next.js 15 (App Router) SSR app**, not a static export.
-The issuer API routes (`/api/self-verify`, `/api/predicate`)
-sign vouchers/attestations with `ISSUER_PRIVATE_KEY` **server-side**, so it must run on a
-Node host (a container or `next start`). A pure static
-host (S3/CloudFront-only, IPFS/Pinata) can **not** serve the issuer — that only becomes an
-option after a holder-side ZK prover removes the v1 server signer.
+`@ubi2/proofofhumanity` is a Next.js 15 SSR application. Quick Launch is deliberately limited to:
 
-The optional v2 Self issuance path uses a separate `ZK_SELF_ISSUANCE_AUTHORITY_PRIVATE_KEY`.
-It authenticates a short-lived, proof-bound authorization for an immutable bridge; it is not the
-deployer, v1 voucher issuer, private-credential issuer key, or registry owner. The raw Self
-nullifier is transformed in memory into a registry-scoped duplicate key and is never returned in
-the v2 response, logged, stored, or sent on-chain. This remains a transitional off-chain Self trust
-boundary until the exact production passport proof can be verified on-chain.
+- Self proof verification;
+- issuer-signed humanity voucher;
+- wallet or sponsored soulbound mint;
+- issuer-attested age, nationality, and sanctions-clear predicates;
+- Base Sepolia (`84532`) only.
 
-The optional `/api/sponsored-mint` path is **testnet-only** and uses a third, isolated
-`POH_SPONSOR_PRIVATE_KEY`. It pays gas but has no credential authority: recipient, nullifier,
-epoch, contract and issuer signature are loaded from the short-lived address/session record created
-by the verified Self callback. The request accepts only a chain id and no body. A configured public
-testnet allowlist, live RPC chain/bytecode/issuer checks, separate-role checks, gas/fee/reserve caps,
-per-source/account/capability limits, one in-flight transaction per chain, and a three-attempt ceiling
-all fail closed before spending. Mainnet and local chain classifications are rejected even if an
-operator puts their ids in the allowlist.
+Mainnet, additional testnets, demo credentials, the v2 issuance bridge, custom predicate provers, and
+the experimental holder vault are not release features. No code merge authorizes a mainnet deployment.
 
-After submission the API returns either pending transaction evidence or a confirmed, versioned
-receipt containing the chain, contract, proof-bound recipient, token id, transaction/block hashes,
-and the matching `HumanityMinted`/`HumanityRefreshed` event. The server verifies those fields plus
-`ownerOf`, `tokenOfNullifier`, `isValid`, and `locked` at the receipt block. The browser re-reads the
-same ownership and soulbound state. Neither response contains the sponsor private key.
+## Runtime topology
 
-The current Self callback handoff is an intentionally bounded, 10-minute, process-local store. A
-first production release therefore runs **one sticky Node replica**. Do not deploy this version to
-autoscaling/serverless multi-instance infrastructure: a phone callback and the browser poll may hit
-different workers. Before horizontal scaling, select and review a shared encrypted store; derived
-claims are sensitive data even though raw passport proofs are never stored.
-The same process-local record backs the v2 refresh endpoint. A `PATCH` may replace a stale
-slot/epoch/deadline authorization but preserves the original record expiry; it cannot make a verified
-grant live longer than ten minutes. The address plus 128-bit session header is a bearer capability.
+Run one sticky Node process behind TLS. `/api/self-verify` hands its result to the browser through a
+bounded, ten-minute, process-local address/session store. Autoscaling or multiple replicas can send the
+phone callback and browser poll to different processes and are therefore unsupported until a reviewed
+shared encrypted store exists.
 
-Contract deployment is a separate release step. Complete the testnet-only
-[`contracts/PHASE2.md`](../../contracts/PHASE2.md) gate before configuring any deployed addresses
-here. Its deployer uses encrypted Foundry keystores; do not reuse the app's raw server-side issuer
-secret for contract deployment.
+The issuer route needs the server-only `ISSUER_PRIVATE_KEY`. Inject it from the deployment secret
+manager; never put it in a build argument, image layer, `NEXT_PUBLIC_*`, committed env file, terminal
+transcript, or support message. The public address derived from that secret must be
+`0x1D6cB99ff20223d730Ae5D4680EC5154B7FdAefe` for the current reviewed contracts.
 
-The app ships verified contract pairs for all five Phase 2 targets—Base Sepolia, Ethereum Sepolia,
-Celo Sepolia, World Chain Sepolia, and Robinhood Chain Testnet—as public defaults. They can be
-overridden with `NEXT_PUBLIC_*` variables, but the server still fails closed unless its issuer
-signer matches both live `issuer()` getters. Every mainnet remains zero-addressed and visibly
-unavailable. See the public
-[`contracts/DEPLOYMENTS.md`](../../contracts/DEPLOYMENTS.md) registry for addresses and transactions.
+Testnet sponsorship is optional and uses a separate, low-balance `POH_SPONSOR_PRIVATE_KEY`. It is not an
+issuer, owner, deployer, or holder key. The sponsored endpoint accepts only chain ID `84532`, loads all
+credential inputs from the verified session, simulates before signing, and applies gas, fee, reserve,
+attempt, source, account, capability, and daily limits.
 
-## Pre-deploy checklist — first mainnet release
+## Public configuration
 
-- [ ] `pnpm --filter @ubi2/proofofhumanity typecheck`, `test:contracts`, and `build` pass on the release commit.
-- [ ] `contracts/scripts/phase2-all.sh e2e` is green on Ethereum Sepolia, Base Sepolia, Celo Sepolia,
-      World Chain Sepolia, and Robinhood Chain Testnet with verified source and a live mint.
-- [ ] `ISSUER_PRIVATE_KEY` set to the production signer (its address must equal each chain's
-      `ProofOfHumanity.issuer()` and `PredicateVerifier.issuer()`) — **not** the deployer or dev key.
-- [ ] Contract owner is the intended production multisig on every chain; deployer, owner, and issuer
-      roles have been recorded and checked independently.
-- [ ] `NEXT_PUBLIC_SELF_ENDPOINT` = the public HTTPS origin (Self rejects `localhost`).
-- [ ] `NEXT_PUBLIC_SELF_ENV=production` once testing on real passports.
-- [ ] `NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED` remains unset/`false` for production. It may be exactly `true`
-      only on reviewed staging builds with `NEXT_PUBLIC_SELF_ENV=staging`; this does not open production admission.
-- [ ] If v2 issuance is enabled, all six `ZK_SELF_ISSUANCE_*` values are set; the RPC chain,
-      registry domain, active issuer key, bridge codehash/configuration, and isolated authority key
-      are checked live by the callback before every signature.
-- [ ] If testnet sponsorship is enabled, `POH_SPONSOR_PRIVATE_KEY` is a separately generated,
-      low-balance hot account; `POH_SPONSOR_TESTNET_CHAIN_IDS` names only the intended public testnets;
-      gas/fee/reserve caps and faucet budget alerts are configured. Never enable it for mainnet.
-- [ ] Paired `ProofOfHumanity` + `PredicateVerifier` addresses set for each enabled chain.
-- [ ] One sticky Node replica, TLS, trusted proxy headers, restart monitoring, log redaction, and
-      secrets injection are configured. Horizontal scaling is blocked until the shared-store design is approved.
-- [ ] `NEXT_PUBLIC_SITE_URL` = the canonical origin (drives OG absolute URLs).
-- [ ] Explicit human approval is recorded immediately before each individual mainnet broadcast.
+Start from [`.env.example`](.env.example). The release-relevant inputs are:
 
-## Environment variables
+| Variable | Requirement |
+|---|---|
+| `NEXT_PUBLIC_SELF_ENDPOINT` | public HTTPS callback ending exactly in `/api/self-verify`; no credentials, query, fragment, or loopback host |
+| `NEXT_PUBLIC_SELF_ENV` | `staging` for Self test passports or `production` for real passports |
+| `NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL` | monitored public Base Sepolia RPC; the checked-in public endpoint is only a fallback |
+| `NEXT_PUBLIC_BASE_SEPOLIA_POH` | reviewed `0x06BD253009F74ad934A4DaEac133b153d9Fe8029` |
+| `NEXT_PUBLIC_BASE_SEPOLIA_PREDICATE` | reviewed `0x2051D33c2F10CDd3739324afc4C6fD957564a9D6` |
+| `ISSUER_PRIVATE_KEY` | server secret injected from the approved secret path; its public address must match both contracts |
+| `POH_SPONSOR_PRIVATE_KEY` | optional isolated testnet hot key |
+| `POH_SPONSOR_TESTNET_CHAIN_IDS` | exactly `84532` when sponsorship is enabled |
 
-Client vars (`NEXT_PUBLIC_*`) are inlined into the browser bundle; server vars are not. Keep
-`ISSUER_PRIVATE_KEY`, `POH_SPONSOR_PRIVATE_KEY`, and the v2 authority server-only (no
-`NEXT_PUBLIC_` prefix) — Next strips them from the client.
+All other sponsorship caps retain the conservative defaults shown in `.env.example`. Put matching edge
+quotas and spend/reserve alerts at the trusted proxy. The application uses the first
+`X-Forwarded-For` value, so the proxy must overwrite untrusted forwarding headers.
 
-| Variable | Scope | Required | Default (dev) | Notes |
-|---|---|---|---|---|
-| `ISSUER_PRIVATE_KEY` | server | **yes** (prod) | Anvil acct #1 (not secret) | Voucher/attestation signer; address must equal both contract issuers. Inject from a secret manager; never paste into chat or commit it. |
-| `POH_SPONSOR_PRIVATE_KEY` | server secret | optional testnet only | disabled | Isolated low-balance transaction signer. Must not be issuer, deployer, owner, or holder. No development fallback and never `NEXT_PUBLIC_`. |
-| `POH_SPONSOR_TESTNET_CHAIN_IDS` | server | with sponsor key | disabled | Explicit comma-separated allowlist. Every id must resolve to a configured, deployed `network: "testnet"`; mainnet/local fail closed. |
-| `POH_SPONSOR_MAX_GAS` | server | no | `350000` | Refuse an estimate above this per transaction. |
-| `POH_SPONSOR_MAX_FEE_WEI` | server | no | `5000000000000000` | Refuse when estimated gas × current gas price exceeds this amount. |
-| `POH_SPONSOR_MIN_RESERVE_WEI` | server | no | `1000000000000000` | Balance that must remain after the estimated fee. |
-| `POH_SPONSOR_CONFIRMATIONS` | server | no | `1` | Required receipt confirmations, bounded to 1–12. |
-| `POH_SPONSOR_RECEIPT_TIMEOUT_MS` | server | no | `90000` | Initial wait, bounded to 5–300 seconds. A timeout returns recoverable pending evidence rather than resubmitting. |
-| `POH_SPONSOR_DAILY_TX_LIMIT` | server | no | `100` | Conservative process-local transaction-attempt ceiling per chain and UTC-aligned 24-hour window; put a matching distributed limit at ingress. |
-| `ZK_SELF_ISSUANCE_CHAIN_ID` | server | v2 only | disabled | One canonical issuance chain. All six v2 variables must be present together. |
-| `ZK_SELF_ISSUANCE_RPC_URL` | server | v2 only | disabled | Server RPC used to read one pinned block before authorizing a slot/epoch. |
-| `ZK_SELF_ISSUANCE_REGISTRY` | server | v2 only | disabled | `ZkIdentityIssuanceRegistry` address. |
-| `ZK_SELF_ISSUANCE_BRIDGE` | server | v2 only | disabled | Immutable `ZkIdentitySelfIssuanceBridge` authorized by the registry. |
-| `ZK_SELF_ISSUER_KEY_ID` | server | v2 only | disabled | Active bytes32 issuer-key namespace; not a private key. |
-| `ZK_SELF_ISSUANCE_AUTHORITY_PRIVATE_KEY` | server secret | v2 only | disabled | Separate EIP-712 Self-verification authority. Never reuse the deployer or v1 issuer. |
-| `NEXT_PUBLIC_SITE_URL` | client | recommended | `https://proofofhumanity.org` | Canonical origin for OG/Twitter absolute image URLs. |
-| `NEXT_PUBLIC_SELF_ENDPOINT` | client | **yes** (real proofs) | `""` (QR disabled) | Public HTTPS URL of `/api/self-verify` as the Self app sees it. |
-| `NEXT_PUBLIC_SELF_ENV` | client | no | `staging` | `staging` (mock passports) or `production` (real). Flips frontend `endpointType` **and** backend `mockPassport` in lockstep. |
-| `NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED` | client | no | `false` | Exact `true` exposes the production-ineligible WebAuthn PRF/recovery rehearsal only when Self is staging and the target is an explicit public testnet. Never enables either production admission bit. |
-| `NEXT_PUBLIC_<NETWORK>_RPC_URL` | client | per chain | public endpoint | Use a production provider with capacity and monitoring. These URLs are public by design. |
-| `NEXT_PUBLIC_<NETWORK>_POH` | client | per chain | `0x0…0` | Deployed `ProofOfHumanity`. Zero address disables mint and predicate issuance. |
-| `NEXT_PUBLIC_<NETWORK>_PREDICATE` | client | per chain | `0x0…0` | Paired `PredicateVerifier`. Both addresses are required for predicates. |
-| `NEXT_PUBLIC_LOCAL_CHAIN_ID` / `_NAME` / `_RPC_URL` / `_POH` / `_PREDICATE` | client | dev only | Anvil 31337 | Local target; leave zero-addressed in production. |
+## Transaction-free preflight
 
-Supported prefixes are `ETHEREUM`, `BASE`, `CELO`, `WORLD`, `ROBINHOOD`, and `OP`, plus their
-testnet forms shown in [`.env.example`](.env.example).
+With only public configuration loaded, run:
 
-The checked-in nonzero testnet defaults are release registry entries, not secrets. Missing or empty
-environment values keep those defaults; set the zero address to deliberately disable one of those
-testnet targets in a deployment. A malformed address also fails closed to zero.
+```shell
+pnpm --filter @ubi2/proofofhumanity quick-launch:preflight
+```
 
-## Recommended first-release topology: one Node container
+The command sends no transaction and loads no secret. It verifies the RPC chain ID, both bytecodes,
+reviewed owner, shared reviewed issuer, zero predicate prover, Self environment, and exact public HTTPS
+callback. It emits only public addresses and Boolean readiness. Any mismatch exits non-zero.
 
-1. Build from the pinned lockfile: `corepack enable && pnpm install --frozen-lockfile`, then
-   `pnpm --filter @ubi2/proofofhumanity build`.
-2. Run `pnpm --filter @ubi2/proofofhumanity start` as a single Node process behind TLS.
-3. Inject `ISSUER_PRIVATE_KEY` from the host secret manager. Never put it in a build argument,
-   image layer, `NEXT_PUBLIC_*`, `.env` committed to git, or deployment logs.
-4. Terminate untrusted direct traffic at a proxy that overwrites `X-Forwarded-For`; the routes use
-   that value for callback, v2-refresh, predicate, and sponsorship rate limiting.
-5. Add edge quotas and a daily faucet-spend alarm for `/api/sponsored-mint`. Process-local quotas are
-   defense in depth for the required single replica, not a substitute for ingress controls.
-6. Health-check `/`, `/verify`, and `/developers`; alert on restarts and 5xx responses from the API routes.
+Observed on 2026-08-30 from the public Base Sepolia RPC, without a transaction:
 
-The checked-in Base Sepolia staging profile, trusted-proxy example, spend/reserve monitor, and
-secret-safe live rehearsal procedure are in
-[`ops/proofofhumanity/SPONSORED_MINT_STAGING.md`](../../ops/proofofhumanity/SPONSORED_MINT_STAGING.md).
+- chain ID `84532`;
+- both configured addresses have bytecode;
+- both owners are `0x26250e47500943464290A77ae3508a3001d9B69d`;
+- both issuers are `0x1D6cB99ff20223d730Ae5D4680EC5154B7FdAefe`;
+- `PredicateVerifier.prover()` is zero.
 
-Serverless and multi-replica targets become valid only after the callback handoff is moved to a
-reviewed shared encrypted store. That is an application release gate, not a contract blocker.
+That read-only observation does not prove that an app host, issuer secret path, sponsor, public callback,
+or real Self journey is ready.
 
-## Post-deploy verification
+## Validation gate
 
-- `curl -I https://<origin>/og.png` → `200 image/png`.
-- Paste the URL into the Twitter/X card validator and Facebook sharing debugger; confirm the
-  1200×630 card renders. WhatsApp/iMessage read the same OG tags.
-- Load the site: favicon shows in the tab; the mint flow reaches "prove humanity with Self".
-- On a dedicated staging deployment only, follow
-  [`HOLDER_VAULT_DEVICE_DRILL.md`](../../ops/proofofhumanity/HOLDER_VAULT_DEVICE_DRILL.md) on physical iOS and
-  Android; do not substitute simulator/emulator evidence or record recovery material.
-- Complete one real Self verification with each disclosure profile and confirm the browser session
-  can produce age 18+, age 21+, nationality, and sanctions-clear attestations.
-- Call `PredicateVerifier.check(...)` with the returned artifact and confirm consumer, context,
-  subject, wrong-chain, wrong-verifier, stale, and wrong-signer failures all fail closed.
-- Verify the signing address matches both `issuer()` getters on every live chain.
-- If v2 is enabled, deliberately consume the observed next slot with a competing test issuance,
-  confirm the stale authorization fails without consuming its key/commitment, PATCH with the original
-  address/session, and confirm the refreshed authorization succeeds before the original ten-minute expiry.
-- If sponsorship is enabled, mint once per allowlisted testnet from an unfunded dedicated credential
-  account. Verify the transaction sender is the isolated sponsor, the token owner is the proof-bound
-  account, the UI receipt links to the confirmed transaction, and a repeated POST returns the same
-  evidence without a second transaction. Confirm a mainnet id, mismatched session, and body all fail.
+Before deploying the application candidate:
 
-## Security
+```shell
+pnpm --filter @ubi2/proofofhumanity test:quick-launch
+pnpm --filter @ubi2/proofofhumanity test:contracts
+pnpm --filter @ubi2/proofofhumanity typecheck
+pnpm --filter @ubi2/proofofhumanity build
+pnpm --filter @ubi2/proofofhumanity test:pwa
+```
 
-- The issuer key is the mint's trust anchor for v1 — treat it as a signing HSM/secret, rotate
-  via `setIssuer(...)` on-chain if exposed. Never ship it with a `NEXT_PUBLIC_` prefix.
-- The v2 Self authority is a temporary issuance trust root. Its immutable bridge cannot rotate in
-  place: deploy and governance-authorize a new bridge, retire the old authority, then update the
-  server configuration. A production HSM adapter and independently reviewed proof service remain
-  release gates; the current server variable is suitable for isolated testnet rehearsal.
-- The routes use bounded, process-local rate limits and a 10-minute callback handoff. They limit
-  abuse on a single replica but are not distributed controls. Put edge rate limits at the trusted
-  proxy and require a shared, reviewed limiter before horizontal scaling.
-- The sponsor is a deliberately lossy testnet hot wallet, not a trust root. Keep only a bounded faucet
-  balance, alert on spend/low reserve, rotate it independently, and never reuse the issuer/deployer/owner.
-  The route has per-request gas and fee caps, but distributed edge quotas and durable idempotency are
-  required before any horizontally scaled or production-value sponsorship design.
-- v1 predicates are issuer-attested. The holder-side ZK prover is not implemented or deployed;
-  `PredicateVerifier.prover()` must remain visibly zero until that separate release is audited.
-- The currently recorded Phase 2 PredicateVerifier addresses predate the v2 consumer-forwarding and
-  wallet-independent replay correction. They remain valid for v1 only and must not be configured with a prover;
-  the v2 rehearsal requires a new versioned testnet host/registry/adapter/verifier stack.
+Also run the repository's full CI-equivalent Rust, interface, Solidity, SDK, operator, and cross-stack
+gates. A synthetic Anvil voucher or the checked-in sponsored-mint rehearsal proves plumbing only; it is
+not evidence of a completed Self passport verification.
+
+## Complete Base Sepolia journey
+
+Run this twice: once with Self staging/test passports, then with Self production and an authorized real
+passport tester. Record no passport payload, private attribute, credential, QR payload, key, password, or
+env content.
+
+1. Load `/`, connect a dedicated credential wallet, and acknowledge the public-address warning.
+2. Select 18+ or 21+ and nationality as needed. Confirm sanctions-clear is required.
+3. Complete the Self flow on a physical phone and observe the callback succeed.
+4. Confirm exactly one voucher exists and its chain ID/address match the pinned Base Sepolia PoH contract.
+5. Mint with the isolated sponsor from an unfunded holder account, or mint with the holder wallet.
+6. Observe a confirmed receipt, the expected `HumanityMinted`/`HumanityRefreshed` event, owner, nullifier
+   mapping, `isValid == true`, and `locked == true` at the receipt block.
+7. Confirm a repeated sponsored request returns the same evidence without a second transaction.
+8. On `/verify`, create and contract-check `age>=18`, `age>=21` when selected,
+   `nationality=<selected A3>`, a deliberately false nationality comparison, and `sanctions-clear`.
+9. Confirm wrong subject, consumer, context, chain, verifier, signer, epoch, and nonce fail closed.
+10. Close the tab and confirm the held v1 credential is gone.
+
+## Exact external blocker checklist
+
+- [ ] Public HTTPS application origin and exact Self callback URL.
+- [ ] Self application configuration for staging and, separately, production.
+- [ ] Approved single-replica Node host, TLS, sticky routing, trusted-proxy configuration, restart/5xx alerts,
+      and log-redaction review.
+- [ ] Approved issuer secret-manager path whose public address matches both reviewed contracts; do not provide
+      the secret value to reviewers.
+- [ ] If sponsorship is enabled: separate sponsor secret path, public sponsor address, bounded Base Sepolia
+      funding, edge quotas, daily-spend alert, and reserve alert.
+- [ ] Physical-phone staging tester and authorized real-passport production tester.
+- [ ] Redacted evidence template and storage location for callback, receipt, contract-state, and predicate
+      outcomes.
+- [ ] Product/security approval that v1 predicates are issuer-attested, subject-wallet-linkable, and currently
+      stored only in `sessionStorage` without passkey encryption.
+
+Until every applicable item and both observed journeys pass, call the build a testable release candidate,
+not a live-ready product.

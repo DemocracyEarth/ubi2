@@ -10,13 +10,10 @@
  *   1. runs `@selfxyz/core`'s `SelfBackendVerifier.verify(...)` — Groth16 pairing + Self identity
  *      registry membership (against the Celo hub) + scope/endpoint binding + OFAC config. This is
  *      what proves a UNIQUE HUMAN and yields the nullifier;
- *   2. for the existing v1 request, builds and signs the minimal multi-chain humanity voucher plus
+ *   2. for the Quick Launch v1 request, builds and signs the minimal Base Sepolia humanity voucher plus
  *      the holder's private issuer-attested predicate credential;
- *   3. for an explicit v2 request carrying a proof-bound holder commitment, derives a registry-scoped
- *      duplicate key in memory and returns only a short-lived authorization for the immutable bridge.
  *
- * TRUST BOUNDARY: this route DECIDES validity. V1 trusts `ISSUER_PRIVATE_KEY`; transitional v2
- * trusts the separate immutable bridge authority key. Guard and isolate both roles accordingly.
+ * TRUST BOUNDARY: this route DECIDES validity. V1 trusts `ISSUER_PRIVATE_KEY`.
  *
  * STORAGE BOUNDARY: the callback handoff is process-local, bounded, and expires after ten minutes.
  * The first production release must use one sticky Node worker. Horizontal scaling requires a
@@ -56,22 +53,15 @@ import {
   verificationConfigFor,
   type DisclosureProfile,
 } from "../../lib/disclosure-profile";
-import { CHAINS, SELF_SCOPE, SELF_ENDPOINT, SELF_MOCK_PASSPORT } from "../../config";
+import { SELF_SCOPE, SELF_ENDPOINT, SELF_MOCK_PASSPORT } from "../../config";
+import { QUICK_LAUNCH_CHAINS, isQuickLaunchDisclosureRequest } from "../../quick-launch";
 import { getIssuerPrivateKey, getSponsoredMintServerConfig } from "../../server-config";
 import {
   deleteVerificationRecord,
   getVerificationRecord,
   rateLimit,
   setVerificationRecord,
-  updateVerificationRecord,
-  VERIFICATION_RECORD_TTL_MS,
 } from "../../lib/server/verification-store";
-import {
-  buildZkSelfIssuanceGrant,
-  refreshZkSelfIssuanceArtifact,
-  ZkSelfIssuanceAlreadyConsumedError,
-  ZkSelfIssuanceGrantExpiredError,
-} from "../../lib/server/zk-self-issuance";
 import {
   publicRelayRecord,
   type RelayRecord,
@@ -222,52 +212,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // The v2 request is intentionally disjoint from legacy voucher issuance. It
-  // returns no raw Self nullifier, public NFT voucher or attribute credential;
-  // only the registry-scoped duplicate key inside a bridge authorization.
-  if (disclosureRequest.credentialCommitment) {
-    if (body.attestationId !== 1) {
-      return NextResponse.json(
-        { ok: false, error: "V2 private-credential issuance currently requires a Self e-passport proof." },
-        { status: 400 },
-      );
-    }
-    try {
-      const expiresAtMs = Date.now() + VERIFICATION_RECORD_TTL_MS;
-      const { grant: zkIssuanceGrant, artifact: zkIssuance } = await buildZkSelfIssuanceGrant({
-        subject: to,
-        rawSelfNullifier: BigInt(result.discloseOutput.nullifier),
-        credentialCommitment: BigInt(disclosureRequest.credentialCommitment),
-        expiresAtMs,
-      });
-      const record: RelayRecord = {
-        status: "ready",
-        zkIssuance,
-        zkIssuanceGrant,
-        receivedAt: Date.now(),
-      };
-      setVerificationRecord(to, disclosureRequest.session, record, expiresAtMs);
-      return NextResponse.json({
-        ok: true,
-        to,
-        zkIssuanceChainId: zkIssuance.chainId,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown v2 issuance error.";
-      const status =
-        error instanceof ZkSelfIssuanceAlreadyConsumedError
-          ? 409
-          : error instanceof ZkSelfIssuanceGrantExpiredError
-            ? 410
-            : 503;
-      const record: RelayRecord = {
-        status: "error",
-        error: `Private-credential issuance is unavailable: ${message}`,
-        receivedAt: Date.now(),
-      };
-      setVerificationRecord(to, disclosureRequest.session, record);
-      return NextResponse.json({ ok: false, error: record.error }, { status });
-    }
+  if (!isQuickLaunchDisclosureRequest(disclosureRequest)) {
+    return NextResponse.json(
+      { ok: false, error: "Portable v2 credential issuance is outside PoH Quick Launch v1." },
+      { status: 400 },
+    );
   }
 
   const epoch = epochNow();
@@ -275,9 +224,9 @@ export async function POST(req: NextRequest) {
   const issuerPrivateKey = getIssuerPrivateKey();
   const issuer = privateKeyToAccount(issuerPrivateKey).address;
 
-  // 3) Sign one voucher per DEPLOYED chain (distinct EIP-712 domain per chain).
+  // 3) Sign only for the release-pinned Base Sepolia deployment.
   const vouchers: SignedForChain[] = [];
-  for (const chain of CHAINS) {
+  for (const chain of QUICK_LAUNCH_CHAINS) {
     if (/^0x0{40}$/i.test(chain.pohAddress)) continue; // skip not-yet-deployed chains
     const signature = await signVoucher(issuerPrivateKey, voucher, chain.chainId, chain.pohAddress);
     vouchers.push({
@@ -361,96 +310,6 @@ export async function GET(req: NextRequest) {
     { ...publicRelayRecord(record), sponsoredChainIds },
     { headers: { "cache-control": "no-store" } },
   );
-}
-
-/**
- * PATCH the same address/session capability to recover from an expired artifact or a slot/epoch
- * race. Only the race-prone authorization fields are re-read and re-signed; the original
- * proof-derived subject, duplicate key, commitment and hard verification expiry remain fixed.
- */
-export async function PATCH(req: NextRequest) {
-  const capability = verificationCapability(req);
-  if (!capability) {
-    return NextResponse.json(
-      { ok: false, error: "A valid `address` and 128-bit `session` are required." },
-      { status: 400 },
-    );
-  }
-  const contentLength = Number(req.headers.get("content-length") ?? 0);
-  if (Number.isFinite(contentLength) && contentLength > 0) {
-    return NextResponse.json(
-      { ok: false, error: "Issuance refresh does not accept a request body." },
-      { status: 400, headers: { "cache-control": "no-store" } },
-    );
-  }
-
-  const source = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "issuance-refresh";
-  const sourceLimit = rateLimit("self-issuance-refresh-source", source, 30, 60);
-  const capabilityLimit = rateLimit(
-    "self-issuance-refresh-capability",
-    `${capability.address}:${capability.session}`,
-    8,
-    60,
-  );
-  if (!sourceLimit.allowed || !capabilityLimit.allowed) {
-    const retryAfter = Math.max(sourceLimit.retryAfter, capabilityLimit.retryAfter);
-    return NextResponse.json(
-      { ok: false, error: "Too many issuance refresh attempts. Try again shortly." },
-      { status: 429, headers: { "retry-after": String(retryAfter), "cache-control": "no-store" } },
-    );
-  }
-
-  const record = getVerificationRecord<RelayRecord>(capability.address, capability.session);
-  if (!record) {
-    return NextResponse.json(
-      { ok: false, error: "The verified issuance session expired; scan the passport again." },
-      { status: 410, headers: { "cache-control": "no-store" } },
-    );
-  }
-  if (record.status !== "ready" || !record.zkIssuance || !record.zkIssuanceGrant) {
-    return NextResponse.json(
-      { ok: false, error: "This verification session does not contain a refreshable v2 issuance." },
-      { status: 409, headers: { "cache-control": "no-store" } },
-    );
-  }
-  if (record.zkIssuanceGrant.subject.toLowerCase() !== capability.address) {
-    return NextResponse.json(
-      { ok: false, error: "The verification capability does not match the proof-bound subject." },
-      { status: 403, headers: { "cache-control": "no-store" } },
-    );
-  }
-
-  try {
-    const zkIssuance = await refreshZkSelfIssuanceArtifact(record.zkIssuanceGrant);
-    const updated: RelayRecord = { ...record, zkIssuance };
-    if (!updateVerificationRecord(capability.address, capability.session, updated)) {
-      return NextResponse.json(
-        { ok: false, error: "The verified issuance session expired; scan the passport again." },
-        { status: 410, headers: { "cache-control": "no-store" } },
-      );
-    }
-    return NextResponse.json(
-      { ok: true, zkIssuance },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    if (error instanceof ZkSelfIssuanceGrantExpiredError) {
-      return NextResponse.json(
-        { ok: false, error: error.message },
-        { status: 410, headers: { "cache-control": "no-store" } },
-      );
-    }
-    if (error instanceof ZkSelfIssuanceAlreadyConsumedError) {
-      return NextResponse.json(
-        { ok: false, error: error.message },
-        { status: 409, headers: { "cache-control": "no-store" } },
-      );
-    }
-    return NextResponse.json(
-      { ok: false, error: "Issuance authorization refresh is temporarily unavailable." },
-      { status: 503, headers: { "cache-control": "no-store" } },
-    );
-  }
 }
 
 /** DELETE /api/self-verify?address=0x… with the session header — drop a consumed record. */

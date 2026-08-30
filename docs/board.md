@@ -4,7 +4,8 @@ The live work queue, maintained by the `orchestrator`. Tasks move between sectio
 deleted. A task is **Done** only when QA + reliability + security gates are green (see
 [`loop.md`](loop.md)).
 
-**Current milestone:** M5 — Network & Consensus (real P2P) · **Stage A shipped ✅ · Stage B next** · **M1–M4 + cycles 5–7 + PoH-NFT shipped ✅** · (Economics & Governance → M6)
+**Current milestone:** **PoH Quick Launch v1 — Base Sepolia release candidate** · M5/M6/V2/M7/M8 are
+paused as release dependencies · no mainnet authorization. [Scope and 14-day cut](releases/poh-quick-launch-v1.md).
 
 | Field | Meaning |
 |---|---|
@@ -105,6 +106,10 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   on whether to expose a balance-stream subscription.
 
 ## 🏗️ In Progress
+_(none)_
+
+## ⏸️ Paused — not Quick Launch release dependencies
+
 - **ZKID-V2-T0 · architect/SDK/security** — direct-v2 architecture + portable encrypted credential-vault
   foundation. *Accepts:* predicate matrix and threat model documented; plaintext never persisted; AES-GCM
   tamper/binding failures tested; two independent passkeys unlock the same credential; SDK tests run in CI.
@@ -218,7 +223,13 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   [Spec](specs/v2-issuance-registry.md).
 
 ## 👀 Review (awaiting gates)
-_(none)_
+- **POH-QL-V1-T1 · product/architect/interface/qa/reliability/security/release** — enforce the first
+  Quick Launch boundary. *Accepts:* exactly Base Sepolia enters voucher, predicate, sponsor and UI paths;
+  fabricated credential API, v2 issuance/refresh, policy lab and holder-vault rehearsal are absent from the
+  shipped route graph; a transaction-free public preflight fails closed on chain/code/role/prover/callback
+  mismatches; failure-path tests, release audit and physical-phone runbook exist; complete repository gate green.
+  Local gates are green; public read-only preflight confirms chain, bytecode and roles, then correctly blocks on
+  the missing approved HTTPS Self callback. [Release cut](releases/poh-quick-launch-v1.md).
 
 ## ⛔ Blocked
 _(none)_

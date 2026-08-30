@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reset the shipping surface to PoH Quick Launch v1 on Base Sepolia: voucher, sponsored mint and
+  issuer-attested predicate APIs now use one release profile; the fabricated credential endpoint,
+  v2 issuance refresh, policy-lab UI, holder-vault rehearsal and multi-chain/mainnet marketing are
+  excluded. Add a transaction-free public preflight, release audit, runbook and Chromium boundary gate.
 - Redesign `/verify` as a guided, mobile-ready flow with plain-language field explainers, proactive
   on-chain credential ownership/freshness checks, actionable failure states, and a self-verifying
   integration artifact for every signed true or false result.

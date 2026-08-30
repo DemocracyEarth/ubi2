@@ -22,7 +22,6 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 180_000,
     env: {
-      NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED: "true",
       NEXT_PUBLIC_SELF_ENV: "staging",
       NEXT_PUBLIC_SELF_ENDPOINT: "",
     },

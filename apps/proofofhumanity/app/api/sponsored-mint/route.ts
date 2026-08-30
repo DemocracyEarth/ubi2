@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import type { Address } from "viem";
-import { CHAINS } from "../../config";
+import { QUICK_LAUNCH_CHAINS } from "../../quick-launch";
 import { getSponsoredMintServerConfig, type SponsoredMintServerConfig } from "../../server-config";
 import {
   sponsoredMintAttemptEvidence,
@@ -50,7 +50,7 @@ function requestedChain(req: NextRequest) {
   if (!raw || !/^[1-9][0-9]*$/.test(raw)) return null;
   const chainId = Number(raw);
   if (!Number.isSafeInteger(chainId)) return null;
-  return CHAINS.find((chain) => chain.chainId === chainId) ?? null;
+  return QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === chainId) ?? null;
 }
 
 function loadConfig(): SponsoredMintServerConfig | null {
