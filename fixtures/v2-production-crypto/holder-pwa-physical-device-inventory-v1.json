@@ -1,0 +1,24 @@
+{
+  "schema": "org.proofofhumanity.v2-holder-pwa-physical-device-inventory/1",
+  "productionEligible": false,
+  "observedAt": "2026-08-30T13:14:59Z",
+  "host": "local-release-workstation",
+  "ios": {
+    "status": "unavailable",
+    "physicalEvidenceCaptured": false,
+    "facts": [
+      "xcode-select resolves to CommandLineTools",
+      "xcrun devicectl and xctrace are unavailable",
+      "USB inventory contains no iPhone or iPad"
+    ]
+  },
+  "android": {
+    "status": "unavailable",
+    "physicalEvidenceCaptured": false,
+    "facts": [
+      "adb is not installed",
+      "USB inventory contains no Android device"
+    ]
+  },
+  "claim": "No simulator, emulator, or desktop-browser result is represented as physical-device evidence."
+}

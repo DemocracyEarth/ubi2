@@ -40,6 +40,7 @@ import {
 } from "./lib/account-privacy";
 import type { SponsoredMintEvidence, SponsoredMintPublicEvidence } from "./lib/sponsored-mint";
 import { PredicateCenter } from "./predicates/predicate-center";
+import { HolderVaultPanel, type HolderVaultTarget } from "./holder-vault-panel";
 
 /*//////////////////////////////////////////////////////////////
                      BRAND ASSETS (from card-minimal-final.svg)
@@ -579,6 +580,23 @@ function MintFlow() {
     () => (selected ? CHAINS.find((chain) => chain.chainId === selected.chainId) ?? null : null),
     [selected],
   );
+  const holderVaultTarget = useMemo<HolderVaultTarget | null>(() => {
+    const chain = selectedChain ?? CHAINS.find((candidate) => candidate.network === "testnet" && isDeployed(candidate));
+    if (!chain) return null;
+    const proofBinding = selected
+      ? JSON.stringify([
+          "org.proofofhumanity.testnet-voucher-binding",
+          1,
+          selected.chainId,
+          selected.pohAddress.toLowerCase(),
+          selected.voucher.to.toLowerCase(),
+          selected.voucher.nullifier,
+          selected.voucher.epoch,
+          selected.signature.toLowerCase(),
+        ])
+      : null;
+    return { chainId: chain.chainId, name: chain.name, network: chain.network, proofBinding };
+  }, [selected, selectedChain]);
 
   // The chain menu shown inside step 3: every marketed chain, each paired with its
   // deployed voucher if one exists, plus any deployed chain not in the marketed set.
@@ -1149,6 +1167,15 @@ function MintFlow() {
             )}
           </div>
         </div>
+
+        {account && privacyAcknowledged && verificationSession && holderVaultTarget && (
+          <HolderVaultPanel
+            key={`${account.toLowerCase()}:${verificationSession}`}
+            account={account}
+            verificationSession={verificationSession}
+            target={holderVaultTarget}
+          />
+        )}
 
         {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
       </div>

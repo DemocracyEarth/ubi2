@@ -153,9 +153,14 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   A release-owned production-header Chromium/PWA harness now pins the real Worker/WASM path, CSP and Trusted Types,
   exercises adversarial service-worker/extension/network boundaries, serializes multi-tab whole-vault IndexedDB
   CAS, and completes synthetic crash/restart plus authenticated backup/restore drills. Its throttled mobile-profile
-  measurements are explicitly emulated and both admission bits remain false.
+  measurements are explicitly emulated and both admission bits remain false. The real Proof of Humanity PWA now
+  exposes a separately production-ineligible, staging/testnet-only holder step with actual WebAuthn-PRF ceremony
+  handling, enrollment/unlock/atomic second-passkey UX, encrypted empty-only recovery, account/session cancellation
+  and a no-fetch/no-cache PWA lifecycle worker. A production-build mobile Chromium lane covers crash/relock,
+  fresh-profile restore and cancellation with a deterministic PRF API double. Physical iOS/Android hardware was not
+  available on the release host, is not falsely represented by that lane and remains an admission gate.
   Remaining: independent cryptographic/browser/source-to-WASM audits, representative physical-mobile evidence,
-  holder-facing WebAuthn/recovery UX,
+  native physical-device passkey/recovery drills and admission of the exact production payload into that UX,
   on-chain/native passport proof
   verification, independently hosted snapshot operators and
   real paging/drills,

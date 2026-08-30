@@ -38,6 +38,64 @@
   --radius: 18px;
 }
 
+/* Testnet-only holder vault product slice. The layout deliberately reuses the
+   mint-flow primitives so the installed PWA remains usable on narrow phones. */
+.holder-vault-step {
+  border-color: color-mix(in srgb, var(--gold) 34%, var(--border));
+  background: linear-gradient(135deg, rgba(255, 226, 75, 0.035), rgba(110, 231, 183, 0.025));
+}
+
+.holder-vault-step h4 {
+  margin: 0;
+}
+
+.holder-vault-gates,
+.holder-vault-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.8rem 0;
+}
+
+.holder-vault-status {
+  margin-top: 0.8rem;
+}
+
+.holder-vault-recovery-key,
+.holder-vault-restore {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.holder-vault-recovery-key code {
+  overflow-wrap: anywhere;
+  user-select: all;
+  color: var(--gold);
+}
+
+.holder-vault-restore input[type="file"],
+.holder-vault-restore input[type="password"] {
+  width: 100%;
+  min-height: 42px;
+  padding: 0.65rem 0.75rem;
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+@media (max-width: 560px) {
+  .holder-vault-actions .btn,
+  .holder-vault-restore .btn {
+    width: 100%;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

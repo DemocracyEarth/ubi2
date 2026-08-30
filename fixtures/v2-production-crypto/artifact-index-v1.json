@@ -13,8 +13,8 @@
     },
     {
       "path": ".github/workflows/v2-vault-contract.yml",
-      "sha256": "f9adb724ec3dd0d5a597bbc08eff6e9bc9f9b3d766d15444a4e6071ef69d031a",
-      "bytes": 3838
+      "sha256": "0ebaaf08396ab463462c76acc34918246f9dcca31a2f09cc511a35990764845d",
+      "bytes": 4645
     },
     {
       "path": "docs/specs/adr/0012-v2-cross-lane-interface-freeze.md",
@@ -103,8 +103,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "3f272efe02e5939d3ca5ee88365c4452967cbdc93b2f9eeb91cb56ee778a233b",
-      "bytes": 853
+      "sha256": "5c4a9b0ad9d80cb8a4d71adea4b7dbafe4140cd2983309cdb131e44f335c4bc3",
+      "bytes": 979
     },
     {
       "path": "packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.d.ts",
