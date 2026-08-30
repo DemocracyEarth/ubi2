@@ -61,6 +61,8 @@ unavailable. See the public
       roles have been recorded and checked independently.
 - [ ] `NEXT_PUBLIC_SELF_ENDPOINT` = the public HTTPS origin (Self rejects `localhost`).
 - [ ] `NEXT_PUBLIC_SELF_ENV=production` once testing on real passports.
+- [ ] `NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED` remains unset/`false` for production. It may be exactly `true`
+      only on reviewed staging builds with `NEXT_PUBLIC_SELF_ENV=staging`; this does not open production admission.
 - [ ] If v2 issuance is enabled, all six `ZK_SELF_ISSUANCE_*` values are set; the RPC chain,
       registry domain, active issuer key, bridge codehash/configuration, and isolated authority key
       are checked live by the callback before every signature.
@@ -99,6 +101,7 @@ Client vars (`NEXT_PUBLIC_*`) are inlined into the browser bundle; server vars a
 | `NEXT_PUBLIC_SITE_URL` | client | recommended | `https://proofofhumanity.org` | Canonical origin for OG/Twitter absolute image URLs. |
 | `NEXT_PUBLIC_SELF_ENDPOINT` | client | **yes** (real proofs) | `""` (QR disabled) | Public HTTPS URL of `/api/self-verify` as the Self app sees it. |
 | `NEXT_PUBLIC_SELF_ENV` | client | no | `staging` | `staging` (mock passports) or `production` (real). Flips frontend `endpointType` **and** backend `mockPassport` in lockstep. |
+| `NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED` | client | no | `false` | Exact `true` exposes the production-ineligible WebAuthn PRF/recovery rehearsal only when Self is staging and the target is an explicit public testnet. Never enables either production admission bit. |
 | `NEXT_PUBLIC_<NETWORK>_RPC_URL` | client | per chain | public endpoint | Use a production provider with capacity and monitoring. These URLs are public by design. |
 | `NEXT_PUBLIC_<NETWORK>_POH` | client | per chain | `0x0…0` | Deployed `ProofOfHumanity`. Zero address disables mint and predicate issuance. |
 | `NEXT_PUBLIC_<NETWORK>_PREDICATE` | client | per chain | `0x0…0` | Paired `PredicateVerifier`. Both addresses are required for predicates. |
@@ -137,6 +140,9 @@ reviewed shared encrypted store. That is an application release gate, not a cont
 - Paste the URL into the Twitter/X card validator and Facebook sharing debugger; confirm the
   1200×630 card renders. WhatsApp/iMessage read the same OG tags.
 - Load the site: favicon shows in the tab; the mint flow reaches "prove humanity with Self".
+- On a dedicated staging deployment only, follow
+  [`HOLDER_VAULT_DEVICE_DRILL.md`](../../ops/proofofhumanity/HOLDER_VAULT_DEVICE_DRILL.md) on physical iOS and
+  Android; do not substitute simulator/emulator evidence or record recovery material.
 - Complete one real Self verification with each disclosure profile and confirm the browser session
   can produce age 18+, age 21+, nationality, and sanctions-clear attestations.
 - Call `PredicateVerifier.check(...)` with the returned artifact and confirm consumer, context,

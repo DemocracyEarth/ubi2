@@ -45,11 +45,61 @@ export interface IndexedDbCredentialVaultStoreOptions {
   testHooks?: { beforeCommit?(): void };
 }
 
+export interface IndexedDbCredentialVaultMetadata {
+  vaultId: string;
+  binding: CredentialVaultBinding;
+  credentialIds: string[];
+}
+
 export type CredentialVaultRestoreResult = "restored" | "occupied" | "stale";
 
 /** Generate an independent 256-bit secret for one encrypted backup. */
 export function generateCredentialVaultBackupKey(): Uint8Array {
   return cryptoApi().getRandomValues(new Uint8Array(BACKUP_KEY_BYTES));
+}
+
+/**
+ * Discover the public locator for an existing encrypted vault database.
+ *
+ * This returns only WebAuthn/vault routing metadata. It never decrypts the
+ * credential, exposes ciphertext, or creates an authorization decision. The
+ * caller must still construct a bound store and perform a fresh passkey
+ * ceremony before using the vault.
+ */
+export async function inspectIndexedDbCredentialVaultStore(input: {
+  databaseName: string;
+  indexedDB?: IDBFactory;
+}): Promise<IndexedDbCredentialVaultMetadata | undefined> {
+  if (!input || typeof input !== "object") throw new Error("IndexedDB vault inspection input is required");
+  assertBoundedString(input.databaseName, "IndexedDB database name", 128);
+  const factory = input.indexedDB ?? globalThis.indexedDB;
+  if (!factory || typeof factory.open !== "function") throw new Error("IndexedDB is required for vault storage");
+
+  if (typeof factory.databases === "function") {
+    try {
+      const databases = await factory.databases();
+      if (!databases.some(({ name }) => name === input.databaseName)) return undefined;
+    } catch {
+      // Safari versions that expose but reject `databases()` can still inspect
+      // safely by opening the exact account-derived name below.
+    }
+  }
+
+  const database = await openDatabase(factory, input.databaseName);
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const raw = await requestResult<unknown>(transaction.objectStore(STORE_NAME).get(RECORD_KEY));
+    await transactionComplete(transaction);
+    if (raw === undefined) return undefined;
+    const vault = parseStoredRecord(raw).vault;
+    return {
+      vaultId: vault.vaultId,
+      binding: { ...vault.binding },
+      credentialIds: vault.keySlots.map(({ credentialId }) => credentialId),
+    };
+  } finally {
+    database.close();
+  }
 }
 
 /**
@@ -253,23 +303,8 @@ export class IndexedDbCredentialVaultStore {
   }
 
   #boundRecord(value: unknown): IndexedDbVaultRecord {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("stored vault record is invalid");
-    const candidate = value as Partial<IndexedDbVaultRecord>;
-    if (
-      Object.keys(candidate).sort().join(",") !== "key,revision,schema,vault" ||
-      candidate.schema !== RECORD_SCHEMA ||
-      candidate.key !== RECORD_KEY ||
-      !Number.isSafeInteger(candidate.revision) ||
-      (candidate.revision as number) < 1
-    ) {
-      throw new Error("stored vault record is invalid");
-    }
-    return {
-      schema: RECORD_SCHEMA,
-      key: RECORD_KEY,
-      revision: candidate.revision as number,
-      vault: this.#boundVault(candidate.vault),
-    };
+    const record = parseStoredRecord(value);
+    return { ...record, vault: this.#boundVault(record.vault) };
   }
 
   #boundVault(value: unknown): PortableCredentialVault {
@@ -330,6 +365,40 @@ export class IndexedDbCredentialVaultStore {
       }
     });
   }
+}
+
+function parseStoredRecord(value: unknown): IndexedDbVaultRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("stored vault record is invalid");
+  const candidate = value as Partial<IndexedDbVaultRecord>;
+  if (
+    Object.keys(candidate).sort().join(",") !== "key,revision,schema,vault" ||
+    candidate.schema !== RECORD_SCHEMA ||
+    candidate.key !== RECORD_KEY ||
+    !Number.isSafeInteger(candidate.revision) ||
+    (candidate.revision as number) < 1
+  ) {
+    throw new Error("stored vault record is invalid");
+  }
+  return {
+    schema: RECORD_SCHEMA,
+    key: RECORD_KEY,
+    revision: candidate.revision as number,
+    vault: parseCredentialVault(candidate.vault),
+  };
+}
+
+function openDatabase(factory: IDBFactory, databaseName: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(databaseName, DATABASE_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+        request.result.createObjectStore(STORE_NAME, { keyPath: "key" });
+      }
+    };
+    request.onerror = () => reject(request.error ?? new Error("could not open credential vault database"));
+    request.onblocked = () => reject(new Error("credential vault database upgrade is blocked"));
+    request.onsuccess = () => resolve(request.result);
+  });
 }
 
 export function parseEncryptedCredentialVaultBackup(value: unknown): EncryptedCredentialVaultBackup {

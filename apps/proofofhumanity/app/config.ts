@@ -229,3 +229,11 @@ export const SELF_ENDPOINT_TYPE: "staging_https" | "https" = SELF_ENV === "produ
 
 /** Backend: `mockPassport` for `SelfBackendVerifier` — true in staging, false in production. */
 export const SELF_MOCK_PASSPORT = SELF_ENV !== "production";
+
+/**
+ * Holder-facing vault UX is an explicit staging/testnet rehearsal. The product
+ * module independently rejects local/mainnet chains and every persisted payload
+ * carries `productionEligible: false`.
+ */
+export const V2_HOLDER_VAULT_TESTNET_ENABLED =
+  process.env.NEXT_PUBLIC_V2_HOLDER_VAULT_TESTNET_ENABLED === "true" && SELF_ENV === "staging";

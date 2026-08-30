@@ -276,10 +276,13 @@ and v2 proof generation are not enabled yet.
   and production bits remain false. A production-header Chromium/PWA harness now covers exact Worker/WASM loading,
   CSP/Trusted Types, malicious service-worker substitution, extension/network boundaries, multi-tab IndexedDB CAS,
   synthetic crash/restart, authenticated backup restore and throttled emulated-mobile memory/cancellation. Both
-  admission bits remain false. Independent hosting, real externally verified
+  admission bits remain false. The real Proof of Humanity PWA now contains a testnet-flagged, explicitly
+  production-ineligible holder vault step with WebAuthn-PRF enrollment/unlock/second-passkey ceremonies, atomic
+  proof binding, encrypted empty-only recovery and account/session cancellation. Its production-build mobile
+  Chromium drill uses a deterministic PRF API double and is not physical evidence. Independent hosting, real externally verified
   timestamp and provider-independence receipts, observed host attestations/actions and real paging/drills, the
-  independent cryptographic/browser/source-to-WASM audits, representative physical-mobile evidence and
-  holder-facing WebAuthn/recovery UX,
+  independent cryptographic/browser/source-to-WASM audits, representative physical-mobile native-passkey evidence,
+  exact production-payload admission into the holder UX,
   allocated-credential supersession, and canonical
   testnet evidence remain.
   ADR-0013/0014 close the cryptographic profile, pre-allocation race, payload and private-refresh design decisions
@@ -289,9 +292,10 @@ and v2 proof generation are not enabled yet.
   A strict release manifest/preflight now records the independent audit, setup, mobile and per-chain evidence
   required for production, verifies exact live codehashes plus timelocked ownership, and emits only unsubmitted
   governance calldata; no current candidate satisfies that admission gate.
-- **Stage 3 🚧** — the production-disabled local WASM refresh harness, atomic IndexedDB vault store and synthetic
-  E2EE backup/recovery drills are implemented. Holder-facing WebAuthn PRF UX, representative physical-mobile
-  proving and multi-device recovery UX remain.
+- **Stage 3 🚧** — the production-disabled local WASM refresh harness, atomic IndexedDB vault store, synthetic
+  E2EE backup/recovery drills and the testnet-flagged real-PWA WebAuthn PRF/recovery UX are implemented. Native
+  physical iOS/Android passkey/crash/recovery evidence, exact production-payload integration, representative mobile
+  proving and independently audited multi-device recovery remain.
 - **Stage 4 ⬜** — audited EVM verifier adapter, policy SDK and all-target-testnet integration.
 - **Stage 5 ⬜** — independent audits, ceremony/reproducible artifacts, adversarial testnet and mainnet rollout.
 

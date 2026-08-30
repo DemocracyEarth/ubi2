@@ -11,7 +11,8 @@
     "test:v2-vault-contract": "node --import tsx packages/sdk/src/zk-production-vault-status-contract.test.ts",
     "test:v2-holder-refresh": "node --import tsx packages/sdk/src/zk-holder-private-status-refresh.test.ts",
     "test:v2-holder-refresh-wasm": "node --import tsx packages/sdk/src/zk-holder-private-status-refresh-browser-runtime.test.ts",
-    "test:v2-holder-browser": "pnpm --filter @ubi2/holder-browser-harness build && pnpm --filter @ubi2/holder-browser-harness test:chromium"
+    "test:v2-holder-browser": "pnpm --filter @ubi2/holder-browser-harness build && pnpm --filter @ubi2/holder-browser-harness test:chromium",
+    "test:v2-holder-pwa": "pnpm --filter @ubi2/proofofhumanity test:product && pnpm --filter @ubi2/proofofhumanity test:pwa"
   },
   "packageManager": "pnpm@10.2.1"
 }

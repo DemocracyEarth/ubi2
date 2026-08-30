@@ -6,12 +6,15 @@ on:
     paths:
       - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
       - "docs/specs/v2-holder-browser-hardening.md"
+      - "docs/specs/v2-holder-pwa-vault-ux.md"
       - "docs/reports/*v2-holder-browser-hardening.md"
+      - "docs/reports/*v2-holder-pwa-vault-ux.md"
       - "fixtures/v2-identity/production-vault-status-v1.json"
       - "fixtures/v2-identity/interface-v1.json"
       - "fixtures/v2-production-crypto/artifact-index-v1.json"
       - "fixtures/v2-production-crypto/holder-refresh-engine*"
       - "fixtures/v2-production-crypto/holder-browser-hardening-evidence-v1.json"
+      - "fixtures/v2-production-crypto/holder-pwa-*"
       - "fixtures/v2-production-crypto/parameters-v1.json"
       - "fixtures/v2-production-crypto/public-signals-v1.json"
       - "fixtures/v2-production-crypto/reference-vector-v1.json"
@@ -21,6 +24,8 @@ on:
       - "tools/v2-crypto-bench/src/lib.rs"
       - "tools/v2-holder-refresh-engine/**"
       - "apps/holder-browser-harness/**"
+      - "apps/proofofhumanity/**"
+      - "ops/proofofhumanity/HOLDER_VAULT_DEVICE_DRILL.md"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/v2-vault-contract.yml"
@@ -28,12 +33,15 @@ on:
     paths:
       - "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md"
       - "docs/specs/v2-holder-browser-hardening.md"
+      - "docs/specs/v2-holder-pwa-vault-ux.md"
       - "docs/reports/*v2-holder-browser-hardening.md"
+      - "docs/reports/*v2-holder-pwa-vault-ux.md"
       - "fixtures/v2-identity/production-vault-status-v1.json"
       - "fixtures/v2-identity/interface-v1.json"
       - "fixtures/v2-production-crypto/artifact-index-v1.json"
       - "fixtures/v2-production-crypto/holder-refresh-engine*"
       - "fixtures/v2-production-crypto/holder-browser-hardening-evidence-v1.json"
+      - "fixtures/v2-production-crypto/holder-pwa-*"
       - "fixtures/v2-production-crypto/parameters-v1.json"
       - "fixtures/v2-production-crypto/public-signals-v1.json"
       - "fixtures/v2-production-crypto/reference-vector-v1.json"
@@ -43,6 +51,8 @@ on:
       - "tools/v2-crypto-bench/src/lib.rs"
       - "tools/v2-holder-refresh-engine/**"
       - "apps/holder-browser-harness/**"
+      - "apps/proofofhumanity/**"
+      - "ops/proofofhumanity/HOLDER_VAULT_DEVICE_DRILL.md"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/v2-vault-contract.yml"
@@ -85,10 +95,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ubi2/holder-browser-harness exec playwright install --with-deps chromium
       - run: pnpm test:v2-holder-browser
+      - run: pnpm test:v2-holder-pwa
       - name: Upload sanitized browser evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: holder-browser-hardening-evidence
           path: apps/holder-browser-harness/test-results/holder-browser-hardening-evidence.json
+          if-no-files-found: warn
+      - name: Upload sanitized holder PWA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: holder-pwa-vault-evidence
+          path: apps/proofofhumanity/test-results/holder-vault-pwa-evidence.json
           if-no-files-found: warn
