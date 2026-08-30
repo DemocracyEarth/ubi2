@@ -150,7 +150,12 @@ deleted. A task is **Done** only when QA + reliability + security gates are gree
   candidate now verifies the exact Poseidon commitment/root/path and Baby-Jubjub subgroup/key-id/Schnorr relations,
   derives real sparse paths, enforces measured memory and cancellation, and ships behind a hash-pinned same-origin
   Worker which masks network capabilities before decrypt. Both independent-audit/production bits remain false.
-  Remaining: independent cryptographic/browser reproducibility audits, real Chromium/mobile and recovery evidence,
+  A release-owned production-header Chromium/PWA harness now pins the real Worker/WASM path, CSP and Trusted Types,
+  exercises adversarial service-worker/extension/network boundaries, serializes multi-tab whole-vault IndexedDB
+  CAS, and completes synthetic crash/restart plus authenticated backup/restore drills. Its throttled mobile-profile
+  measurements are explicitly emulated and both admission bits remain false.
+  Remaining: independent cryptographic/browser/source-to-WASM audits, representative physical-mobile evidence,
+  holder-facing WebAuthn/recovery UX,
   on-chain/native passport proof
   verification, independently hosted snapshot operators and
   real paging/drills,

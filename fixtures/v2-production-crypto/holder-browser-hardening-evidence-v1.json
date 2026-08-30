@@ -1,0 +1,98 @@
+{
+  "schema": "org.proofofhumanity.v2-holder-browser-hardening-baseline/1",
+  "capturedAt": "2026-08-27",
+  "productionEligible": false,
+  "environment": {
+    "kind": "emulated-mobile-chromium",
+    "host": "macOS arm64",
+    "playwright": "1.62.1",
+    "chromium": "151.0.7922.34",
+    "viewport": "390x844",
+    "deviceScaleFactor": 3,
+    "cpuThrottle": 4,
+    "physicalDevice": false
+  },
+  "browserBoundary": {
+    "cspHeader": true,
+    "trustedTypesBlockedStringSink": true,
+    "crossOriginIsolated": true,
+    "pwaControlled": true,
+    "workerSha256": "ae57f9b95b7f53fc20bf77c3a77b103a37815b65232fff408e0458dd10ad008d",
+    "wasmSha256": "42123b2ab76133356e55e1ce15461a9dd662f96968f4eee862c668fd7f011cee",
+    "bindingsSha256": "f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb",
+    "statusPathSiblings": 24,
+    "workerNetworkLocked": true,
+    "adversarialServiceWorkerArtifactRejected": true,
+    "extensionPreTransferClonePossible": true,
+    "noPrivateNetworkSelector": true,
+    "failClosed": {
+      "code": "PROFILE_REJECTED",
+      "prfBufferDetached": true,
+      "independentAuditApproved": false,
+      "workerPolicyApproved": false
+    }
+  },
+  "multiTabCas": {
+    "exactlyOneCommitted": true,
+    "wholeVaultReadable": true,
+    "contentFreeInvalidation": true,
+    "persistedRecordKeys": ["key", "revision", "schema", "vault"],
+    "digestReceiptPersisted": false,
+    "decryptedPayloadPersisted": false
+  },
+  "recovery": {
+    "crashBeforeCommitRejected": true,
+    "oldVaultIntact": true,
+    "restartIntact": true,
+    "emptyRestoreSucceeded": true,
+    "restoredVaultMatched": true,
+    "wrongKeyRejected": true,
+    "tamperRejected": true,
+    "bindingRejected": true,
+    "occupiedStoreProtected": true,
+    "staleCasProtected": true,
+    "casRestoreSucceeded": true
+  },
+  "mobileProfile": {
+    "label": "emulated Chromium mobile profile; not physical-device admission evidence",
+    "probeSamples": 10,
+    "cancellationSamples": 20,
+    "wasmLinearMemoryBytes": [
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648,
+      1179648
+    ],
+    "peakWasmLinearMemoryBytes": 1179648,
+    "cancellationMs": [
+      2.0850000381469727,
+      0.1400001049041748,
+      0.7599999904632568,
+      0.7100000381469727,
+      0.9149999618530273,
+      0.6700000762939453,
+      0.09500002861022949,
+      0.13000011444091797,
+      0.9049999713897705,
+      0.7200000286102295,
+      0.09999990463256836,
+      0.7300000190734863,
+      0.5099999904632568,
+      0.9249999523162842,
+      0.9449999332427979,
+      0.5350000858306885,
+      0.434999942779541,
+      0.09999990463256836,
+      0.09500002861022949,
+      0.06500005722045898
+    ],
+    "cancellationP95Ms": 0.9449999332427979,
+    "usedJsHeapBytesAfterSamples": 10000000
+  }
+}

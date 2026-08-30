@@ -18,6 +18,7 @@ export * from "./oracle";
 export * from "./passport";
 export * from "./predicate";
 export * from "./credential-vault";
+export * from "./credential-vault-indexeddb";
 export * from "./zk-identity-policy";
 export * from "./zk-identity-status-manifest";
 export * from "./zk-identity-packed-status";

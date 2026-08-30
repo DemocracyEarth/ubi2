@@ -16,6 +16,11 @@
 - **Circuit-native engine evidence:** [QA](../../reports/qa-v2-holder-refresh-wasm-engine.md),
   [security](../../reports/security-v2-holder-refresh-wasm-engine.md) and
   [reliability](../../reports/reliability-v2-holder-refresh-wasm-engine.md)
+- **Browser hardening evidence:** [spec](../v2-holder-browser-hardening.md),
+  [QA](../../reports/qa-v2-holder-browser-hardening.md),
+  [security](../../reports/security-v2-holder-browser-hardening.md),
+  [privacy](../../reports/privacy-v2-holder-browser-hardening.md) and
+  [reliability](../../reports/reliability-v2-holder-browser-hardening.md)
 - **Parents:** [ADR-0012](0012-v2-cross-lane-interface-freeze.md),
   [ADR-0013](0013-v2-production-cryptographic-profile.md) and
   [ADR-0011](0011-dynamic-status-freshness.md)
@@ -503,10 +508,14 @@ the frozen sanctions-ceremony source manifest. Its same-origin Worker package ha
 reports real linear memory and
 irreversibly masks ordinary fetch/socket/import capabilities before decrypt. Real WASM tests cover the ratified
 vector, signature mutation, the order-two subgroup point, sparse-path/root reconstruction, resource limits and
-cancellation. Both the engine's compile-time independent-audit bit and the packaged Worker's production policy bit
-remain false; the generic disabled engine and browser prover also continue to reject production. Independent
-cryptographic/browser reproducibility audits plus real Chromium, mobile, persistence and recovery evidence remain
-mandatory before admission.
+cancellation. A production-header Chromium/PWA harness now integrates that exact Worker and WASM, enforces CSP and
+Trusted Types, rejects service-worker substitution, measures public path memory/cancellation, and exercises
+multi-tab IndexedDB whole-vault CAS plus crash/restart and authenticated backup restore. The extension adversary
+also confirms that a compromised pre-transfer origin can clone the request. Both the engine's compile-time
+independent-audit bit and the packaged Worker's production policy bit remain false; the generic disabled engine and
+browser prover continue to reject production. Independent cryptographic/browser/source-to-WASM audits, physical
+representative-device evidence, holder-facing WebAuthn/recovery UX and adversarial testnet evidence remain mandatory
+before admission.
 
 ## Consequences
 

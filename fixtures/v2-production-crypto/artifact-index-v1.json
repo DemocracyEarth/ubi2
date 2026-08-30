@@ -13,8 +13,8 @@
     },
     {
       "path": ".github/workflows/v2-vault-contract.yml",
-      "sha256": "4b56a10f8d2d7f5f684df027069a66fe31ea6706f9e935b62c9fc79fb505b2f7",
-      "bytes": 2542
+      "sha256": "f9adb724ec3dd0d5a597bbc08eff6e9bc9f9b3d766d15444a4e6071ef69d031a",
+      "bytes": 3838
     },
     {
       "path": "docs/specs/adr/0012-v2-cross-lane-interface-freeze.md",
@@ -28,8 +28,8 @@
     },
     {
       "path": "docs/specs/adr/0014-v2-production-vault-and-private-status-refresh.md",
-      "sha256": "5b277177f16caa5d62de4696cc64edfb2304ca333ca878caef17c79ed55d7652",
-      "bytes": 35627
+      "sha256": "4ff9d163c0150c00a7dce5699960ee70f3fc1cbf9ba64cb5e39bffd898e2f15d",
+      "bytes": 36414
     },
     {
       "path": "docs/specs/v2-holder-credential-commitment.md",
@@ -103,8 +103,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "cceb4ca06f2d5eaf8da08848baea9863e985f228118201451a4c47a73a5f7ae3",
-      "bytes": 711
+      "sha256": "3f272efe02e5939d3ca5ee88365c4452967cbdc93b2f9eeb91cb56ee778a233b",
+      "bytes": 853
     },
     {
       "path": "packages/sdk/browser/holder-refresh-engine-bindings.f22864b136562cf7d8a8d2c4ab6a16f9c01bd157feaa27b5129d5b741c399feb.d.ts",
@@ -123,8 +123,8 @@
     },
     {
       "path": "packages/sdk/src/index.ts",
-      "sha256": "a8931cc5dd491b7442a673c978588d5e7d2063c283cc2f8847dd23bf3d934a10",
-      "bytes": 6821
+      "sha256": "322241f7078d9269ebb11f55063b394c5a2ac717530210b7219931db7d80f172",
+      "bytes": 6867
     },
     {
       "path": "packages/sdk/src/zk-holder-private-status-refresh-browser-runtime.test.ts",
