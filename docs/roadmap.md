@@ -5,6 +5,13 @@ smallest demoable step. Each must be demonstrable end-to-end.
 
 Legend: ✅ done · 🚧 in progress · ⬜ planned
 
+> **Immediate release override (2026-08-30): PoH Quick Launch v1 is the only shipping priority.** The
+> dependency-ordered 14-day cut is in [`releases/poh-quick-launch-v1.md`](releases/poh-quick-launch-v1.md).
+> It targets Self verification → sponsored soulbound mint → issuer-attested age/nationality/sanctions
+> predicates on Base Sepolia. M5, M6 native, EVM ZK Identity v2, custom circuits/ceremonies, operator fleets,
+> additional chains, M7 and M8 are paused as release dependencies. Their code and research remain in the
+> monorepo, but none may block or silently enter Quick Launch. Mainnet is not authorized.
+
 > **Freshness note (updated 2026-08-11):** M6 (ZK-Passport PoH) and the
 > Browser/Mobile Light Node track — both listed below as ⬜ planned in the previous revision — have each
 > shipped their first two stages (M6 Stages A+B; light-node Stages 1+2). See each section for exactly

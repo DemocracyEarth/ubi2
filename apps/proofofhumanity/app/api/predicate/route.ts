@@ -44,7 +44,8 @@ import {
   type PredicateAttestation,
   type SerializedHumanCredential,
 } from "../../lib/predicate";
-import { CHAINS, isPredicateDeployed } from "../../config";
+import { isPredicateDeployed } from "../../config";
+import { QUICK_LAUNCH_CHAINS } from "../../quick-launch";
 import { getIssuerPrivateKey } from "../../server-config";
 import { privateKeyToAccount } from "viem/accounts";
 import { proofOfHumanityAbi } from "../../abi/proofOfHumanity";
@@ -178,7 +179,7 @@ export async function POST(req: NextRequest) {
 
   // The caller cannot choose an arbitrary EIP-712 domain. It must name the configured verifier
   // paired with the configured ProofOfHumanity deployment for this chain.
-  const chain = CHAINS.find((candidate) => candidate.chainId === body.chainId);
+  const chain = QUICK_LAUNCH_CHAINS.find((candidate) => candidate.chainId === body.chainId);
   if (!chain || !isPredicateDeployed(chain) || getAddress(chain.predicateAddress) !== getAddress(body.verifier)) {
     return NextResponse.json(
       { ok: false, error: "chainId/verifier is not a configured Proof-of-Humanity predicate deployment." },

@@ -11,8 +11,8 @@
  *   - `nullifier`  : Self's deterministic per-identity nullifier (proves ONE unique human,
  *                    reveals nothing about who they are);
  *   - `epoch`      : the coarse 90-day validity epoch the human was verified in.
- * No nationality / gender / age / OFAC values ever enter the voucher — those remain zero-knowledge
- * predicates a holder can prove on demand, never stored on-chain.
+ * No nationality / gender / age / OFAC values ever enter the voucher. Quick Launch v1 evaluates
+ * those attributes server-side after Self verification and returns a narrowly bound issuer attestation.
  *
  * It is mirrored 1:1 against `contracts/src/ProofOfHumanity.sol`:
  *
@@ -145,7 +145,7 @@ export async function signVoucher(
 /**
  * The single field this app reads out of Self's verified proof: the nullifier that proves a
  * unique human. Nationality / gender / age / OFAC are intentionally NOT mapped into the
- * credential — they stay zero-knowledge predicates, provable on demand.
+ * credential — Quick Launch v1 turns them into issuer-attested Boolean predicates on demand.
  */
 export interface DiscloseLike {
   nullifier: string;

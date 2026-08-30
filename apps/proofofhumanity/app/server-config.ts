@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAddress, isAddress, isHex, size, type Address, type Hex } from "viem";
-import { CHAINS } from "./config";
+import { QUICK_LAUNCH_CHAINS } from "./quick-launch";
 import { parseSponsoredTestnetAllowlist } from "./lib/sponsored-mint";
 
 const ANVIL_ISSUER_KEY =
@@ -75,7 +75,7 @@ export function getSponsoredMintServerConfig(): SponsoredMintServerConfig | null
 
   return {
     privateKey: privateKey as Hex,
-    enabledChainIds: parseSponsoredTestnetAllowlist(allowlist, CHAINS),
+    enabledChainIds: parseSponsoredTestnetAllowlist(allowlist, QUICK_LAUNCH_CHAINS),
     maxGas: positiveBigIntEnv("POH_SPONSOR_MAX_GAS", process.env.POH_SPONSOR_MAX_GAS, 350_000n),
     maxFeeWei: positiveBigIntEnv(
       "POH_SPONSOR_MAX_FEE_WEI",

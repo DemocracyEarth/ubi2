@@ -2,7 +2,7 @@
   "name": "@ubi2/proofofhumanity",
   "version": "0.1.0",
   "private": true,
-  "description": "proofofhumanity.org — Self (self.xyz) ZK passport proof → EIP-712 humanity voucher → soulbound Proof-of-Humanity NFT mint on any EVM chain.",
+  "description": "PoH Quick Launch v1 — Self passport proof to a Base Sepolia soulbound Proof-of-Humanity mint and issuer-attested predicates.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -11,10 +11,12 @@
     "test:crossstack": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx test/voucher.crossstack.ts",
     "test:predicate": "tsx test/predicate.crossstack.ts",
     "test:issuance": "tsx test/zk-self-issuance.crossstack.ts",
-    "test:product": "tsx test/predicate.product.ts && tsx test/expiring-store.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts && tsx test/holder-vault.product.ts",
+    "test:quick-launch": "tsx test/quick-launch.product.ts && tsx test/predicate.product.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts",
+    "test:product": "pnpm run test:quick-launch && tsx test/expiring-store.ts && tsx test/holder-vault.product.ts",
     "test:pwa": "playwright test",
     "sponsor:monitor": "tsx scripts/sponsor-account-monitor.ts",
     "sponsor:rehearse": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx scripts/rehearse-sponsored-mint.ts",
+    "quick-launch:preflight": "tsx scripts/check-quick-launch-preflight.ts",
     "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate && pnpm run test:issuance && pnpm run test:product"
   },
   "dependencies": {

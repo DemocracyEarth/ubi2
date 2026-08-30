@@ -2,6 +2,13 @@
 export const predicateVerifierAbi = [
   {
     type: "function",
+    name: "owner",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
     name: "issuer",
     stateMutability: "view",
     inputs: [],

@@ -26,7 +26,8 @@ import {
   type Hex,
 } from "viem";
 import { buildSelfApp, getUniversalLink, SelfQRcodeWrapper, type SelfApp } from "./self-client";
-import { CHAINS, SELF_ENDPOINT, isDeployed, type ChainConfig } from "./config";
+import { SELF_ENDPOINT, isDeployed, type ChainConfig } from "./config";
+import { QUICK_LAUNCH_CHAINS } from "./quick-launch";
 import { proofOfHumanityAbi } from "./abi/proofOfHumanity";
 import type { SerializedHumanCredential } from "./lib/predicate";
 import type { AgeThreshold, DisclosureProfile } from "./lib/disclosure-profile";
@@ -40,7 +41,6 @@ import {
 } from "./lib/account-privacy";
 import type { SponsoredMintEvidence, SponsoredMintPublicEvidence } from "./lib/sponsored-mint";
 import { PredicateCenter } from "./predicates/predicate-center";
-import { HolderVaultPanel, type HolderVaultTarget } from "./holder-vault-panel";
 
 /*//////////////////////////////////////////////////////////////
                      BRAND ASSETS (from card-minimal-final.svg)
@@ -467,7 +467,7 @@ function MintFlow() {
     const requestId = privacyScanRequestRef.current + 1;
     privacyScanRequestRef.current = requestId;
     setPrivacyScan({ status: "scanning" });
-    const scanChains = CHAINS.filter(isDeployed);
+    const scanChains = QUICK_LAUNCH_CHAINS.filter(isDeployed);
     const assessment = await scanAccountPrivacy({
       account: activeAccount,
       chains: scanChains,
@@ -577,26 +577,9 @@ function MintFlow() {
     [ready, selectedChainId],
   );
   const selectedChain = useMemo(
-    () => (selected ? CHAINS.find((chain) => chain.chainId === selected.chainId) ?? null : null),
+    () => (selected ? QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === selected.chainId) ?? null : null),
     [selected],
   );
-  const holderVaultTarget = useMemo<HolderVaultTarget | null>(() => {
-    const chain = selectedChain ?? CHAINS.find((candidate) => candidate.network === "testnet" && isDeployed(candidate));
-    if (!chain) return null;
-    const proofBinding = selected
-      ? JSON.stringify([
-          "org.proofofhumanity.testnet-voucher-binding",
-          1,
-          selected.chainId,
-          selected.pohAddress.toLowerCase(),
-          selected.voucher.to.toLowerCase(),
-          selected.voucher.nullifier,
-          selected.voucher.epoch,
-          selected.signature.toLowerCase(),
-        ])
-      : null;
-    return { chainId: chain.chainId, name: chain.name, network: chain.network, proofBinding };
-  }, [selected, selectedChain]);
 
   // The chain menu shown inside step 3: every marketed chain, each paired with its
   // deployed voucher if one exists, plus any deployed chain not in the marketed set.
@@ -643,7 +626,7 @@ function MintFlow() {
     if (!injected || !account || !selected || !privacyAcknowledged) return;
     const binding = verificationBindingRef.current;
     if (binding === null) return;
-    const chainCfg = CHAINS.find((c) => c.chainId === selected.chainId);
+    const chainCfg = QUICK_LAUNCH_CHAINS.find((c) => c.chainId === selected.chainId);
     if (!chainCfg) return;
     const chain = viemChain(chainCfg);
 
@@ -729,7 +712,7 @@ function MintFlow() {
     if (!injected || !account || !selected || !privacyAcknowledged || !verificationSession) return;
     const binding = verificationBindingRef.current;
     if (binding === null) return;
-    const chainCfg = CHAINS.find((chain) => chain.chainId === selected.chainId);
+    const chainCfg = QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === selected.chainId);
     if (!chainCfg || chainCfg.network !== "testnet") {
       setNote({ kind: "err", text: "Sponsored minting is available only on configured testnets." });
       return;
@@ -1079,7 +1062,7 @@ function MintFlow() {
 
             {stepConnectDone && SELF_ENDPOINT && ready && phase !== "scan" && phase !== "waiting" && (
               <div className="notice ok">
-                Unique human verified. Voucher signed for {ready.vouchers.length} chain(s); private predicate
+                Unique human verified. Base Sepolia voucher signed; private predicate
                 credential saved for this browser session.
               </div>
             )}
@@ -1168,15 +1151,6 @@ function MintFlow() {
           </div>
         </div>
 
-        {account && privacyAcknowledged && verificationSession && holderVaultTarget && (
-          <HolderVaultPanel
-            key={`${account.toLowerCase()}:${verificationSession}`}
-            account={account}
-            verificationSession={verificationSession}
-            target={holderVaultTarget}
-          />
-        )}
-
         {note && <div className={`notice ${note.kind}`}>{note.text}</div>}
       </div>
 
@@ -1206,10 +1180,10 @@ function MintFlow() {
                   </div>
                   <div className="kv">
                     <span className="k">Transaction</span>
-                    {CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer ? (
+                    {QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer ? (
                       <a
                         className="mono tech-link"
-                        href={`${CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer}/tx/${minted.sponsoredEvidence.transactionHash}`}
+                        href={`${QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === minted.sponsoredEvidence?.chainId)?.explorer}/tx/${minted.sponsoredEvidence.transactionHash}`}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -1352,9 +1326,9 @@ const TECH_FEATURES: { k: string; d: string; href: string }[] = [
     href: "https://eips.ethereum.org/EIPS/eip-5192",
   },
   {
-    k: "Multi-chain EVM + UBI Chain",
-    d: "The same credential mints on any EVM chain and on UBI Chain (ubi2 native), each with its own EIP-712 domain — one human, one credential, everywhere.",
-    href: "https://ethereum.org/en/developers/docs/evm/",
+    k: "Base Sepolia release boundary",
+    d: "Quick Launch signs and presents only the reviewed Base Sepolia deployment. More networks stay outside the release until this complete journey is proven.",
+    href: "https://docs.base.org/base-chain/quickstart/connecting-to-base",
   },
 ];
 
@@ -1409,11 +1383,7 @@ function chainStyle(name: string): { dot: string; label: string } {
 
 /** The chains the app markets minting on — shown as the picker inside the mint step. */
 const MINT_CHAINS: { id: string; dot: string; label: string }[] = [
-  { id: "eth", dot: "eth", label: "Ethereum" },
-  { id: "base", dot: "base", label: "Base" },
-  { id: "op", dot: "op", label: "Optimism" },
-  { id: "celo", dot: "celo", label: "Celo" },
-  { id: "ubi", dot: "ubi", label: "UBI Chain" },
+  { id: "base", dot: "base", label: "Base Sepolia" },
 ];
 
 /** The four-step journey as a living rail: a comet runs the line, lighting each node in turn. */
@@ -1579,7 +1549,7 @@ export default function Page() {
                   <b>ERC-721 + ERC-5192</b> soulbound
                 </span>
                 <span>
-                  <b>Multi-chain</b> EVM
+                  <b>Quick Launch</b> Base Sepolia
                 </span>
               </div>
             </div>
@@ -1698,9 +1668,9 @@ export default function Page() {
               <span className="eyebrow grad-text">◆ The app · live</span>
               <h2>Get your credential.</h2>
               <p>
-                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token — on any
-                EVM chain or on <span className="ubi-ink">UBI Chain</span>. One human, one credential; nothing
-                personal on-chain. Pick where to mint in step&nbsp;3.
+                Connect a wallet, prove humanity with Self, and mint your soulbound Proof-of-Humanity token on
+                Base Sepolia. This release candidate is intentionally one testnet; nothing personal is written
+                on-chain.
               </p>
             </div>
             <MintFlow />
@@ -1787,8 +1757,9 @@ export default function Page() {
               <span className="eyebrow">For builders &amp; DAOs</span>
               <h2>Gate on a proof, not a database.</h2>
               <p>
-                Read the credential from any EVM contract. Require unique humanity for a vote or an airdrop, or ask for
-                a predicate to form an age- or jurisdiction-gated sub-group — all without ever handling personal data.
+                Read the credential from a Base Sepolia app or contract. Require unique humanity for a vote or an
+                airdrop, or ask for a predicate to form an age- or jurisdiction-gated sub-group — all without ever
+                handling personal data.
               </p>
             </div>
             <div className="split">
@@ -1818,8 +1789,8 @@ export default function Page() {
                   <li>
                     <span className="dot" />
                     <span>
-                      <b>Multi-chain by design.</b> The same credential mints on any EVM chain and on ubi2 native, each
-                      with its own EIP-712 domain.
+                      <b>One network first.</b> Quick Launch is pinned to Base Sepolia so the complete journey can be
+                      tested before any additional network or mainnet is considered.
                     </span>
                   </li>
                 </ul>

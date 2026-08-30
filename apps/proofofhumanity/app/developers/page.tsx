@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { CHAINS, isPredicateDeployed } from "../config";
+import { isPredicateDeployed } from "../config";
+import { QUICK_LAUNCH_CHAINS } from "../quick-launch";
 import { descriptorHash } from "../lib/predicate";
 
 export const metadata: Metadata = {
@@ -52,7 +53,7 @@ const response = await fetch("https://proofofhumanity.org/api/predicate", {
     subject: connectedWallet,
     nonce: cryptoNonce.toString(),
     verifier: PREDICATE_VERIFIER_ADDRESS,
-    chainId: 8453,
+    chainId: 84532,
   }),
 });
 
@@ -68,74 +69,6 @@ const result = await checkPredicateArtifact({
 });
 
 if (!result) throw new Error("predicate not satisfied");`;
-
-const V2_POLICY_EXAMPLE = `import {
-  countrySetCommitment,
-  normalizeZkIdentityPolicy,
-  zkIdentityPolicyHash,
-} from "@ubi2/sdk";
-
-const setId = "eu-eea:2026-08";
-const setRoot = countrySetCommitment({
-  setId,
-  members: ["AUT", "BEL", "DEU", "ESP", "FRA" /* complete registry set */],
-});
-
-const policy = normalizeZkIdentityPolicy({
-  kind: "country-set",
-  attribute: "nationality",
-  operator: "in",
-  setId,
-  setRoot,
-});
-
-const policyHash = zkIdentityPolicyHash(policy);
-// Bind policyHash to chain, verifier, consumer, subject, context,
-// challenge and epoch with zkPresentationBindingHash(...).`;
-
-const V2_ISSUANCE_EXAMPLE = `import {
-  deserializeZkSelfIssuanceAuthorization,
-  zkIdentitySelfIssuanceBridgeAbi,
-  zkSelfIssuanceRefreshableErrorName,
-} from "@ubi2/sdk";
-
-// Returned only after the exact Self proof has bound the wallet and the
-// holder prover's canonical BN254 credential commitment.
-let { zkIssuance } = await pollVerificationResult();
-
-async function submit() {
-  // Simulation with the SDK ABI decodes the three refreshable custom errors.
-  const { request } = await publicClient.simulateContract({
-    account: connectedWallet, // must equal authorization.subject
-    chain: canonicalIssuanceChain,
-    address: zkIssuance.bridge,
-    abi: zkIdentitySelfIssuanceBridgeAbi,
-    functionName: "issue",
-    args: [
-      deserializeZkSelfIssuanceAuthorization(zkIssuance.authorization),
-      zkIssuance.signature,
-    ],
-  });
-  return walletClient.writeContract(request);
-}
-
-try {
-  await submit();
-} catch (error) {
-  if (!zkSelfIssuanceRefreshableErrorName(error)) throw error;
-
-  const response = await fetch(
-    "/api/self-verify?address=" + connectedWallet,
-    {
-      method: "PATCH",
-      headers: { "x-poh-verification-session": session },
-    },
-  );
-  const refreshed = await response.json();
-  if (!response.ok) throw new Error(refreshed.error);
-  zkIssuance = refreshed.zkIssuance;
-  await submit();
-}`;
 
 const descriptors = ["age>=18", "age>=21", "nationality=ARG", "sanctions-clear"] as const;
 
@@ -154,19 +87,17 @@ export default function DevelopersPage() {
         <aside className="docs-nav">
           <span>Integration guide</span>
           <a href="#model">Trust model</a>
-          <a href="#v2-policies">v2 policy SDK</a>
-          <a href="#v2-issuance">v2 issuance bridge</a>
           <a href="#descriptors">Descriptors</a>
           <a href="#request">Request an attestation</a>
           <a href="#contract">Consume on-chain</a>
           <a href="#networks">Networks</a>
           <a href="#security">Security checklist</a>
-          <a href="#release">Mainnet release gate</a>
+          <a href="#release">Release boundary</a>
         </aside>
 
         <article className="docs-content">
           <div className="docs-hero">
-            <span className="eyebrow">Proof of Humanity · v1 live + v2 foundation</span>
+            <span className="eyebrow">PoH Quick Launch v1 · Base Sepolia</span>
             <h1>Build gates for humans,<br /><span className="grad-text">not identity databases.</span></h1>
             <p>
               Integrate a minimal soulbound humanity credential, or require a narrowly scoped age, nationality, or
@@ -182,7 +113,7 @@ export default function DevelopersPage() {
             <span className="doc-number">01</span><h2>Trust model</h2>
             <div className="trust-table">
               <div><b>Live v1 · issuer-attested</b><p>Self verifies passport facts. The issuer evaluates the private held credential and signs one Boolean attestation.</p></div>
-              <div><b>v2 · reusable holder-side ZK</b><p>Foundation in development. A transitional Self issuance bridge and SDK are implemented but not deployed; production commitment generation, local proving, status roots and prover contracts remain gated.</p></div>
+              <div><b>Release boundary · one testnet</b><p>Only the reviewed Base Sepolia contracts are accepted. Mainnet, custom v2 provers, and fabricated credentials fail closed.</p></div>
             </div>
             <div className="notice warn">
               Do not describe v1 predicate attestations as trustless ZK. Consumers trust the configured issuer to
@@ -190,45 +121,8 @@ export default function DevelopersPage() {
             </div>
           </section>
 
-          <section id="v2-policies" className="docs-section">
-            <span className="doc-number">02</span><h2>Build canonical v2 policies</h2>
-            <p>
-              v2 policies are versioned objects with deterministic EVM hashes. The same object shown in the
-              <a href="/verify"> policy designer</a> is intended to become a circuit public input and consumer
-              allowlist value. Current helpers build and hash policies; they do not generate a proof.
-            </p>
-            <pre className="docs-code"><code>{V2_POLICY_EXAMPLE}</code></pre>
-            <div className="notice warn">
-              Treat country-set and status roots as governed registries. A friendly label is not security: consumers
-              must allowlist the exact set id, root, version, circuit/prover, chain and verifier they reviewed.
-            </div>
-          </section>
-
-          <section id="v2-issuance" className="docs-section">
-            <span className="doc-number">03</span><h2>Submit a v2 issuance authorization</h2>
-            <p>
-              The developer-preview path verifies the exact configured Self e-passport proof off-chain, derives a
-              registry-scoped duplicate key, and signs a ten-minute authorization for one immutable bridge. The
-              wallet submits the transaction itself; another caller, chain, bridge, signer, verifier configuration,
-              issuer key, slot, epoch, or changed commitment fails closed.
-            </p>
-            <pre className="docs-code"><code>{V2_ISSUANCE_EXAMPLE}</code></pre>
-            <p className="muted small">
-              A slot race, epoch rollover, or expired transaction authorization can be refreshed with the same
-              address and 128-bit browser-session capability. Refresh never changes the subject, scoped passport
-              key, credential commitment, issuer, bridge, or verifier configuration, and never extends the original
-              ten-minute passport-verification window. HTTP 410 requires a new passport scan; 409 means the grant is
-              not refreshable or was already consumed; 429 should honor <code>Retry-After</code>.
-            </p>
-            <div className="notice warn">
-              This is not live user functionality yet. The holder-side production commitment circuit and vault
-              integration are still required, and the current bridge trusts a pinned off-chain Self verification
-              authority. Never generate a placeholder commitment or treat this authorization as a presentation proof.
-            </div>
-          </section>
-
           <section id="descriptors" className="docs-section">
-            <span className="doc-number">04</span><h2>Canonical v1 descriptors</h2>
+            <span className="doc-number">02</span><h2>Canonical v1 descriptors</h2>
             <p>Consumers require the hash of an exact canonical string. No spaces or aliases are accepted.</p>
             <div className="descriptor-table">
               {descriptors.map((descriptor) => (
@@ -239,7 +133,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="request" className="docs-section">
-            <span className="doc-number">05</span><h2>Request a v1 attestation</h2>
+            <span className="doc-number">03</span><h2>Request a v1 attestation</h2>
             <p>
               The holder calls the API from the verification app. Before signing, the server verifies the private
               credential signature and freshness, the subject&apos;s live SBT ownership, both contract issuer addresses,
@@ -251,7 +145,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="contract" className="docs-section">
-            <span className="doc-number">06</span><h2>Consume v1 atomically on-chain</h2>
+            <span className="doc-number">04</span><h2>Consume v1 atomically on-chain</h2>
             <p>
               A state-changing consumer must call <code>consume</code> itself. The verifier requires
               <code>att.consumer == msg.sender</code>, checks subject and freshness, and marks the
@@ -261,11 +155,11 @@ export default function DevelopersPage() {
           </section>
 
           <section id="networks" className="docs-section">
-            <span className="doc-number">07</span><h2>Configured networks</h2>
-            <p>The app exposes issuance only when both contract addresses are configured. Zero addresses fail closed.</p>
+            <span className="doc-number">05</span><h2>Release network</h2>
+            <p>Quick Launch exposes only Base Sepolia and only when both contract addresses are configured.</p>
             <div className="network-table">
               <div className="network-row head"><span>Network</span><span>Chain</span><span>PoH</span><span>Predicate</span><span>Status</span></div>
-              {CHAINS.filter((chain) => chain.chainId !== 31337).map((chain) => {
+              {QUICK_LAUNCH_CHAINS.map((chain) => {
                 const deployed = isPredicateDeployed(chain);
                 const explorer = chain.explorer;
                 return (
@@ -293,7 +187,7 @@ export default function DevelopersPage() {
           </section>
 
           <section id="security" className="docs-section">
-            <span className="doc-number">08</span><h2>Security checklist</h2>
+            <span className="doc-number">06</span><h2>Security checklist</h2>
             <ul className="docs-checks">
               <li>Require the exact descriptor hash, <code>result == true</code>, consumer, context, and subject your action expects.</li>
               <li>Use <code>consume</code> inside state-changing flows; use <code>check</code> only when replay is harmless.</li>
@@ -301,18 +195,17 @@ export default function DevelopersPage() {
               <li>Keep the issuer key server-side in an HSM or managed signer; never expose it as <code>NEXT_PUBLIC_*</code>.</li>
               <li>Keep owner and issuer roles distinct: owner is the governance multisig; issuer is the narrow operational signer.</li>
               <li>Do not log held credentials, Self proof payloads, passport attributes, or issuer secrets.</li>
-              <li>Never accept a v2 policy preview as evidence. Require an audited configured prover and verify the exact policy and presentation-binding hashes.</li>
+              <li>Reject every non-Base-Sepolia chain and require <code>PredicateVerifier.prover() == address(0)</code>.</li>
             </ul>
           </section>
 
           <section id="release" className="docs-section release-gate">
-            <span className="doc-number">09</span><h2>Mainnet release gate</h2>
+            <span className="doc-number">07</span><h2>Release boundary</h2>
             <p>
-              Mainnet is intentionally not activated by code merge alone. Every target chain must pass deterministic
-              CI, testnet deployment and verification, live contract probes, issuer/owner checks, app configuration,
-              rollback documentation, and an explicit per-chain human broadcast approval.
+              This release is Base Sepolia only. Mainnet is intentionally unavailable, the predicate prover must stay
+              unset, and a real Self callback-to-mint-to-predicate journey must be observed before launch readiness.
             </p>
-            <div className="notice ok">The website can ship before addresses are added: unsupported networks remain visibly pending and issuance stays disabled.</div>
+            <div className="notice ok">Research code can continue in the monorepo without becoming a route, API method, credential source, or configured release network.</div>
           </section>
         </article>
       </main>

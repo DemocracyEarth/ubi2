@@ -4,7 +4,8 @@
  * A verified human proves a yes/no PREDICATE about themselves ("age ≥ 18",
  * "nationality = ARG", "sanctions-clear") to a consumer, revealing ONLY the
  * boolean. Nothing personal is stored on-chain, and the proof is bound to a
- * single consumer, so it is unlinkable across consumers.
+ * single consumer, which limits replay. The artifact still exposes the subject
+ * wallet and is therefore linkable when that wallet is reused across consumers.
  *
  * Two credentials live here — PIN the on-chain one exactly:
  *

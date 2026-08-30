@@ -13,7 +13,8 @@ import {
 } from "viem";
 import { predicateVerifierAbi } from "../abi/predicateVerifier";
 import { proofOfHumanityAbi } from "../abi/proofOfHumanity";
-import { CHAINS, isPredicateDeployed } from "../config";
+import { isPredicateDeployed } from "../config";
+import { QUICK_LAUNCH_CHAINS } from "../quick-launch";
 import { HELD_CREDENTIAL_EVENT, loadHeldCredential, type HeldCredential } from "../lib/held-credential";
 import {
   AGE_FLAG_18,
@@ -136,7 +137,7 @@ function chainStatusCopy(check: ChainCredentialCheck, chainName: string): { titl
 }
 
 export function PredicateCenter({ standalone = false }: { standalone?: boolean }) {
-  const deployedChains = useMemo(() => CHAINS.filter(isPredicateDeployed), []);
+  const deployedChains = useMemo(() => QUICK_LAUNCH_CHAINS.filter(isPredicateDeployed), []);
   const [held, setHeld] = useState<HeldCredential | null>(null);
   const [account, setAccount] = useState<Address | null>(null);
   const [kind, setKind] = useState<PredicateKind>("age18");
@@ -396,7 +397,7 @@ export function PredicateCenter({ standalone = false }: { standalone?: boolean }
     <div className={`predicate-center${standalone ? " standalone" : ""}`} data-testid="predicate-center">
       <div className="predicate-trust">
         <div className="predicate-trust-title">
-          <span className="pill ok">Live on {deployedChains.length} testnets</span>
+          <span className="pill ok">Quick Launch · Base Sepolia</span>
           <strong>One private fact in. One signed answer out.</strong>
         </div>
         <p>
@@ -513,7 +514,7 @@ export function PredicateCenter({ standalone = false }: { standalone?: boolean }
                   <option value="">No verifier deployment configured</option>
                 )}
               </select>
-              <span className="field-support"><span className="live-dot" /> {deployedChains.length} verified testnet deployments</span>
+              <span className="field-support"><span className="live-dot" /> Base Sepolia release deployment</span>
             </div>
             <div className="predicate-field">
               <FieldLabel htmlFor="predicate-context" label="Context label">

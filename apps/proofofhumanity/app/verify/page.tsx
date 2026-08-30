@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 import { PredicateCenter } from "../predicates/predicate-center";
-import { V2PolicyLab } from "../predicates/v2-policy-lab";
 
 export const metadata: Metadata = {
   title: "Verify private facts · Proof of Humanity",
-  description: "Use live v1 private predicates and explore canonical v2 passport policies for reusable local ZK proofs.",
+  description: "Create Base Sepolia age, nationality, and sanctions attestations from a verified Self session.",
 };
 
 export default function VerifyPage() {
@@ -23,15 +22,15 @@ export default function VerifyPage() {
           <span className="eyebrow">Private, contract-checked verification</span>
           <h1>Answer one question.<br /><span className="grad-text">Keep the rest private.</span></h1>
           <p>
-            Today you can create issuer-attested age, nationality, or sanctions results on supported testnets. Below,
-            explore the expanded v2 policies being built for one reusable, passkey-protected private credential.
+            Create an issuer-attested age, nationality, or sanctions result on the release-pinned Base Sepolia
+            deployment. Custom v2 proofs and rehearsal credentials are outside this launch.
           </p>
         </section>
         <PredicateCenter standalone />
         <section className="verify-explainer">
           <article>
             <span>01</span><h2>Prepare</h2>
-            <p>Verify with Self, choose the facts you may need, and mint your soulbound credential on a supported network.</p>
+            <p>Verify with Self, choose the facts you may need, and mint your soulbound credential on Base Sepolia.</p>
           </article>
           <article>
             <span>02</span><h2>Choose and bind</h2>
@@ -42,7 +41,6 @@ export default function VerifyPage() {
             <p>Copy the signed artifact into an app, or let a contract call <code>check</code> or single-use <code>consume</code>.</p>
           </article>
         </section>
-        <V2PolicyLab />
       </main>
     </>
   );
