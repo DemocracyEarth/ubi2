@@ -13,6 +13,17 @@ test("Quick Launch PWA exposes only the Base Sepolia v1 journey", async ({ page,
   const demoCredential = await request.post("/api/predicate/demo-credential");
   expect(demoCredential.status()).toBe(404);
 
+  const hostReadiness = await request.get("/api/quick-launch-readiness");
+  expect([200, 503]).toContain(hostReadiness.status());
+  expect(hostReadiness.headers()["cache-control"]).toContain("no-store");
+  const hostRecord = await hostReadiness.json();
+  expect(hostRecord.schema).toBe("org.proofofhumanity.quick-launch.host-readiness/1");
+  expect(hostRecord.transactionFree).toBe(true);
+  const hostJson = JSON.stringify(hostRecord);
+  expect(hostJson).not.toContain("privateKey");
+  expect(hostJson).not.toContain("password");
+  expect(hostJson).not.toContain("rawSecret");
+
   const v2Refresh = await request.patch(
     "/api/self-verify?address=0x1111111111111111111111111111111111111111",
     { headers: { "x-poh-verification-session": "0123456789abcdef0123456789abcdef" } },

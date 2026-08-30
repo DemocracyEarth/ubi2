@@ -1,0 +1,57 @@
+{
+  "schema": "org.proofofhumanity.quick-launch.blocked-host-evidence/1",
+  "observedAt": "2026-08-30T23:14:43.772Z",
+  "origin": "https://proofofhumanity.org",
+  "transactionFree": true,
+  "expectedMainRevision": "47a94bbdb476e2a4d4e0f4e43cc163dd91534672",
+  "publicChainPreflight": {
+    "ready": true,
+    "chainId": 84532,
+    "chainName": "Base Sepolia",
+    "proofOfHumanity": "0x06BD253009F74ad934A4DaEac133b153d9Fe8029",
+    "predicateVerifier": "0x2051D33c2F10CDd3739324afc4C6fD957564a9D6",
+    "owner": "0x26250e47500943464290A77ae3508a3001d9B69d",
+    "issuer": "0x1D6cB99ff20223d730Ae5D4680EC5154B7FdAefe",
+    "predicateOwner": "0x26250e47500943464290A77ae3508a3001d9B69d",
+    "predicateIssuer": "0x1D6cB99ff20223d730Ae5D4680EC5154B7FdAefe",
+    "predicateProver": "0x0000000000000000000000000000000000000000",
+    "selfEnvironment": "staging",
+    "selfEndpoint": "https://proofofhumanity.org/api/self-verify"
+  },
+  "publicSurface": {
+    "homeStatus": 200,
+    "homeSha256": "930f9408d60d6e04cbabde06806e771e9737221d09a88478e4688ff5f99bfa95",
+    "quickLaunchMarker": true,
+    "baseSepoliaMarker": true,
+    "forbiddenTestnetMarkers": [],
+    "demoCredentialStatus": 404,
+    "cloudFrontObserved": true,
+    "originTopologyVerified": false
+  },
+  "hostReadinessEndpoint": {
+    "status": 404,
+    "responseSha256": "2056d35f46473d488ec75839a446dde1b2317ec6ce6a0a353595be9e21d59894",
+    "sourceRevisionVerified": false
+  },
+  "deploymentMetadata": {
+    "githubDeploymentRecords": 0,
+    "awsMetadataAccess": "unavailable-no-credentials",
+    "environmentMapRequested": false
+  },
+  "externalAttestations": {
+    "topologySha256": null,
+    "issuerSecretInjectionSha256": null,
+    "sponsorSecretInjectionSha256": null,
+    "issuerSecretPathVerified": false,
+    "sponsorSecretPathVerified": false
+  },
+  "ready": false,
+  "blockers": [
+    "deployment-owner metadata access is unavailable",
+    "CloudFront does not prove one sticky Node origin",
+    "immutable topology attestation URL/path and SHA-256 are unavailable",
+    "approved issuer secret-manager reference and redacted injection attestation are unavailable",
+    "approved sponsor secret-manager reference, public address, and redacted injection attestation are unavailable",
+    "the runtime source revision cannot be observed until the readiness endpoint is deployed"
+  ]
+}

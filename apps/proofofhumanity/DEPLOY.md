@@ -42,6 +42,11 @@ Start from [`.env.example`](.env.example). The release-relevant inputs are:
 | `ISSUER_PRIVATE_KEY` | server secret injected from the approved secret path; its public address must match both contracts |
 | `POH_SPONSOR_PRIVATE_KEY` | optional isolated testnet hot key |
 | `POH_SPONSOR_TESTNET_CHAIN_IDS` | exactly `84532` when sponsorship is enabled |
+| `POH_SOURCE_REVISION` | exact 40-hex main revision when the runtime does not expose `AWS_COMMIT_ID` |
+| `POH_RUNTIME_TOPOLOGY` | exactly `single-sticky-node`; a declaration is rejected without external evidence |
+| `POH_TOPOLOGY_ATTESTATION_SHA256` | public SHA-256 of the immutable, redacted provider topology attestation |
+| `POH_ISSUER_SECRET_ATTESTATION_SHA256` | public SHA-256 of the immutable, redacted issuer injection attestation |
+| `POH_SPONSOR_SECRET_ATTESTATION_SHA256` | public SHA-256 of the immutable, redacted sponsor injection attestation |
 
 All other sponsorship caps retain the conservative defaults shown in `.env.example`. Put matching edge
 quotas and spend/reserve alerts at the trusted proxy. The application uses the first
@@ -69,6 +74,19 @@ Observed on 2026-08-30 from the public Base Sepolia RPC, without a transaction:
 
 That read-only observation does not prove that an app host, issuer secret path, sponsor, public callback,
 or real Self journey is ready.
+
+### Automatically deployed host
+
+Merges to `main` are automatically published at `https://proofofhumanity.org`. Treat deployment as a
+public byte-delivery mechanism, not evidence of a sticky process or signer provenance. The public front
+door is CloudFront; its headers do not prove the number or identity of origin workers.
+
+After the contract/callback check, follow
+[`../../ops/proofofhumanity/QUICK_LAUNCH_HOST_PREFLIGHT.md`](../../ops/proofofhumanity/QUICK_LAUNCH_HOST_PREFLIGHT.md).
+The runtime readiness endpoint derives only public signer addresses and returns hash commitments to
+separate topology/secret-injection attestations. The external verifier compares those facts with an
+exact main revision and independently supplied hashes. Both checks must be green. Never inspect or
+capture an environment-variable map to obtain this evidence because it may contain secret values.
 
 ## Validation gate
 
@@ -108,13 +126,17 @@ env content.
 ## Exact external blocker checklist
 
 - [ ] Public HTTPS application origin and exact Self callback URL.
+- [ ] Exact deployed main revision and `GET /api/quick-launch-readiness` reports `ready: true`.
+- [ ] Immutable, redacted single-sticky-node topology attestation and matching SHA-256.
 - [ ] Self application configuration for staging and, separately, production.
 - [ ] Approved single-replica Node host, TLS, sticky routing, trusted-proxy configuration, restart/5xx alerts,
       and log-redaction review.
 - [ ] Approved issuer secret-manager path whose public address matches both reviewed contracts; do not provide
       the secret value to reviewers.
+- [ ] Immutable, redacted issuer injection attestation and matching runtime SHA-256.
 - [ ] If sponsorship is enabled: separate sponsor secret path, public sponsor address, bounded Base Sepolia
       funding, edge quotas, daily-spend alert, and reserve alert.
+- [ ] Immutable, redacted sponsor injection attestation and matching runtime SHA-256.
 - [ ] Physical-phone staging tester and authorized real-passport production tester.
 - [ ] Redacted evidence template and storage location for callback, receipt, contract-state, and predicate
       outcomes.

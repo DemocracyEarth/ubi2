@@ -15,6 +15,8 @@ import type { DisclosureRequest } from "./lib/disclosure-profile";
  */
 export const QUICK_LAUNCH_RELEASE = {
   id: "poh-quick-launch-v1",
+  canonicalOrigin: "https://proofofhumanity.org",
+  canonicalSelfEndpoint: "https://proofofhumanity.org/api/self-verify",
   chainId: 84_532,
   network: "testnet",
   proofOfHumanity: getAddress("0x06BD253009F74ad934A4DaEac133b153d9Fe8029"),

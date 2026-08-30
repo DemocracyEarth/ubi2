@@ -11,6 +11,11 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 > predicates on Base Sepolia. M5, M6 native, EVM ZK Identity v2, custom circuits/ceremonies, operator fleets,
 > additional chains, M7 and M8 are paused as release dependencies. Their code and research remain in the
 > monorepo, but none may block or silently enter Quick Launch. Mainnet is not authorized.
+>
+> **Quick Launch status (2026-08-30): 15%.** PR #113 is merged and its Base Sepolia-only bytes are
+> observable on the automatic `proofofhumanity.org` deployment. Days 2–3 remain blocked: CloudFront
+> does not prove a sticky single origin, and no deployment-owner metadata access or immutable
+> topology/issuer/sponsor injection attestations are available. The host must remain `ready: false`.
 
 > **Freshness note (updated 2026-08-11):** M6 (ZK-Passport PoH) and the
 > Browser/Mobile Light Node track — both listed below as ⬜ planned in the previous revision — have each
