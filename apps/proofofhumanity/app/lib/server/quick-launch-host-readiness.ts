@@ -11,6 +11,10 @@ import {
 } from "../../quick-launch-host";
 import { QUICK_LAUNCH_RELEASE } from "../../quick-launch";
 import { getSponsoredMintServerConfig } from "../../server-config";
+import {
+  QUICK_LAUNCH_API_RUNTIME,
+  assessQuickLaunchApiRuntime,
+} from "../../quick-launch-api-runtime";
 
 function digest(value: string | undefined): string | null {
   const normalized = value?.trim().toLowerCase() ?? null;
@@ -52,6 +56,7 @@ export function quickLaunchHostReadiness(
     selfEndpoint: QUICK_LAUNCH_RELEASE.canonicalSelfEndpoint,
   },
 ) {
+  const apiRuntime = assessQuickLaunchApiRuntime(env);
   let sponsorAddress: Address | null = null;
   let sponsorEnabledChainIds: readonly number[] = [];
   let sponsorPolicyValid = false;
@@ -73,6 +78,8 @@ export function quickLaunchHostReadiness(
     selfEndpoint: endpoint === expected.selfEndpoint ? endpoint : null,
     selfEnvironment:
       selfEnvironment === "staging" || selfEnvironment === "production" ? selfEnvironment : null,
+    apiRuntime: apiRuntime.dedicatedSingleReplica ? QUICK_LAUNCH_API_RUNTIME : null,
+    blockchainTransactionsEnabled: !apiRuntime.transactionFree,
     singleStickyNodeDeclared: env.POH_RUNTIME_TOPOLOGY?.trim() === "single-sticky-node",
     topologyAttestationSha256: digest(env.POH_TOPOLOGY_ATTESTATION_SHA256),
     issuerSecretAttestationSha256: digest(env.POH_ISSUER_SECRET_ATTESTATION_SHA256),
@@ -87,7 +94,7 @@ export function quickLaunchHostReadiness(
   return {
     schema: QUICK_LAUNCH_HOST_READINESS_SCHEMA,
     release: QUICK_LAUNCH_RELEASE.id,
-    transactionFree: true as const,
+    transactionFree: apiRuntime.transactionFree,
     chainId: QUICK_LAUNCH_RELEASE.chainId,
     canonicalOrigin: QUICK_LAUNCH_RELEASE.canonicalOrigin,
     ...probe,

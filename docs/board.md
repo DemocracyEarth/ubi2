@@ -223,23 +223,29 @@ _(none)_
   [Spec](specs/v2-issuance-registry.md).
 
 ## 👀 Review (awaiting gates)
-- **POH-QL-V1-T2A · release/security/qa/reliability** — transaction-free automatic-host readiness
-  boundary. Deployed revision, canonical callback, staging mode, externally hash-bound single-sticky-node
-  topology, issuer address, separate sponsor address and exact Base Sepolia policy fail closed; endpoint and
-  evidence verifier allowlist public output and never expose a key or raw secret reference. Failure-path/PWA/full
-  repository gates are green; live readiness is not part of this tooling task. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_HOST_PREFLIGHT.md),
-  [QA](reports/qa-poh-quick-launch-host-preflight.md),
-  [reliability](reports/reliability-poh-quick-launch-host-preflight.md),
-  [security](reports/security-poh-quick-launch-host-preflight.md).
+- **POH-QL-V1-T2C · release/security/qa/reliability** — dedicated transaction-free Base Sepolia API
+  origin. Amplify retains the frontend/public domain and exact-path proxies four APIs to a digest-pinned
+  standalone Node service. ECS enforces one stop-before-start task; routes require the dedicated runtime;
+  sponsored POST is killed before side effects; Secrets Manager references never enter Amplify/image/evidence;
+  public boot/readiness records and before/after restart verification are strict allowlists. No infrastructure was
+  provisioned or live readiness claimed. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_API_ORIGIN.md),
+  [QA](reports/qa-poh-quick-launch-api-origin.md),
+  [reliability](reports/reliability-poh-quick-launch-api-origin.md),
+  [security](reports/security-poh-quick-launch-api-origin.md).
 
 ## ⛔ Blocked
 - **POH-QL-V1-T2B · release/security + deployment owner** — configure and attest the actual automatic
-  Quick Launch host. **Blocked:** this worktree has no deployment-provider credentials; CloudFront does not
-  prove one sticky Node origin; no immutable topology attestation, approved issuer secret-injection
-  attestation, approved sponsor secret-injection attestation, or sponsor public address was supplied. Keep
-  the host record `ready: false`; do not transact. [Observed evidence](../ops/proofofhumanity/evidence/quick-launch-host-preflight-2026-08-30.json).
+  Quick Launch host. **Superseded by T2D:** Amplify is the frontend, not the signing origin.
+- **POH-QL-V1-T2D · release/security + deployment owner** — provision and attest the dedicated API
+  origin, then cut over the canonical paths. **Blocked:** no billing approval, VPC/subnet/DNS/ACM inputs,
+  digest-pinned image, approved secret-reference metadata, immutable attestations or external anchor is available.
+  Direct/canonical preflights and a no-overlap restart drill must pass while transactions remain disabled. Keep
+  readiness false and do not transact. [Blocked evidence](../ops/proofofhumanity/evidence/quick-launch-api-origin-predeploy-2026-08-30.json).
 
 ## ✅ Done
+- **POH-QL-V1-T2A · transaction-free host boundary · SHIPPED in PR #114.** Public chain/callback and
+  host-readiness preflights bind the source, topology and signer attestations without exposing values. Its initial
+  automatic-host assumption is replaced by T2C's dedicated origin; the strict evidence primitives remain reused.
 - **POH-QL-V1-T1 · Quick Launch release boundary · SHIPPED in PR #113.** Exactly Base Sepolia enters
   voucher, predicate, sponsor and UI paths; demo/V2/vault surfaces are absent from the release graph;
   transaction-free contract/callback preflight and complete CI passed. The merged bytes are now publicly

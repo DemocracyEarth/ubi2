@@ -12,13 +12,15 @@
     "test:predicate": "tsx test/predicate.crossstack.ts",
     "test:issuance": "tsx test/zk-self-issuance.crossstack.ts",
     "test:quick-launch-host": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx test/quick-launch-host.product.ts",
-    "test:quick-launch": "tsx test/quick-launch.product.ts && pnpm run test:quick-launch-host && tsx test/predicate.product.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts",
+    "test:quick-launch-api-origin": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx test/quick-launch-api-origin.product.ts",
+    "test:quick-launch": "tsx test/quick-launch.product.ts && pnpm run test:quick-launch-host && pnpm run test:quick-launch-api-origin && tsx test/predicate.product.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts",
     "test:product": "pnpm run test:quick-launch && tsx test/expiring-store.ts && tsx test/holder-vault.product.ts",
     "test:pwa": "playwright test",
     "sponsor:monitor": "tsx scripts/sponsor-account-monitor.ts",
     "sponsor:rehearse": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx scripts/rehearse-sponsored-mint.ts",
     "quick-launch:preflight": "tsx scripts/check-quick-launch-preflight.ts",
     "quick-launch:host-preflight": "tsx scripts/check-quick-launch-host.ts",
+    "quick-launch:api-origin-preflight": "tsx scripts/check-quick-launch-api-origin.ts",
     "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate && pnpm run test:issuance && pnpm run test:product"
   },
   "dependencies": {

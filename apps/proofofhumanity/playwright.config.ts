@@ -24,6 +24,9 @@ export default defineConfig({
     env: {
       NEXT_PUBLIC_SELF_ENV: "staging",
       NEXT_PUBLIC_SELF_ENDPOINT: "",
+      // Test-only: exercise the dedicated-origin route contract without any secret or transaction.
+      POH_API_RUNTIME: "dedicated-single-replica",
+      POH_BLOCKCHAIN_TRANSACTIONS_ENABLED: "false",
     },
   },
 });

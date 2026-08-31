@@ -1,8 +1,10 @@
 # Quick Launch host preflight — automatic main deployment
 
-`main` is automatically published at `https://proofofhumanity.org`. A successful merge or a `200`
-home page is not host-readiness evidence: the CloudFront front door does not prove which origin handled
-two requests, how many Node processes exist, or where a signing variable was injected.
+`main` is automatically published as the public frontend at `https://proofofhumanity.org`. A successful
+merge or a `200` home page is not API host-readiness evidence: the CloudFront front door does not prove
+which origin handled two requests, how many Node processes exist, or where a signing variable was
+injected. The signing/state APIs belong on the dedicated origin described in
+[`QUICK_LAUNCH_API_ORIGIN.md`](QUICK_LAUNCH_API_ORIGIN.md), never in Amplify.
 
 This runbook is transaction-free. It must never call a wallet, submit a chain transaction, retrieve a
 secret value, print an environment, or copy a raw secret-manager path into public evidence.
@@ -32,9 +34,20 @@ the values themselves.
 
 ## Runtime configuration
 
-Configure the automatic deployment with:
+Configure the Amplify main-branch build with public values only:
 
 ```text
+NEXT_PUBLIC_SELF_ENDPOINT=https://proofofhumanity.org/api/self-verify
+NEXT_PUBLIC_SELF_ENV=staging
+POH_QUICK_LAUNCH_API_ORIGIN=https://<dedicated-host>
+```
+
+Configure the dedicated single-task API service with:
+
+```text
+POH_API_RUNTIME=dedicated-single-replica
+POH_BLOCKCHAIN_TRANSACTIONS_ENABLED=false
+POH_SOURCE_REVISION=<40 lowercase hex>
 NEXT_PUBLIC_SELF_ENDPOINT=https://proofofhumanity.org/api/self-verify
 NEXT_PUBLIC_SELF_ENV=staging
 POH_RUNTIME_TOPOLOGY=single-sticky-node
@@ -45,14 +58,18 @@ POH_SPONSOR_TESTNET_CHAIN_IDS=84532
 ```
 
 `ISSUER_PRIVATE_KEY` and `POH_SPONSOR_PRIVATE_KEY` must be injected from their approved paths. If the
-SSR runtime does not receive `AWS_COMMIT_ID`, also configure `POH_SOURCE_REVISION` to the exact 40-hex
-main commit. Do not set any readiness variable on a preview branch or a multi-instance/serverless
-deployment. Restart the candidate after configuration and retain the provider change record.
+runtime does not receive a provider revision variable, `POH_SOURCE_REVISION` must remain the exact
+40-hex main commit. Neither key, either secret reference, signer attestation, topology attestation or
+API runtime variable belongs in Amplify. Do not set any readiness variable on a preview branch or a
+multi-instance/serverless deployment. Restart the candidate after configuration and retain the
+redacted provider change record.
 
-`GET /api/quick-launch-readiness` returns only public facts: release/chain, source revision, attestation
+`GET /api/quick-launch-readiness` through the canonical domain is proxied to the dedicated service and
+returns only public facts: release/chain, source revision, attestation
 digests, derived signer addresses, sponsor allowlist and blocker codes. It never signs, reads chain
 state, returns a key, returns a raw secret reference, or sends a transaction. It responds `503` until
-all runtime facts pass, and uses `Cache-Control: no-store`.
+all runtime facts pass, and uses `Cache-Control: no-store`. Schema version 2 additionally requires the
+dedicated runtime declaration and proves the blockchain transaction flag is off.
 
 ## External verification and evidence
 
@@ -85,13 +102,16 @@ role overlap exits nonzero.
 - [x] Merged Quick Launch UI is publicly observable on `proofofhumanity.org`.
 - [x] Transaction-free Base Sepolia contract/callback preflight is green.
 - [x] Deleted demo-credential route returns `404`.
-- [ ] Deployment-owner access capable of proving the origin topology. This worktree has no AWS
-      credentials, and CloudFront headers do not establish a sticky single Node process.
+- [ ] Billable dedicated-origin stack approved and provisioned from the digest-pinned image.
+- [ ] Deployment-owner access capable of proving the ECS desired/running/pending counts and
+      stop-before-start deployment policy. CloudFront headers do not establish a sticky Node process.
 - [ ] Immutable topology attestation URL/path and SHA-256.
 - [ ] Approved issuer secret-manager reference and immutable redacted injection-attestation SHA-256.
 - [ ] Approved sponsor secret-manager reference, public sponsor address and immutable redacted
       injection-attestation SHA-256.
-- [ ] Runtime source revision visible through `AWS_COMMIT_ID` or `POH_SOURCE_REVISION`.
+- [ ] Runtime source revision visible through `POH_SOURCE_REVISION`.
+- [ ] Direct-origin restart/redaction evidence passes with a changed boot ID and no task overlap.
+- [ ] Amplify contains only the public API origin/callback configuration and proxies the exact four paths.
 - [ ] Merged readiness endpoint returns `200` with `ready: true` and all external hashes match.
 
 Until every unchecked item passes, do not run Self on a phone, fund a sponsor, send a transaction or

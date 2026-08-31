@@ -45,12 +45,12 @@ import {
   type SerializedHumanCredential,
 } from "../../lib/predicate";
 import { isPredicateDeployed } from "../../config";
-import { QUICK_LAUNCH_CHAINS } from "../../quick-launch";
-import { getIssuerPrivateKey } from "../../server-config";
+import { getIssuerPrivateKey, getQuickLaunchServerChain } from "../../server-config";
 import { privateKeyToAccount } from "viem/accounts";
 import { proofOfHumanityAbi } from "../../abi/proofOfHumanity";
 import { predicateVerifierAbi } from "../../abi/predicateVerifier";
 import { rateLimit } from "../../lib/server/verification-store";
+import { requireDedicatedQuickLaunchApiOrigin } from "../../lib/server/quick-launch-api-guard";
 
 // Node.js runtime: signing uses the server-only issuer key + Node crypto.
 export const runtime = "nodejs";
@@ -100,6 +100,9 @@ function isBody(b: unknown): b is PredicateRequestBody {
 }
 
 export async function POST(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+
   const contentLength = Number(req.headers.get("content-length") ?? 0);
   if (contentLength > 32_768) {
     return NextResponse.json({ ok: false, error: "Predicate request is too large." }, { status: 413 });
@@ -179,7 +182,8 @@ export async function POST(req: NextRequest) {
 
   // The caller cannot choose an arbitrary EIP-712 domain. It must name the configured verifier
   // paired with the configured ProofOfHumanity deployment for this chain.
-  const chain = QUICK_LAUNCH_CHAINS.find((candidate) => candidate.chainId === body.chainId);
+  const configuredChain = getQuickLaunchServerChain();
+  const chain = configuredChain.chainId === body.chainId ? configuredChain : null;
   if (!chain || !isPredicateDeployed(chain) || getAddress(chain.predicateAddress) !== getAddress(body.verifier)) {
     return NextResponse.json(
       { ok: false, error: "chainId/verifier is not a configured Proof-of-Humanity predicate deployment." },

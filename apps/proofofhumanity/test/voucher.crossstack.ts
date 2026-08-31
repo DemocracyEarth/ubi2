@@ -351,6 +351,7 @@ async function main() {
     // 8) Exercise the real Next route: capability binding, no-body contract, idempotency and quotas.
     console.log("[8/9] sponsored-mint HTTP route binding + idempotency + abuse controls …");
     process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL = RPC;
+    process.env.POH_BASE_SEPOLIA_RPC_URL = RPC;
     process.env.NEXT_PUBLIC_BASE_SEPOLIA_POH = poh;
     process.env.POH_SPONSOR_PRIVATE_KEY = RELAYER_KEY;
     process.env.POH_SPONSOR_TESTNET_CHAIN_IDS = String(CHAIN_ID);
@@ -360,6 +361,9 @@ async function main() {
     process.env.POH_SPONSOR_CONFIRMATIONS = "1";
     process.env.POH_SPONSOR_RECEIPT_TIMEOUT_MS = "15000";
     process.env.POH_SPONSOR_DAILY_TX_LIMIT = "100";
+    // Local Anvil exercises the transaction implementation; deployed Quick Launch keeps this flag false.
+    process.env.POH_API_RUNTIME = "dedicated-single-replica";
+    process.env.POH_BLOCKCHAIN_TRANSACTIONS_ENABLED = "true";
 
     const [{ GET: sponsoredStatus, POST: sponsoredPost }, { setVerificationRecord }] = await Promise.all([
       import("../app/api/sponsored-mint/route"),
