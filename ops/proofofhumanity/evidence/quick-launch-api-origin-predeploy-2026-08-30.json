@@ -1,0 +1,39 @@
+{
+  "schema": "org.proofofhumanity.quick-launch.api-origin-predeploy/1",
+  "observedAt": "2026-08-30T00:00:00.000Z",
+  "baseCommit": "0da52027f264f99ced3e19107ca8b4017120c008",
+  "network": {
+    "name": "Base Sepolia",
+    "chainId": 84532
+  },
+  "transactionFree": true,
+  "implementation": {
+    "amplifyFrontendPreserved": true,
+    "canonicalApiPaths": [
+      "/api/self-verify",
+      "/api/predicate",
+      "/api/sponsored-mint",
+      "/api/quick-launch-readiness"
+    ],
+    "dedicatedRuntimeRequired": true,
+    "singleTaskDesired": true,
+    "stopBeforeStartConfigured": true,
+    "runtimeSecretReferencesOnly": true,
+    "transactionsEnabled": false,
+    "responseAllowlistTested": true
+  },
+  "liveDeploymentObserved": false,
+  "restartObserved": false,
+  "canonicalRoutingObserved": false,
+  "ready": false,
+  "blockers": [
+    "billing-impact-approval-missing",
+    "dedicated-origin-infrastructure-inputs-missing",
+    "digest-pinned-image-not-published",
+    "approved-secret-reference-metadata-missing",
+    "immutable-attestation-inputs-missing",
+    "live-restart-evidence-missing",
+    "amplify-canonical-proxy-not-configured",
+    "external-evidence-anchor-missing"
+  ]
+}

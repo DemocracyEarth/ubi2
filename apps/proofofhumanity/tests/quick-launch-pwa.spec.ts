@@ -17,7 +17,7 @@ test("Quick Launch PWA exposes only the Base Sepolia v1 journey", async ({ page,
   expect([200, 503]).toContain(hostReadiness.status());
   expect(hostReadiness.headers()["cache-control"]).toContain("no-store");
   const hostRecord = await hostReadiness.json();
-  expect(hostRecord.schema).toBe("org.proofofhumanity.quick-launch.host-readiness/1");
+  expect(hostRecord.schema).toBe("org.proofofhumanity.quick-launch.host-readiness/2");
   expect(hostRecord.transactionFree).toBe(true);
   const hostJson = JSON.stringify(hostRecord);
   expect(hostJson).not.toContain("privateKey");

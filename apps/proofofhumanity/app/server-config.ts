@@ -1,11 +1,44 @@
 import "server-only";
 
 import { getAddress, isAddress, isHex, size, type Address, type Hex } from "viem";
-import { QUICK_LAUNCH_CHAINS } from "./quick-launch";
+import { QUICK_LAUNCH_CHAIN, QUICK_LAUNCH_CHAINS } from "./quick-launch";
+import type { ChainConfig } from "./config";
 import { parseSponsoredTestnetAllowlist } from "./lib/sponsored-mint";
 
 const ANVIL_ISSUER_KEY =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as Hex;
+
+/**
+ * Runtime-only RPC selection for the dedicated API origin. Unlike NEXT_PUBLIC_* values, this is not
+ * frozen into the browser bundle. Credentials in URLs are rejected; use a credential-free monitored
+ * Base Sepolia endpoint for Quick Launch.
+ */
+export function getQuickLaunchServerChain(
+  env: NodeJS.ProcessEnv = process.env,
+): ChainConfig {
+  const value = env.POH_BASE_SEPOLIA_RPC_URL?.trim();
+  if (!value) return QUICK_LAUNCH_CHAIN;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("POH_BASE_SEPOLIA_RPC_URL must be an absolute HTTPS URL.");
+  }
+  const localDevelopmentHttp =
+    env.NODE_ENV !== "production" &&
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
+  if (
+    (!localDevelopmentHttp && url.protocol !== "https:") ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("POH_BASE_SEPOLIA_RPC_URL must be a credential-free HTTPS URL without query or fragment.");
+  }
+  return { ...QUICK_LAUNCH_CHAIN, rpcUrl: url.toString() };
+}
 
 /**
  * Return the issuer signer only from server code. Production fails closed when the secret is

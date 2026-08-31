@@ -68,6 +68,7 @@ import {
   type SignedForChain,
 } from "../../lib/verification-record";
 import { verificationCapability } from "../../lib/server/verification-capability";
+import { requireDedicatedQuickLaunchApiOrigin } from "../../lib/server/quick-launch-api-guard";
 
 // Node.js runtime: the process-local handoff must persist across requests, and @selfxyz/core pulls in
 // Node-only crypto (snarkjs, node-forge) that the edge runtime cannot run.
@@ -135,6 +136,9 @@ function isSelfPostBody(b: unknown): b is SelfPostBody {
 }
 
 export async function POST(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+
   const contentLength = Number(req.headers.get("content-length") ?? 0);
   if (contentLength > 2_000_000) {
     return NextResponse.json({ ok: false, error: "Self proof payload is too large." }, { status: 413 });
@@ -289,6 +293,9 @@ export async function POST(req: NextRequest) {
 
 /** GET /api/self-verify?address=0x… with x-poh-verification-session — both are required to poll. */
 export async function GET(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+
   const capability = verificationCapability(req);
   if (!capability) {
     return NextResponse.json({ ok: false, error: "A valid `address` and 128-bit `session` are required." }, { status: 400 });
@@ -314,6 +321,9 @@ export async function GET(req: NextRequest) {
 
 /** DELETE /api/self-verify?address=0x… with the session header — drop a consumed record. */
 export async function DELETE(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+
   const capability = verificationCapability(req);
   if (capability) {
     deleteVerificationRecord(capability.address, capability.session);

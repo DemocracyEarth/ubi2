@@ -9,8 +9,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import type { Address } from "viem";
-import { QUICK_LAUNCH_CHAINS } from "../../quick-launch";
-import { getSponsoredMintServerConfig, type SponsoredMintServerConfig } from "../../server-config";
+import {
+  getQuickLaunchServerChain,
+  getSponsoredMintServerConfig,
+  type SponsoredMintServerConfig,
+} from "../../server-config";
 import {
   sponsoredMintAttemptEvidence,
   validateSponsoredMintBinding,
@@ -31,6 +34,10 @@ import {
   type SponsoredMintExecutionInput,
 } from "../../lib/server/sponsored-mint-executor";
 import type { RelayRecord } from "../../lib/verification-record";
+import {
+  requireBlockchainTransactionsEnabled,
+  requireDedicatedQuickLaunchApiOrigin,
+} from "../../lib/server/quick-launch-api-guard";
 
 export const runtime = "nodejs";
 
@@ -50,7 +57,8 @@ function requestedChain(req: NextRequest) {
   if (!raw || !/^[1-9][0-9]*$/.test(raw)) return null;
   const chainId = Number(raw);
   if (!Number.isSafeInteger(chainId)) return null;
-  return QUICK_LAUNCH_CHAINS.find((chain) => chain.chainId === chainId) ?? null;
+  const chain = getQuickLaunchServerChain();
+  return chain.chainId === chainId ? chain : null;
 }
 
 function loadConfig(): SponsoredMintServerConfig | null {
@@ -213,6 +221,9 @@ async function resolveSubmitted(bound: BoundRequest, attempt: Extract<SponsoredM
 
 /** GET recovers idempotent submitted/confirmed evidence without ever issuing another transaction. */
 export async function GET(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+
   const sourceLimit = rateLimit("sponsored-mint-status-source", safeSource(req), 120, 60);
   if (!sourceLimit.allowed) return errorResponse("rate-limit", sourceLimit.retryAfter);
   const bound = bindRequest(req);
@@ -239,6 +250,11 @@ export async function GET(req: NextRequest) {
 
 /** POST consumes one sponsorship attempt. No body is accepted; all mint inputs are server-held. */
 export async function POST(req: NextRequest) {
+  const originFailure = requireDedicatedQuickLaunchApiOrigin();
+  if (originFailure) return originFailure;
+  const transactionFailure = requireBlockchainTransactionsEnabled();
+  if (transactionFailure) return transactionFailure;
+
   if (req.body !== null) {
     return NextResponse.json(
       { ok: false, error: "Sponsored mint requests do not accept a body." },

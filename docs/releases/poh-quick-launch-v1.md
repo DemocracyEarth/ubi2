@@ -123,6 +123,20 @@ verifier are therefore being added, with the observed record pinned at
 It is explicitly `ready: false`; completion remains **15%** until topology and both secret-provenance
 chains are independently supplied and match the deployed runtime.
 
+### Dedicated-origin correction — 2026-08-30
+
+PR #114's strict host record established the right public evidence boundary, but signed-in provider
+inspection confirmed that the automatic Amplify deployment is a serverless frontend/CDN and is not proof
+of one sticky signer process. Quick Launch therefore keeps Amplify and the canonical public domain only
+as the frontend/proxy. Exactly four APIs move to a dedicated HTTPS Node origin.
+
+The next implementation slice defines a digest-pinned standalone image, a one-task ECS/Fargate service
+with stop-before-start replacement, runtime Secrets Manager injection, exact-path Amplify rewrites,
+dedicated-runtime guards, a disabled blockchain-transaction flag and strict restart/redaction evidence.
+It does not provision billable infrastructure or claim a live task. Engineering completion is estimated
+at **20%**, while the operational host acceptance gate is still below its **25%** milestone until the
+external inputs and observed evidence pass.
+
 ## First-PR acceptance criteria
 
 - The executable release chain set contains exactly Base Sepolia and rejects network misclassification

@@ -1,0 +1,25 @@
+# Quick Launch image build uses an allowlist so unrelated monorepo state and local operator files
+# never enter the Docker build context.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!apps/
+!apps/proofofhumanity/
+!apps/proofofhumanity/**
+!packages/
+!packages/sdk/
+!packages/sdk/**
+
+# Defense in depth inside the allowlisted trees.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
+**/test-results/
+**/*.log

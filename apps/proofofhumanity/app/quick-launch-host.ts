@@ -1,13 +1,16 @@
 import { getAddress, isAddress, zeroAddress, type Address } from "viem";
 import { QUICK_LAUNCH_RELEASE } from "./quick-launch";
+import { QUICK_LAUNCH_API_RUNTIME } from "./quick-launch-api-runtime";
 
 export const QUICK_LAUNCH_HOST_READINESS_SCHEMA =
-  "org.proofofhumanity.quick-launch.host-readiness/1" as const;
+  "org.proofofhumanity.quick-launch.host-readiness/2" as const;
 
 export const QUICK_LAUNCH_HOST_BLOCKERS = [
   "source-revision-unavailable",
   "self-endpoint-mismatch",
   "self-environment-not-staging",
+  "dedicated-api-runtime-not-declared",
+  "blockchain-transactions-enabled",
   "single-sticky-node-not-declared",
   "topology-attestation-missing",
   "issuer-secret-attestation-missing",
@@ -25,6 +28,8 @@ export interface QuickLaunchHostPublicProbe {
   sourceRevision: string | null;
   selfEndpoint: string | null;
   selfEnvironment: string | null;
+  apiRuntime: string | null;
+  blockchainTransactionsEnabled: boolean;
   singleStickyNodeDeclared: boolean;
   topologyAttestationSha256: string | null;
   issuerSecretAttestationSha256: string | null;
@@ -72,6 +77,8 @@ export function assessQuickLaunchHostProbe(
   if (!isSourceRevision(probe.sourceRevision)) blockers.push("source-revision-unavailable");
   if (probe.selfEndpoint !== expected.selfEndpoint) blockers.push("self-endpoint-mismatch");
   if (probe.selfEnvironment !== "staging") blockers.push("self-environment-not-staging");
+  if (probe.apiRuntime !== QUICK_LAUNCH_API_RUNTIME) blockers.push("dedicated-api-runtime-not-declared");
+  if (probe.blockchainTransactionsEnabled) blockers.push("blockchain-transactions-enabled");
   if (!probe.singleStickyNodeDeclared) blockers.push("single-sticky-node-not-declared");
   if (!isSha256(probe.topologyAttestationSha256)) blockers.push("topology-attestation-missing");
   if (!isSha256(probe.issuerSecretAttestationSha256)) blockers.push("issuer-secret-attestation-missing");

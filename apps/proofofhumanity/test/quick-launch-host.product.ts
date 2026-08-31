@@ -21,6 +21,8 @@ const validProbe: QuickLaunchHostPublicProbe = {
   sourceRevision: "d".repeat(40),
   selfEndpoint: QUICK_LAUNCH_RELEASE.canonicalSelfEndpoint,
   selfEnvironment: "staging",
+  apiRuntime: "dedicated-single-replica",
+  blockchainTransactionsEnabled: false,
   singleStickyNodeDeclared: true,
   topologyAttestationSha256: digest("a"),
   issuerSecretAttestationSha256: digest("b"),
@@ -47,6 +49,8 @@ rejects({ sourceRevision: null }, "source-revision-unavailable");
 rejects({ sourceRevision: "d".repeat(39) }, "source-revision-unavailable");
 rejects({ selfEndpoint: "https://preview.example/api/self-verify" }, "self-endpoint-mismatch");
 rejects({ selfEnvironment: "production" }, "self-environment-not-staging");
+rejects({ apiRuntime: null }, "dedicated-api-runtime-not-declared");
+rejects({ blockchainTransactionsEnabled: true }, "blockchain-transactions-enabled");
 rejects({ singleStickyNodeDeclared: false }, "single-sticky-node-not-declared");
 rejects({ topologyAttestationSha256: null }, "topology-attestation-missing");
 rejects({ issuerSecretAttestationSha256: null }, "issuer-secret-attestation-missing");
@@ -65,6 +69,8 @@ const env: NodeJS.ProcessEnv = {
   POH_SOURCE_REVISION: "d".repeat(40),
   NEXT_PUBLIC_SELF_ENDPOINT: QUICK_LAUNCH_RELEASE.canonicalSelfEndpoint,
   NEXT_PUBLIC_SELF_ENV: "staging",
+  POH_API_RUNTIME: "dedicated-single-replica",
+  POH_BLOCKCHAIN_TRANSACTIONS_ENABLED: "false",
   POH_RUNTIME_TOPOLOGY: "single-sticky-node",
   POH_TOPOLOGY_ATTESTATION_SHA256: digest("a"),
   POH_ISSUER_SECRET_ATTESTATION_SHA256: digest("b"),

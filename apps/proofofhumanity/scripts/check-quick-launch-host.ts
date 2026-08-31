@@ -57,6 +57,8 @@ function sanitizeHostRecord(value: unknown) {
       record.selfEnvironment === "staging" || record.selfEnvironment === "production"
         ? record.selfEnvironment
         : null,
+    apiRuntime: record.apiRuntime === "dedicated-single-replica" ? record.apiRuntime : null,
+    blockchainTransactionsEnabled: record.blockchainTransactionsEnabled === true,
     singleStickyNodeDeclared: record.singleStickyNodeDeclared === true,
     topologyAttestationSha256:
       typeof record.topologyAttestationSha256 === "string" && isSha256(record.topologyAttestationSha256)
