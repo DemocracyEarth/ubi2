@@ -223,18 +223,27 @@ _(none)_
   [Spec](specs/v2-issuance-registry.md).
 
 ## 👀 Review (awaiting gates)
-- **POH-QL-V1-T1 · product/architect/interface/qa/reliability/security/release** — enforce the first
-  Quick Launch boundary. *Accepts:* exactly Base Sepolia enters voucher, predicate, sponsor and UI paths;
-  fabricated credential API, v2 issuance/refresh, policy lab and holder-vault rehearsal are absent from the
-  shipped route graph; a transaction-free public preflight fails closed on chain/code/role/prover/callback
-  mismatches; failure-path tests, release audit and physical-phone runbook exist; complete repository gate green.
-  Local gates are green; public read-only preflight confirms chain, bytecode and roles, then correctly blocks on
-  the missing approved HTTPS Self callback. [Release cut](releases/poh-quick-launch-v1.md).
+- **POH-QL-V1-T2A · release/security/qa/reliability** — transaction-free automatic-host readiness
+  boundary. Deployed revision, canonical callback, staging mode, externally hash-bound single-sticky-node
+  topology, issuer address, separate sponsor address and exact Base Sepolia policy fail closed; endpoint and
+  evidence verifier allowlist public output and never expose a key or raw secret reference. Failure-path/PWA/full
+  repository gates are green; live readiness is not part of this tooling task. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_HOST_PREFLIGHT.md),
+  [QA](reports/qa-poh-quick-launch-host-preflight.md),
+  [reliability](reports/reliability-poh-quick-launch-host-preflight.md),
+  [security](reports/security-poh-quick-launch-host-preflight.md).
 
 ## ⛔ Blocked
-_(none)_
+- **POH-QL-V1-T2B · release/security + deployment owner** — configure and attest the actual automatic
+  Quick Launch host. **Blocked:** this worktree has no deployment-provider credentials; CloudFront does not
+  prove one sticky Node origin; no immutable topology attestation, approved issuer secret-injection
+  attestation, approved sponsor secret-injection attestation, or sponsor public address was supplied. Keep
+  the host record `ready: false`; do not transact. [Observed evidence](../ops/proofofhumanity/evidence/quick-launch-host-preflight-2026-08-30.json).
 
 ## ✅ Done
+- **POH-QL-V1-T1 · Quick Launch release boundary · SHIPPED in PR #113.** Exactly Base Sepolia enters
+  voucher, predicate, sponsor and UI paths; demo/V2/vault surfaces are absent from the release graph;
+  transaction-free contract/callback preflight and complete CI passed. The merged bytes are now publicly
+  observable at `proofofhumanity.org`; host topology and signer provenance remain separate T2 gates.
 - **Cycle 7 · tx-confirmation + explorer + contract-UX · SHIPPED.** All gates green (446 tests). Fixed the
   field-test bug where MetaMask showed mined txs as **"Dropped"** (the chain advertises baseFeePerGas, so
   MetaMask sends EIP-1559 type-2 txs; `tx_to_json`/`receipt_to_json` hardcoded `type:0x0` + dropped the 1559

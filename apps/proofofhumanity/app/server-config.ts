@@ -60,9 +60,11 @@ function boundedIntegerEnv(
  * Optional testnet sponsor. It has no development fallback and is enabled only when both the
  * isolated hot key and an explicit allowlist are present. Mainnet ids fail during configuration.
  */
-export function getSponsoredMintServerConfig(): SponsoredMintServerConfig | null {
-  const privateKey = process.env.POH_SPONSOR_PRIVATE_KEY?.trim();
-  const allowlist = process.env.POH_SPONSOR_TESTNET_CHAIN_IDS?.trim();
+export function getSponsoredMintServerConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): SponsoredMintServerConfig | null {
+  const privateKey = env.POH_SPONSOR_PRIVATE_KEY?.trim();
+  const allowlist = env.POH_SPONSOR_TESTNET_CHAIN_IDS?.trim();
   if (!privateKey && !allowlist) return null;
   if (!privateKey || !allowlist) {
     throw new Error(
@@ -76,34 +78,34 @@ export function getSponsoredMintServerConfig(): SponsoredMintServerConfig | null
   return {
     privateKey: privateKey as Hex,
     enabledChainIds: parseSponsoredTestnetAllowlist(allowlist, QUICK_LAUNCH_CHAINS),
-    maxGas: positiveBigIntEnv("POH_SPONSOR_MAX_GAS", process.env.POH_SPONSOR_MAX_GAS, 350_000n),
+    maxGas: positiveBigIntEnv("POH_SPONSOR_MAX_GAS", env.POH_SPONSOR_MAX_GAS, 350_000n),
     maxFeeWei: positiveBigIntEnv(
       "POH_SPONSOR_MAX_FEE_WEI",
-      process.env.POH_SPONSOR_MAX_FEE_WEI,
+      env.POH_SPONSOR_MAX_FEE_WEI,
       5_000_000_000_000_000n,
     ),
     minimumReserveWei: positiveBigIntEnv(
       "POH_SPONSOR_MIN_RESERVE_WEI",
-      process.env.POH_SPONSOR_MIN_RESERVE_WEI,
+      env.POH_SPONSOR_MIN_RESERVE_WEI,
       1_000_000_000_000_000n,
     ),
     confirmations: boundedIntegerEnv(
       "POH_SPONSOR_CONFIRMATIONS",
-      process.env.POH_SPONSOR_CONFIRMATIONS,
+      env.POH_SPONSOR_CONFIRMATIONS,
       1,
       1,
       12,
     ),
     receiptTimeoutMs: boundedIntegerEnv(
       "POH_SPONSOR_RECEIPT_TIMEOUT_MS",
-      process.env.POH_SPONSOR_RECEIPT_TIMEOUT_MS,
+      env.POH_SPONSOR_RECEIPT_TIMEOUT_MS,
       90_000,
       5_000,
       300_000,
     ),
     dailyTransactionLimit: boundedIntegerEnv(
       "POH_SPONSOR_DAILY_TX_LIMIT",
-      process.env.POH_SPONSOR_DAILY_TX_LIMIT,
+      env.POH_SPONSOR_DAILY_TX_LIMIT,
       100,
       1,
       10_000,

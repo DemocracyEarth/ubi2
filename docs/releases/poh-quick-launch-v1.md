@@ -109,6 +109,20 @@ These remain useful engineering evidence but are not proof of the real user jour
 The percentages are completion of the **Quick Launch Base Sepolia candidate**, not the broader ubi2,
 portable-v2, or mainnet roadmap.
 
+### Days 2–3 observed status — 2026-08-30
+
+The automatic `main` deployment now serves the Quick Launch/Base Sepolia UI at
+`https://proofofhumanity.org`; the demo credential route is absent and the transaction-free public
+chain/callback preflight is green. That advances public byte delivery, but not the 25% host gate.
+
+CloudFront is observable, but origin topology is not. This worktree has no AWS credentials, GitHub has
+no deployment record for the host, and the repository contains no approved issuer/sponsor secret-manager
+reference or immutable injection attestation. A strict runtime readiness record and external evidence
+verifier are therefore being added, with the observed record pinned at
+[`../../ops/proofofhumanity/evidence/quick-launch-host-preflight-2026-08-30.json`](../../ops/proofofhumanity/evidence/quick-launch-host-preflight-2026-08-30.json).
+It is explicitly `ready: false`; completion remains **15%** until topology and both secret-provenance
+chains are independently supplied and match the deployed runtime.
+
 ## First-PR acceptance criteria
 
 - The executable release chain set contains exactly Base Sepolia and rejects network misclassification

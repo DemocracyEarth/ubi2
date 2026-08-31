@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a transaction-free host-readiness endpoint and external verifier for the automatically deployed
+  Quick Launch origin. It fails closed on unknown source revision, non-sticky topology, missing immutable
+  topology/secret-injection attestations, wrong issuer, sponsor role overlap, malformed sponsor policy,
+  non-Base allowlists, and any public-surface regression without returning key or secret-reference values.
 - Add an exact staging/testnet feature flag for production-ineligible holder vault UX in the real PoH PWA, with
   WebAuthn PRF enrollment/unlock/atomic second-passkey ceremonies, encrypted empty-only recovery, account/session
   cancellation, crash/reload relocking, and a lifecycle-only service worker with no fetch handler or Cache Storage.
