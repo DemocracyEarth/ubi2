@@ -45,7 +45,10 @@ Do not retrieve either secret value. Obtain and independently verify:
    attestation SHA-256. It must not equal the issuer, owner, deployer or a holder address.
 8. Optional customer-managed KMS key ARNs for either secret. The task execution role is scoped to the
    two secret references and supplied KMS keys only.
-9. Deployment-owner approval for the billable Fargate, ALB, CloudWatch and Route 53 resources.
+9. A separately provisioned `PoHQuickLaunchTaskExecutionRole` ARN plus approved immutable hashes of
+   its trust and permissions documents. It must pass the transaction-free account/region binding
+   preflight and the exact [execution-role contract](QUICK_LAUNCH_TASK_EXECUTION_ROLE.md).
+10. Deployment-owner approval for the billable Fargate, ALB, CloudWatch and Route 53 resources.
 
 Secret references are deployment metadata and still must not be committed or copied into evidence.
 Supply them through the protected deployment interface. Never run `get-secret-value`, print an
@@ -71,10 +74,17 @@ Tags do not satisfy the CloudFormation parameter pattern. Validate
 inspect it before execution. The template creates no secret and outputs no secret reference or value;
 ECS injects only `ISSUER_PRIVATE_KEY` and `POH_SPONSOR_PRIVATE_KEY` from Secrets Manager at task start.
 
-The service has no task role and therefore no application-level AWS API authority. Its execution role
-can pull the image, write the dedicated log group and retrieve exactly the two injected secrets. The
-task port accepts traffic only from the ALB security group. ALB HTTP redirects to HTTPS and drops
-invalid headers. ECS Exec is disabled.
+The template also creates no IAM resource and contains no secret-read policy. It requires a pre-created
+`TaskExecutionRoleArn` that the stack can reference but cannot mutate. Before creating a change set,
+run the redacting `quick-launch:execution-role-preflight` and verify the protected live role metadata
+against the [exact least-privilege contract](QUICK_LAUNCH_TASK_EXECUTION_ROLE.md). An IAM role ARN is
+regionless; the check binds it to the deployment account and binds every approved ECR, secret and KMS
+resource to `us-east-1`.
+
+The service has no task role and therefore no application-level AWS API authority. Its pre-created
+execution role can pull the one digest-pinned image, write only the dedicated log streams and retrieve
+exactly the two injected secrets. The task port accepts traffic only from the ALB security group. ALB
+HTTP redirects to HTTPS and drops invalid headers. ECS Exec is disabled.
 
 Do not execute the change set until the cost approval and every required input above exists. A local
 template test is not deployed-infrastructure evidence.
@@ -158,6 +168,8 @@ Live completion is blocked until all items below are observed:
 - [ ] Credential-free monitored Base Sepolia RPC selection and provider/outage owner.
 - [ ] Metadata-only approved issuer and sponsor secret references, KMS metadata where applicable, and
       distinct derived public addresses.
+- [ ] Pre-created same-account `PoHQuickLaunchTaskExecutionRole`; protected live trust/inline-policy
+      review matches the exact contract, and redacted account/region preflight reports `ready: true`.
 - [ ] Three immutable redacted attestation URLs/paths and exact SHA-256 values.
 - [ ] Direct-origin before/restart/after evidence proving one task, a boot transition and no overlap.
 - [ ] Amplify artifact/config metadata proving the only API-origin variable is public and no signer or

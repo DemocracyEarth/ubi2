@@ -88,6 +88,18 @@ separate topology/secret-injection attestations. The external verifier compares 
 exact main revision and independently supplied hashes. Both checks must be green. Never inspect or
 capture an environment-variable map to obtain this evidence because it may contain secret values.
 
+### Dedicated Base Sepolia API origin
+
+Amplify remains the public frontend but is not an approved signing runtime. The four canonical API
+paths are proxied to one transaction-disabled HTTPS Node service as described in
+[`../../ops/proofofhumanity/QUICK_LAUNCH_API_ORIGIN.md`](../../ops/proofofhumanity/QUICK_LAUNCH_API_ORIGIN.md).
+Its CloudFormation template requires an existing same-account ECS task execution role and contains no
+IAM resource or policy. Before a change set is created, follow the
+[`../../ops/proofofhumanity/QUICK_LAUNCH_TASK_EXECUTION_ROLE.md`](../../ops/proofofhumanity/QUICK_LAUNCH_TASK_EXECUTION_ROLE.md)
+contract and archive a redacted `quick-launch:execution-role-preflight` result. IAM role ARNs are
+regionless; the role's allowed ECR, log, secret and optional KMS resources must all be bound to the
+approved account and `us-east-1`.
+
 ## Validation gate
 
 Before deploying the application candidate:

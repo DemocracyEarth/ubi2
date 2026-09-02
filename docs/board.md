@@ -223,26 +223,36 @@ _(none)_
   [Spec](specs/v2-issuance-registry.md).
 
 ## 👀 Review (awaiting gates)
-- **POH-QL-V1-T2C · release/security/qa/reliability** — dedicated transaction-free Base Sepolia API
-  origin. Amplify retains the frontend/public domain and exact-path proxies four APIs to a digest-pinned
-  standalone Node service. ECS enforces one stop-before-start task; routes require the dedicated runtime;
-  sponsored POST is killed before side effects; Secrets Manager references never enter Amplify/image/evidence;
-  public boot/readiness records and before/after restart verification are strict allowlists. No infrastructure was
-  provisioned or live readiness claimed. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_API_ORIGIN.md),
-  [QA](reports/qa-poh-quick-launch-api-origin.md),
-  [reliability](reports/reliability-poh-quick-launch-api-origin.md),
-  [security](reports/security-poh-quick-launch-api-origin.md).
+
+- **POH-QL-V1-T2E · release/security/qa/reliability** — pre-created ECS task execution role boundary.
+  The API-origin stack requires `TaskExecutionRoleArn`, creates no IAM role/policy and cannot mutate the
+  supplied role. A transaction-free redacting checker binds the regionless role ARN, digest-pinned image,
+  distinct signer references and optional KMS keys to one approved account and `us-east-1`; wrong-account,
+  cross-region and malformed inputs fail closed. The exact trust/permission allowlist and protected metadata
+  review are documented. No AWS call, resource creation or transaction occurred.
+  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_TASK_EXECUTION_ROLE.md),
+  [QA](reports/qa-poh-quick-launch-task-execution-role.md),
+  [reliability](reports/reliability-poh-quick-launch-task-execution-role.md),
+  [security](reports/security-poh-quick-launch-task-execution-role.md).
 
 ## ⛔ Blocked
 - **POH-QL-V1-T2B · release/security + deployment owner** — configure and attest the actual automatic
   Quick Launch host. **Superseded by T2D:** Amplify is the frontend, not the signing origin.
 - **POH-QL-V1-T2D · release/security + deployment owner** — provision and attest the dedicated API
-  origin, then cut over the canonical paths. **Blocked:** no billing approval, VPC/subnet/DNS/ACM inputs,
-  digest-pinned image, approved secret-reference metadata, immutable attestations or external anchor is available.
-  Direct/canonical preflights and a no-overlap restart drill must pass while transactions remain disabled. Keep
-  readiness false and do not transact. [Blocked evidence](../ops/proofofhumanity/evidence/quick-launch-api-origin-predeploy-2026-08-30.json).
+  origin, then cut over the canonical paths. **Blocked:** the pre-created task execution role and its immutable
+  policy approvals, exact VPC/subnet/DNS/ACM/image/signer metadata, protected deployment session and immutable
+  attestations have not all been observed together. Direct/canonical preflights and a no-overlap restart drill
+  must pass while transactions remain disabled. Keep readiness false and do not transact.
 
 ## ✅ Done
+- **POH-QL-V1-T2C · dedicated transaction-free API-origin contract · SHIPPED in PR #115.** Amplify
+  retains the frontend/public domain and exact-path proxies four APIs to a digest-pinned standalone Node service.
+  ECS defines one stop-before-start task, every route requires the dedicated runtime, sponsored POST is killed
+  before side effects, and restart/redaction evidence is strictly allowlisted. No live readiness was claimed.
+  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_API_ORIGIN.md),
+  [QA](reports/qa-poh-quick-launch-api-origin.md),
+  [reliability](reports/reliability-poh-quick-launch-api-origin.md),
+  [security](reports/security-poh-quick-launch-api-origin.md).
 - **POH-QL-V1-T2A · transaction-free host boundary · SHIPPED in PR #114.** Public chain/callback and
   host-readiness preflights bind the source, topology and signer attestations without exposing values. Its initial
   automatic-host assumption is replaced by T2C's dedicated origin; the strict evidence primitives remain reused.
