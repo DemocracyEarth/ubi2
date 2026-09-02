@@ -55,26 +55,19 @@ Parameters:
     NoEcho: true
     AllowedPattern: '^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$'
     Description: Distinct approved Secrets Manager ARN containing only the sponsor private-key value.
-  IssuerSecretKmsKeyArn:
+  TaskExecutionRoleArn:
     Type: String
-    NoEcho: true
-    Default: ""
-    AllowedPattern: '^(|arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]+)$'
-    Description: Optional customer-managed KMS key used by the issuer secret.
-  SponsorSecretKmsKeyArn:
-    Type: String
-    NoEcho: true
-    Default: ""
-    AllowedPattern: '^(|arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]+)$'
-    Description: Optional customer-managed KMS key used by the sponsor secret.
+    AllowedPattern: '^arn:aws:iam::[0-9]{12}:role/(?:[A-Za-z0-9+=,.@_-]+/)*PoHQuickLaunchTaskExecutionRole$'
+    ConstraintDescription: >-
+      Must be the regionless ARN of the pre-created PoHQuickLaunchTaskExecutionRole. Run the
+      transaction-free execution-role preflight to prove the account and us-east-1 resource binding.
+    Description: >-
+      Existing same-account ECS task execution role. This stack cannot create, update or attach IAM
+      policies to it; its exact least-privilege contract is defined in the deployment runbook.
   LogRetentionDays:
     Type: Number
     Default: 30
     AllowedValues: [7, 14, 30, 60, 90]
-
-Conditions:
-  HasIssuerSecretKmsKey: !Not [!Equals [!Ref IssuerSecretKmsKeyArn, ""]]
-  HasSponsorSecretKmsKey: !Not [!Equals [!Ref SponsorSecretKmsKeyArn, ""]]
 
 Resources:
   Cluster:
@@ -95,44 +88,6 @@ Resources:
     Properties:
       LogGroupName: /ubi2/poh-quick-launch-api
       RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: release
-          Value: poh-quick-launch-v1
-
-  TaskExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-      Policies:
-        - PolicyName: ReadOnlyApprovedQuickLaunchSecrets
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource:
-                  - !Ref IssuerPrivateKeySecretArn
-                  - !Ref SponsorPrivateKeySecretArn
-              - !If
-                - HasIssuerSecretKmsKey
-                - Effect: Allow
-                  Action: kms:Decrypt
-                  Resource: !Ref IssuerSecretKmsKeyArn
-                - !Ref AWS::NoValue
-              - !If
-                - HasSponsorSecretKmsKey
-                - Effect: Allow
-                  Action: kms:Decrypt
-                  Resource: !Ref SponsorSecretKmsKeyArn
-                - !Ref AWS::NoValue
       Tags:
         - Key: release
           Value: poh-quick-launch-v1
@@ -266,7 +221,7 @@ Resources:
       NetworkMode: awsvpc
       Cpu: "1024"
       Memory: "2048"
-      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ExecutionRoleArn: !Ref TaskExecutionRoleArn
       RuntimePlatform:
         CpuArchitecture: X86_64
         OperatingSystemFamily: LINUX

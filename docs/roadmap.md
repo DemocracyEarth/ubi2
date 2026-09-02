@@ -12,12 +12,15 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 > additional chains, M7 and M8 are paused as release dependencies. Their code and research remain in the
 > monorepo, but none may block or silently enter Quick Launch. Mainnet is not authorized.
 >
-> **Quick Launch status (2026-08-30): approximately 20% (80% remaining).** PRs #113–#114 are merged.
-> The next review slice preserves Amplify as the frontend while defining a one-task HTTPS API origin,
-> exact-path proxy, runtime signer isolation, transaction kill switch and restart/redaction evidence.
-> No infrastructure is provisioned: the operational 25% host gate remains blocked on billing approval,
-> VPC/DNS/ACM inputs, a digest-pinned image, approved secret-reference metadata and immutable evidence.
-> The public host must remain `ready: false` and transactions remain disabled.
+> **Quick Launch release-readiness status (2026-09-02): approximately 25% (75% remaining).** PRs #113–#115 are merged,
+> and Amplify successfully published the exact PR #115 merge revision. The one-task HTTPS API-origin,
+> exact-path proxy, runtime signer isolation, transaction kill switch and restart/redaction contract are
+> merged but not provisioned. The current review slice removes IAM creation from that stack, requires a
+> separately approved task execution role, validates its account/us-east-1 resource binding without emitting
+> references, and freezes its least-privilege contract. The operational host gate still requires an observed
+> approved deployment session, that pre-created role and policy hashes, ACM, a scanned digest-pinned image,
+> approved signer metadata and immutable attestations. The public host remains `ready: false`; transactions
+> remain disabled.
 
 > **Freshness note (updated 2026-08-11):** M6 (ZK-Passport PoH) and the
 > Browser/Mobile Light Node track — both listed below as ⬜ planned in the previous revision — have each

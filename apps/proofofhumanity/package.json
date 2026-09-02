@@ -21,6 +21,7 @@
     "quick-launch:preflight": "tsx scripts/check-quick-launch-preflight.ts",
     "quick-launch:host-preflight": "tsx scripts/check-quick-launch-host.ts",
     "quick-launch:api-origin-preflight": "tsx scripts/check-quick-launch-api-origin.ts",
+    "quick-launch:execution-role-preflight": "tsx scripts/check-quick-launch-task-execution-role.ts",
     "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate && pnpm run test:issuance && pnpm run test:product"
   },
   "dependencies": {

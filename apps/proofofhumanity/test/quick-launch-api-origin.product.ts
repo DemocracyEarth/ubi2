@@ -7,6 +7,7 @@ import {
   QUICK_LAUNCH_API_RUNTIME,
   assessQuickLaunchApiRuntime,
 } from "../app/quick-launch-api-runtime";
+import { assessQuickLaunchTaskExecutionRole } from "../app/quick-launch-task-execution-role";
 import {
   requireBlockchainTransactionsEnabled,
   requireDedicatedQuickLaunchApiOrigin,
@@ -121,6 +122,64 @@ async function main(): Promise<void> {
   assert.equal(healthJson.includes(disabledEnv.POH_SPONSOR_PRIVATE_KEY!), false);
 
   const template = readFileSync(templatePath, "utf8");
+  const accountId = "123456789012";
+  const taskExecutionRoleArn =
+    `arn:aws:iam::${accountId}:role/PoHQuickLaunchTaskExecutionRole`;
+  const validRoleBinding = {
+    deploymentAccountId: accountId,
+    deploymentRegion: "us-east-1",
+    taskExecutionRoleArn,
+    containerImageUri:
+      `${accountId}.dkr.ecr.us-east-1.amazonaws.com/poh-quick-launch-api@sha256:${"a".repeat(64)}`,
+    issuerSecretArn: `arn:aws:secretsmanager:us-east-1:${accountId}:secret:issuer-example`,
+    sponsorSecretArn: `arn:aws:secretsmanager:us-east-1:${accountId}:secret:sponsor-example`,
+    issuerKmsKeyArn: `arn:aws:kms:us-east-1:${accountId}:key/12345678-1234-1234-1234-123456789abc`,
+  };
+  const roleAssessment = assessQuickLaunchTaskExecutionRole(validRoleBinding);
+  assert.equal(roleAssessment.ready, true);
+  assert.deepEqual(roleAssessment.blockers, []);
+  assert.equal(roleAssessment.role.accountMatches, true);
+  assert.equal(roleAssessment.role.regionless, true);
+  const roleAssessmentJson = JSON.stringify(roleAssessment);
+  for (const privateMetadata of [
+    taskExecutionRoleArn,
+    validRoleBinding.issuerSecretArn,
+    validRoleBinding.sponsorSecretArn,
+    validRoleBinding.issuerKmsKeyArn,
+  ]) {
+    assert.equal(roleAssessmentJson.includes(privateMetadata), false);
+  }
+
+  const wrongAccount = assessQuickLaunchTaskExecutionRole({
+    ...validRoleBinding,
+    taskExecutionRoleArn:
+      "arn:aws:iam::210987654321:role/PoHQuickLaunchTaskExecutionRole",
+  });
+  assert.equal(wrongAccount.ready, false);
+  assert.ok(wrongAccount.blockers.includes("task-execution-role-account-mismatch"));
+
+  const regionalRoleArn = assessQuickLaunchTaskExecutionRole({
+    ...validRoleBinding,
+    taskExecutionRoleArn:
+      `arn:aws:iam:us-east-1:${accountId}:role/PoHQuickLaunchTaskExecutionRole`,
+  });
+  assert.equal(regionalRoleArn.ready, false);
+  assert.ok(regionalRoleArn.blockers.includes("task-execution-role-not-regionless"));
+
+  const wrongResourceRegion = assessQuickLaunchTaskExecutionRole({
+    ...validRoleBinding,
+    issuerSecretArn: `arn:aws:secretsmanager:us-west-2:${accountId}:secret:issuer-example`,
+  });
+  assert.equal(wrongResourceRegion.ready, false);
+  assert.ok(wrongResourceRegion.blockers.includes("issuer-secret-region-mismatch"));
+
+  const sharedSecret = assessQuickLaunchTaskExecutionRole({
+    ...validRoleBinding,
+    sponsorSecretArn: validRoleBinding.issuerSecretArn,
+  });
+  assert.equal(sharedSecret.ready, false);
+  assert.ok(sharedSecret.blockers.includes("issuer-and-sponsor-secret-not-distinct"));
+
   for (const routePath of ["self-verify", "predicate", "sponsored-mint", "quick-launch-readiness"]) {
     const route = readFileSync(
       path.join(repoRoot, `apps/proofofhumanity/app/api/${routePath}/route.ts`),
@@ -139,6 +198,8 @@ async function main(): Promise<void> {
     "Name: POH_SPONSOR_PRIVATE_KEY",
     "ValueFrom: !Ref IssuerPrivateKeySecretArn",
     "ValueFrom: !Ref SponsorPrivateKeySecretArn",
+    "TaskExecutionRoleArn:",
+    "ExecutionRoleArn: !Ref TaskExecutionRoleArn",
     "TargetType: ip",
     "HealthCheckPath: /api/healthz",
   ]) {
@@ -149,6 +210,13 @@ async function main(): Promise<void> {
     "get-secret-value",
     "DesiredCount: 2",
     "MaximumPercent: 200",
+    "Type: AWS::IAM::Role",
+    "TaskExecutionRole:\n",
+    "AmazonECSTaskExecutionRolePolicy",
+    "ReadOnlyApprovedQuickLaunchSecrets",
+    "!GetAtt TaskExecutionRole.Arn",
+    "IssuerSecretKmsKeyArn",
+    "SponsorSecretKmsKeyArn",
   ]) {
     assert.equal(
       template.includes(forbidden),
