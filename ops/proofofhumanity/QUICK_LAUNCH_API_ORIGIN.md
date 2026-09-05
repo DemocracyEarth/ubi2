@@ -60,15 +60,18 @@ variable, or add one to an image layer.
 The Docker build context is allowlisted by the repository `.dockerignore`. The image compiles the
 canonical Self callback and public Base Sepolia defaults with `POH_BUILD_STANDALONE_API=true`, then
 copies only the Next standalone server, static assets and public files into the runtime layer. The flag
-is confined to the Docker build; the Amplify frontend keeps its existing Next output mode. Build from
-the exact reviewed revision:
+is confined to the Docker build; the Amplify frontend keeps its existing Next output mode. The
+linux/amd64 Node base is pinned by digest. Build twice, scan, generate the SPDX SBOM and bind the exact
+reviewed revision to the reproduced image digest by following
+[`QUICK_LAUNCH_IMAGE_RELEASE.md`](QUICK_LAUNCH_IMAGE_RELEASE.md):
 
 ```sh
-docker build --file apps/proofofhumanity/Dockerfile \
-  --tag <private-ecr-repository>:<40-hex-revision> .
+ops/proofofhumanity/build-quick-launch-image.sh <40-hex-revision>
 ```
 
-Scan the image, push it through the approved release workflow and resolve the registry-reported digest.
+Do not push during that build/evidence step. Image publication requires a separately approved,
+pre-created least-privilege publisher role and the exact locally generated policy hashes. After that
+independent approval, push through the approved release workflow and resolve the registry-reported digest.
 Tags do not satisfy the CloudFormation parameter pattern. Validate
 [`aws/quick-launch-api-origin.yaml`](aws/quick-launch-api-origin.yaml), create a reviewed change set and
 inspect it before execution. The template creates no secret and outputs no secret reference or value;

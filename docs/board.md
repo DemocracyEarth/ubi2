@@ -224,16 +224,15 @@ _(none)_
 
 ## 👀 Review (awaiting gates)
 
-- **POH-QL-V1-T2E · release/security/qa/reliability** — pre-created ECS task execution role boundary.
-  The API-origin stack requires `TaskExecutionRoleArn`, creates no IAM role/policy and cannot mutate the
-  supplied role. A transaction-free redacting checker binds the regionless role ARN, digest-pinned image,
-  distinct signer references and optional KMS keys to one approved account and `us-east-1`; wrong-account,
-  cross-region and malformed inputs fail closed. The exact trust/permission allowlist and protected metadata
-  review are documented. No AWS call, resource creation or transaction occurred.
-  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_TASK_EXECUTION_ROLE.md),
-  [QA](reports/qa-poh-quick-launch-task-execution-role.md),
-  [reliability](reports/reliability-poh-quick-launch-task-execution-role.md),
-  [security](reports/security-poh-quick-launch-task-execution-role.md).
+- **POH-QL-V1-T2F · release/security/qa/reliability** — reproducible image and publication boundary.
+  A digest-pinned linux/amd64 base, exact Git-archive context, two no-cache builds, SPDX SBOM,
+  zero-Critical/High local scan policy and redacted provenance bind one reviewed commit to one image
+  digest. A generated one-hour publisher role may upload and inspect only `proof-of-humanity`; repository
+  administration, IAM, secrets and deployment remain excluded. No AWS mutation or image publication is
+  authorized by this task. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_IMAGE_RELEASE.md),
+  [QA](reports/qa-poh-quick-launch-image-release.md),
+  [reliability](reports/reliability-poh-quick-launch-image-release.md),
+  [security](reports/security-poh-quick-launch-image-release.md).
 
 ## ⛔ Blocked
 - **POH-QL-V1-T2B · release/security + deployment owner** — configure and attest the actual automatic
@@ -245,6 +244,16 @@ _(none)_
   must pass while transactions remain disabled. Keep readiness false and do not transact.
 
 ## ✅ Done
+- **POH-QL-V1-T2E · pre-created ECS task execution role boundary · SHIPPED in PR #116.**
+  The API-origin stack requires `TaskExecutionRoleArn`, creates no IAM role/policy and cannot mutate the
+  supplied role. A transaction-free redacting checker binds the regionless role ARN, digest-pinned image,
+  distinct signer references and optional KMS keys to one approved account and `us-east-1`; wrong-account,
+  cross-region and malformed inputs fail closed. The exact trust/permission allowlist and protected metadata
+  review are documented. No AWS call, resource creation or transaction occurred.
+  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_TASK_EXECUTION_ROLE.md),
+  [QA](reports/qa-poh-quick-launch-task-execution-role.md),
+  [reliability](reports/reliability-poh-quick-launch-task-execution-role.md),
+  [security](reports/security-poh-quick-launch-task-execution-role.md).
 - **POH-QL-V1-T2C · dedicated transaction-free API-origin contract · SHIPPED in PR #115.** Amplify
   retains the frontend/public domain and exact-path proxies four APIs to a digest-pinned standalone Node service.
   ECS defines one stop-before-start task, every route requires the dedicated runtime, sponsored POST is killed
