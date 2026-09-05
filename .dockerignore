@@ -1,6 +1,7 @@
 # Quick Launch image build uses an allowlist so unrelated monorepo state and local operator files
 # never enter the Docker build context.
 **
+!.pnpmfile.cjs
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
@@ -22,4 +23,5 @@
 **/dist/
 **/build/
 **/test-results/
+**/quick-launch-image-evidence/
 **/*.log

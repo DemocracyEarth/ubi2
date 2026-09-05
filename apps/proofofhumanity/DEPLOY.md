@@ -100,12 +100,20 @@ contract and archive a redacted `quick-launch:execution-role-preflight` result. 
 regionless; the role's allowed ECR, log, secret and optional KMS resources must all be bound to the
 approved account and `us-east-1`.
 
+Before image publication, follow
+[`../../ops/proofofhumanity/QUICK_LAUNCH_IMAGE_RELEASE.md`](../../ops/proofofhumanity/QUICK_LAUNCH_IMAGE_RELEASE.md).
+The build uses an exact Git archive, a digest-pinned linux/amd64 Node base, two no-cache builds, SPDX
+SBOM generation and a zero-Critical/High local scan gate. Its publisher-role generator is
+transaction-free and grants upload/verification access only to the `proof-of-humanity` repository. A
+green local provenance record does not authorize IAM mutation, image push or service deployment.
+
 ## Validation gate
 
 Before deploying the application candidate:
 
 ```shell
 pnpm --filter @ubi2/proofofhumanity test:quick-launch
+pnpm --filter @ubi2/proofofhumanity test:quick-launch-image
 pnpm --filter @ubi2/proofofhumanity test:contracts
 pnpm --filter @ubi2/proofofhumanity typecheck
 pnpm --filter @ubi2/proofofhumanity build

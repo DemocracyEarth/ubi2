@@ -13,7 +13,8 @@
     "test:issuance": "tsx test/zk-self-issuance.crossstack.ts",
     "test:quick-launch-host": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx test/quick-launch-host.product.ts",
     "test:quick-launch-api-origin": "NODE_PATH=../../node_modules/next/dist/compiled NODE_OPTIONS=--conditions=react-server tsx test/quick-launch-api-origin.product.ts",
-    "test:quick-launch": "tsx test/quick-launch.product.ts && pnpm run test:quick-launch-host && pnpm run test:quick-launch-api-origin && tsx test/predicate.product.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts",
+    "test:quick-launch-image": "tsx test/quick-launch-image-release.product.ts",
+    "test:quick-launch": "tsx test/quick-launch.product.ts && pnpm run test:quick-launch-host && pnpm run test:quick-launch-api-origin && pnpm run test:quick-launch-image && tsx test/predicate.product.ts && tsx test/account-privacy.product.ts && tsx test/sponsored-mint.product.ts && tsx test/sponsor-budget.product.ts",
     "test:product": "pnpm run test:quick-launch && tsx test/expiring-store.ts && tsx test/holder-vault.product.ts",
     "test:pwa": "playwright test",
     "sponsor:monitor": "tsx scripts/sponsor-account-monitor.ts",
@@ -22,6 +23,8 @@
     "quick-launch:host-preflight": "tsx scripts/check-quick-launch-host.ts",
     "quick-launch:api-origin-preflight": "tsx scripts/check-quick-launch-api-origin.ts",
     "quick-launch:execution-role-preflight": "tsx scripts/check-quick-launch-task-execution-role.ts",
+    "quick-launch:image-provenance": "tsx scripts/check-quick-launch-image-provenance.ts",
+    "quick-launch:image-publisher-role": "tsx scripts/render-quick-launch-image-publisher-role.ts",
     "test:contracts": "pnpm run test:crossstack && pnpm run test:predicate && pnpm run test:issuance && pnpm run test:product"
   },
   "dependencies": {
@@ -29,7 +32,7 @@
     "@selfxyz/qrcode": "1.0.24",
     "@ubi2/sdk": "workspace:*",
     "i18n-iso-countries": "7.14.0",
-    "next": "15.2.4",
+    "next": "15.5.25",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "viem": "^2.53.1"

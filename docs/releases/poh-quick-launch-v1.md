@@ -137,6 +137,15 @@ It does not provision billable infrastructure or claim a live task. Engineering 
 at **20%**, while the operational host acceptance gate is still below its **25%** milestone until the
 external inputs and observed evidence pass.
 
+### Image supply-chain boundary — 2026-09-04
+
+The ECR repository bootstrap and ECS execution-role boundaries are now separate from image publication.
+The next local-only release slice pins the linux/amd64 Node base by digest, builds twice from an exact Git
+archive, fails on digest drift, produces an SPDX SBOM, requires zero Critical/High Docker Scout findings
+and emits a redacted source-to-image provenance hash. A generated one-hour publisher-role contract can
+upload and inspect only `proof-of-humanity`; it cannot create/delete/tag repositories, mutate IAM, read
+secrets or deploy services. No role creation, image push or live-readiness claim is part of this slice.
+
 ## First-PR acceptance criteria
 
 - The executable release chain set contains exactly Base Sepolia and rejects network misclassification

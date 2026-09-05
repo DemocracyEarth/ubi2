@@ -12,13 +12,14 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 > additional chains, M7 and M8 are paused as release dependencies. Their code and research remain in the
 > monorepo, but none may block or silently enter Quick Launch. Mainnet is not authorized.
 >
-> **Quick Launch release-readiness status (2026-09-02): approximately 25% (75% remaining).** PRs #113–#115 are merged,
+> **Quick Launch release-readiness status (2026-09-04): approximately 25% (75% remaining).** PRs #113–#116 are merged,
 > and Amplify successfully published the exact PR #115 merge revision. The one-task HTTPS API-origin,
 > exact-path proxy, runtime signer isolation, transaction kill switch and restart/redaction contract are
-> merged but not provisioned. The current review slice removes IAM creation from that stack, requires a
-> separately approved task execution role, validates its account/us-east-1 resource binding without emitting
-> references, and freezes its least-privilege contract. The operational host gate still requires an observed
-> approved deployment session, that pre-created role and policy hashes, ACM, a scanned digest-pinned image,
+> merged but not provisioned. The task-execution role is now externalized from the stack. The current
+> transaction-free review slice pins the linux/amd64 image base, reproduces the build twice, generates an
+> SPDX SBOM and zero-Critical/High scan evidence, binds source to the image digest, and freezes a separate
+> one-repository publisher-role contract. The operational host gate still requires an observed approved
+> deployment session, pre-created live role approvals, ACM, a published digest-pinned image,
 > approved signer metadata and immutable attestations. The public host remains `ready: false`; transactions
 > remain disabled.
 
