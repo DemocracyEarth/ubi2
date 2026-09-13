@@ -103,6 +103,11 @@ exact documents and canonical hashes. It defines one inline policy named
 policy. That grant targets only `arn:aws:iam::<ACCOUNT_ID>:role/PoHQuickLaunchImagePublisherRole`;
 never replace the permission set's other reviewed statements with this fragment.
 
+The separate
+[`QUICK_LAUNCH_IAM_ADMINISTRATOR.md`](QUICK_LAUNCH_IAM_ADMINISTRATOR.md) runbook defines the one-hour,
+hash-bound IAM Identity Center permission set and assignment package for that role/grant change. It is
+local and inert by default and requires another action-time approval before any AWS write.
+
 | Purpose | Allowed actions | Resource |
 |---|---|---|
 | Obtain a short-lived ECR login token | `ecr:GetAuthorizationToken` | `*`, conditioned to `us-east-1` |
