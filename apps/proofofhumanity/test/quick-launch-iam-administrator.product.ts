@@ -48,12 +48,20 @@ assert.equal(result.assignment.PrincipalId, administratorPrincipalId);
 assert.match(result.administratorPermissionsPolicySha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.administratorPermissionsPolicySha256,
-  "9d02054700747aa01528b0a2b24a0973d143b42571676ccac575338eabb00d77",
+  "0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513",
 );
 assert.match(result.permissionSetConfigurationSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.assignmentSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.requestPlanSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.packageBindingSha256, /^[0-9a-f]{64}$/u);
+assert.equal(
+  result.requestPlanSha256,
+  "da29a85f10eb4c6beb697e0fb2ff5eb5c21b92af04b6336734346264bd21aa8f",
+);
+assert.equal(
+  result.packageBindingSha256,
+  "2c9d6ee504e07d2cecb24e88f0e58c3ebd20990127e3f34db3683bf834473994",
+);
 
 assert.equal(
   result.publisherRole.trustPolicySha256,
@@ -75,6 +83,7 @@ assert.equal(result.deployerPolicyUpdate.updatedPolicy.Statement[1]?.Sid, "Assum
 const policyJson = JSON.stringify(result.administratorPermissionsPolicy);
 for (const required of [
   "iam:CreateRole",
+  "iam:TagRole",
   "iam:GetRole",
   "iam:GetRolePolicy",
   "iam:ListAttachedRolePolicies",
@@ -95,7 +104,7 @@ for (const forbidden of [
   "iam:CreatePolicy",
   "iam:DeleteRole",
   "iam:PassRole",
-  "iam:TagRole",
+  "iam:UntagRole",
   "iam:UpdateAssumeRolePolicy",
   "iam:UpdateRole",
   "sso:CreateAccountAssignment",
@@ -115,6 +124,71 @@ assert.equal(policyJson.includes(`arn:aws:iam::${accountId}:role/PoHQuickLaunchI
 assert.equal(policyJson.includes(instanceArn), true);
 assert.equal(policyJson.includes(deployerPermissionSetArn), true);
 assert.equal(policyJson.includes(`arn:aws:sso:::account/${accountId}`), true);
+
+const createAndTagStatement = result.administratorPermissionsPolicy.Statement[0];
+assert.equal(createAndTagStatement.Sid, "CreateOnlyTaggedQuickLaunchImagePublisherRole");
+assert.deepEqual(createAndTagStatement.Action, ["iam:CreateRole", "iam:TagRole"]);
+assert.equal(
+  createAndTagStatement.Resource,
+  `arn:aws:iam::${accountId}:role/PoHQuickLaunchImagePublisherRole`,
+);
+assert.deepEqual(createAndTagStatement.Condition, {
+  StringEquals: {
+    "aws:RequestTag/network": "base-sepolia",
+    "aws:RequestTag/purpose": "image-publisher",
+    "aws:RequestTag/release": "poh-quick-launch-v1",
+  },
+  "ForAllValues:StringEquals": {
+    "aws:TagKeys": ["network", "purpose", "release"],
+  },
+  Null: { "iam:PermissionsBoundary": "true" },
+});
+
+type RequestTags = Record<string, string>;
+const requestTagsSatisfyCreateAndTagContract = (requestTags: RequestTags) => {
+  const requiredTags = {
+    network: createAndTagStatement.Condition.StringEquals["aws:RequestTag/network"],
+    purpose: createAndTagStatement.Condition.StringEquals["aws:RequestTag/purpose"],
+    release: createAndTagStatement.Condition.StringEquals["aws:RequestTag/release"],
+  };
+  const allowedTagKeys = createAndTagStatement.Condition["ForAllValues:StringEquals"]["aws:TagKeys"];
+  const requestedTagKeys = Object.keys(requestTags);
+  return (
+    requestedTagKeys.length === allowedTagKeys.length &&
+    requestedTagKeys.every((key) => allowedTagKeys.includes(key as (typeof allowedTagKeys)[number])) &&
+    Object.entries(requiredTags).every(([key, value]) => requestTags[key] === value)
+  );
+};
+
+const exactPublisherTags = {
+  network: "base-sepolia",
+  purpose: "image-publisher",
+  release: "poh-quick-launch-v1",
+};
+assert.equal(requestTagsSatisfyCreateAndTagContract(exactPublisherTags), true);
+for (const missingTag of Object.keys(exactPublisherTags)) {
+  assert.equal(
+    requestTagsSatisfyCreateAndTagContract(
+      Object.fromEntries(
+        Object.entries(exactPublisherTags).filter(([key]) => key !== missingTag),
+      ),
+    ),
+    false,
+    `missing ${missingTag} tag must fail closed`,
+  );
+}
+for (const alteredTag of Object.keys(exactPublisherTags)) {
+  assert.equal(
+    requestTagsSatisfyCreateAndTagContract({ ...exactPublisherTags, [alteredTag]: "altered" }),
+    false,
+    `altered ${alteredTag} tag must fail closed`,
+  );
+}
+assert.equal(
+  requestTagsSatisfyCreateAndTagContract({ ...exactPublisherTags, extra: "forbidden" }),
+  false,
+  "an extra tag must fail closed",
+);
 
 assert.deepEqual(result.requestPlan.bootstrapWithExistingAdministrator.map(({ api }) => api), [
   "sso-admin:CreatePermissionSet",

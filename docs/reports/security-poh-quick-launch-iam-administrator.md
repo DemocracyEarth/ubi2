@@ -2,7 +2,7 @@
 
 - **Gate:** least-authority actions/resources, secret exclusion and payload-integrity controls
 - **Reviewer:** Codex security review
-- **Date:** 2026-09-13
+- **Date:** 2026-09-20
 - **Verdict:** **PASS WITH EXPLICIT RESIDUAL — no AWS mutation authorized**
 
 ## Controls verified
@@ -10,6 +10,11 @@
 - The administrator policy contains no wildcard resource. IAM authority is limited to creating, reading
   and installing an inline policy on the exact `PoHQuickLaunchImagePublisherRole`; creation requires the
   three fixed release tags and no permissions boundary.
+- `iam:TagRole` is authorized only on that exact role and only when the request contains exactly the
+  three fixed tags. Missing, altered and extra tags fail closed, while `iam:UntagRole` remains absent.
+- The corrected administrator policy is pinned to SHA-256
+  `0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513`; the earlier policy hash and
+  package binding are explicitly revoked in the runbook.
 - Identity Center authority targets only the exact instance, existing `PoHQuickLaunchDeployer` permission
   set and account `368426158592` in `us-east-1`. The principal cannot create/delete permission sets, create
   assignments, enumerate the identity store or mutate another permission set.

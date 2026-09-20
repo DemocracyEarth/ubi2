@@ -199,7 +199,9 @@ export function buildQuickLaunchIamAdministratorPackage(
       {
         Sid: "CreateOnlyTaggedQuickLaunchImagePublisherRole",
         Effect: "Allow",
-        Action: "iam:CreateRole",
+        // IAM authorizes tags supplied to CreateRole through iam:TagRole as well. Keep both actions
+        // behind the same exact role, request-tag and tag-key constraints.
+        Action: ["iam:CreateRole", "iam:TagRole"],
         Resource: publisherRoleArn,
         Condition: {
           StringEquals: {

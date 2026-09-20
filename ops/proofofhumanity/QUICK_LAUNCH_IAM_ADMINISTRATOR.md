@@ -29,8 +29,22 @@ For the currently reviewed Identity Center instance and deployer permission-set 
 canonical administrator inline-policy SHA-256 is:
 
 ```text
-9d02054700747aa01528b0a2b24a0973d143b42571676ccac575338eabb00d77
+0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513
 ```
+
+The earlier `9d02054700747aa01528b0a2b24a0973d143b42571676ccac575338eabb00d77`
+policy and every package binding that includes it are superseded. That policy allowed `CreateRole` but
+not the separate `TagRole` authorization AWS evaluates for tags supplied in the create request, so the
+reviewed tagged request failed atomically and no publisher role was created.
+
+In particular, the pre-correction live package binding
+`724a8410121703cbac883adcb1e4d7830cdfed4ae25dd7e86789c968b90b871e` must not be reused. The
+renderer and regression fixture now bind the corrected policy to request-plan SHA-256
+`da29a85f10eb4c6beb697e0fb2ff5eb5c21b92af04b6336734346264bd21aa8f` and fixture package-binding
+SHA-256 `2c9d6ee504e07d2cecb24e88f0e58c3ebd20990127e3f34db3683bf834473994`.
+The latter is test-fixture evidence, not a live authorization value. Re-render the operational package
+against the hash-verified protected current deployer policy and separately approve its new
+`packageBindingSha256` before any AWS write.
 
 If the live instance ARN or `PoHQuickLaunchDeployer` permission-set ARN differs from the reviewed
 identifiers, the rendered hash differs. Stop and review the new identifiers and hash; do not substitute
@@ -44,17 +58,18 @@ contains exactly one inline policy rendered by
 
 | Purpose | Actions | Exact resource or condition |
 |---|---|---|
-| Create the publisher role | `iam:CreateRole` | only the exact role ARN; requires exactly `network=base-sepolia`, `purpose=image-publisher`, and `release=poh-quick-launch-v1`; forbids a permissions boundary in the request |
+| Create and tag the publisher role | `iam:CreateRole`, `iam:TagRole` | only the exact role ARN; both actions require exactly `network=base-sepolia`, `purpose=image-publisher`, and `release=poh-quick-launch-v1`; forbids a permissions boundary in the create request |
 | Inspect the publisher role | `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:ListRoleTags` | only the exact role ARN |
 | Install the publisher inline policy | `iam:PutRolePolicy` | only the exact role ARN and only while all three fixed resource tags match |
 | Inspect the deployer policy | `sso:DescribePermissionSet`, `sso:GetInlinePolicyForPermissionSet` | only the exact Identity Center instance and existing deployer permission-set ARNs, requested in `us-east-1` |
 | Replace and provision the reviewed deployer policy | `sso:PutInlinePolicyToPermissionSet`, `sso:ProvisionPermissionSet` | only the same instance/deployer permission set and account `368426158592`, requested in `us-east-1` |
 | Observe asynchronous provisioning | `sso:DescribePermissionSetProvisioningStatus` | only the exact Identity Center instance, requested in `us-east-1` |
 
-There is no wildcard resource. The permission set excludes `iam:PassRole`, trust-policy updates, role
-updates/deletion, managed-policy creation/attachment, access-key operations, Identity Center permission-
-set creation/deletion/assignment, Identity Store enumeration, ECR, Secrets Manager, KMS, CloudFormation,
-ECS and every non-IAM resource service.
+There is no wildcard resource. `iam:UntagRole` is not granted, and `iam:TagRole` cannot target another
+role or submit missing, altered or additional tags. The permission set excludes `iam:PassRole`, trust-
+policy updates, role updates/deletion, managed-policy creation/attachment, access-key operations,
+Identity Center permission-set creation/deletion/assignment, Identity Store enumeration, ECR, Secrets
+Manager, KMS, CloudFormation, ECS and every non-IAM resource service.
 
 AWS documents Identity Center delegated administration using exact `PermissionSet`, `Instance`, and
 `Account` resource ARNs. `PutInlinePolicyToPermissionSet` requires the instance and permission-set ARNs,
@@ -169,6 +184,10 @@ Run the failure-path test locally:
 ```sh
 pnpm --filter @ubi2/proofofhumanity test:quick-launch-iam-administrator
 ```
+
+The test proves that omitting any mandatory tag, changing any mandatory value or adding another tag
+fails the rendered create/tag contract. It also proves that `iam:UntagRole`, unrelated role ARNs, secret
+access, ECR publication and application-deployment authority remain absent.
 
 No successful render or local test proves that the permission set, assignment, publisher role or deployer
 grant exists in AWS. It authorizes no image push, application deployment, funding, transaction, mainnet
