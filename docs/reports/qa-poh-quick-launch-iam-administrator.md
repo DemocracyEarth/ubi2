@@ -1,6 +1,6 @@
 # QA gate — PoH Quick Launch IAM administrator package
 
-- **Gate:** exact permission-set rendering, deployer-policy merge and failure paths
+- **Gate:** exact permission-set rendering, deployer-policy merge, provisioning dependency and failure paths
 - **Reviewer:** Codex QA review
 - **Date:** 2026-09-20
 - **Scope:** local, transaction-free IAM Identity Center handoff only
@@ -20,6 +20,10 @@
 - The rendered assignment is fixed to `PrincipalType=USER`, one principal ID and account `368426158592`.
 - Corrective coverage authorizes AWS's separate `iam:TagRole` evaluation only on the exact publisher
   role and only with the same exact three request tags required by `iam:CreateRole`.
+- Provisioning corrective coverage adds only `iam:GetRole` on the observed generated role
+  `AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765`, under its exact account and reserved-role
+  path. The canonical administrator policy hash is
+  `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6`.
 
 ## Failure coverage
 
@@ -32,6 +36,8 @@
 - The output remains explicitly non-mutating and paused before apply.
 - Missing, altered and additional create-time tags fail closed; `iam:UntagRole` and unrelated role ARNs
   remain unavailable.
+- Generated deployer-role tests reject another account, path or suffix, the same name outside the
+  Identity Center reserved path, unrelated roles and every tested mutating IAM action.
 
 ## Repository validation
 

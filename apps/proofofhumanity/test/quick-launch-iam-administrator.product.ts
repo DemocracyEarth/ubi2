@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE,
   QUICK_LAUNCH_IAM_ADMINISTRATOR_PERMISSION_SET,
   buildQuickLaunchIamAdministratorPackage,
 } from "../app/quick-launch-iam-administrator";
@@ -9,6 +10,9 @@ const accountId = "368426158592";
 const instanceArn = "arn:aws:sso:::instance/ssoins-7223e85b4df333bb";
 const deployerPermissionSetArn =
   "arn:aws:sso:::permissionSet/ssoins-7223e85b4df333bb/ps-722353e98b48ca5a";
+const deployerGeneratedRoleArn =
+  `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/` +
+  QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE;
 const administratorPrincipalId = "12345678-1234-1234-1234-123456789abc";
 const currentDeployerPolicy = {
   Version: "2012-10-17",
@@ -48,7 +52,7 @@ assert.equal(result.assignment.PrincipalId, administratorPrincipalId);
 assert.match(result.administratorPermissionsPolicySha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.administratorPermissionsPolicySha256,
-  "0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513",
+  "3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6",
 );
 assert.match(result.permissionSetConfigurationSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.assignmentSha256, /^[0-9a-f]{64}$/u);
@@ -56,12 +60,13 @@ assert.match(result.requestPlanSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.packageBindingSha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.requestPlanSha256,
-  "da29a85f10eb4c6beb697e0fb2ff5eb5c21b92af04b6336734346264bd21aa8f",
+  "13f85ccbeb1b89ec68611450ae57062b06097cad071cecb05966b9b6e9c0d93d",
 );
 assert.equal(
   result.packageBindingSha256,
-  "2c9d6ee504e07d2cecb24e88f0e58c3ebd20990127e3f34db3683bf834473994",
+  "00b4752c247699f4585b39d2aa18e0ed2d416b392aef31e5d423e7c88cde7f14",
 );
+assert.equal(result.deployerGeneratedRoleArn, deployerGeneratedRoleArn);
 
 assert.equal(
   result.publisherRole.trustPolicySha256,
@@ -121,6 +126,7 @@ for (const forbidden of [
 }
 assert.equal(policyJson.includes('"Resource":"*"'), false);
 assert.equal(policyJson.includes(`arn:aws:iam::${accountId}:role/PoHQuickLaunchImagePublisherRole`), true);
+assert.equal(policyJson.includes(deployerGeneratedRoleArn), true);
 assert.equal(policyJson.includes(instanceArn), true);
 assert.equal(policyJson.includes(deployerPermissionSetArn), true);
 assert.equal(policyJson.includes(`arn:aws:sso:::account/${accountId}`), true);
@@ -143,6 +149,51 @@ assert.deepEqual(createAndTagStatement.Condition, {
   },
   Null: { "iam:PermissionsBoundary": "true" },
 });
+
+type RenderedPolicyStatement = {
+  Effect: string;
+  Action: string | string[];
+  Resource: string | string[];
+};
+const renderedPolicy = JSON.parse(policyJson) as { Statement: RenderedPolicyStatement[] };
+const values = (value: string | string[]) => (Array.isArray(value) ? value : [value]);
+const allowsActionOnResource = (action: string, resource: string) =>
+  renderedPolicy.Statement.some(
+    (statement) =>
+      statement.Effect === "Allow" &&
+      values(statement.Action).includes(action) &&
+      values(statement.Resource).includes(resource),
+  );
+
+assert.equal(allowsActionOnResource("iam:GetRole", deployerGeneratedRoleArn), true);
+for (const unrelatedRoleArn of [
+  `arn:aws:iam::${accountId}:role/PoHQuickLaunchBootstrapRole`,
+  `arn:aws:iam::${accountId}:role/${QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE}`,
+  `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_other`,
+  `arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/${QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE}`,
+]) {
+  assert.equal(
+    allowsActionOnResource("iam:GetRole", unrelatedRoleArn),
+    false,
+    `unrelated role must fail closed: ${unrelatedRoleArn}`,
+  );
+}
+for (const mutatingAction of [
+  "iam:AttachRolePolicy",
+  "iam:DeleteRole",
+  "iam:PutRolePermissionsBoundary",
+  "iam:PutRolePolicy",
+  "iam:TagRole",
+  "iam:UntagRole",
+  "iam:UpdateAssumeRolePolicy",
+  "iam:UpdateRole",
+]) {
+  assert.equal(
+    allowsActionOnResource(mutatingAction, deployerGeneratedRoleArn),
+    false,
+    `generated deployer role must deny ${mutatingAction}`,
+  );
+}
 
 type RequestTags = Record<string, string>;
 const requestTagsSatisfyCreateAndTagContract = (requestTags: RequestTags) => {

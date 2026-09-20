@@ -13,6 +13,8 @@ export const QUICK_LAUNCH_IAM_ADMINISTRATOR_PERMISSION_SET =
   "PoHQuickLaunchIamAdministrator" as const;
 export const QUICK_LAUNCH_IAM_ADMINISTRATOR_SESSION = "PT1H" as const;
 export const QUICK_LAUNCH_DEPLOYER_PERMISSION_SET = "PoHQuickLaunchDeployer" as const;
+export const QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE =
+  "AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765" as const;
 
 export const QUICK_LAUNCH_IAM_ADMINISTRATOR_TAGS = [
   { Key: "network", Value: "base-sepolia" },
@@ -188,6 +190,11 @@ export function buildQuickLaunchIamAdministratorPackage(
 
   const publisher = buildQuickLaunchImagePublisherRoleDocuments(accountId);
   const publisherRoleArn = `arn:aws:iam::${accountId}:role/${QUICK_LAUNCH_IMAGE_PUBLISHER_ROLE}`;
+  // The IAM Identity Center instance is fixed to us-east-1, whose generated-role ARN path omits a
+  // region segment. Pin the observed role suffix so this read grant cannot follow a replacement role.
+  const deployerGeneratedRoleArn =
+    `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/` +
+    QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE;
   const accountResourceArn = `arn:aws:sso:::account/${accountId}`;
   const regionCondition = {
     StringEquals: { "aws:RequestedRegion": QUICK_LAUNCH_AWS_REGION },
@@ -226,6 +233,12 @@ export function buildQuickLaunchIamAdministratorPackage(
           "iam:ListRoleTags",
         ],
         Resource: publisherRoleArn,
+      },
+      {
+        Sid: "InspectOnlyGeneratedQuickLaunchDeployerRoleForProvisioning",
+        Effect: "Allow",
+        Action: "iam:GetRole",
+        Resource: deployerGeneratedRoleArn,
       },
       {
         Sid: "ConfigureOnlyTaggedQuickLaunchImagePublisherRole",
@@ -377,6 +390,7 @@ export function buildQuickLaunchIamAdministratorPackage(
     region: QUICK_LAUNCH_AWS_REGION,
     instanceArn,
     deployerPermissionSetArn,
+    deployerGeneratedRoleArn,
     administratorPrincipalId,
     permissionSetConfiguration,
     permissionSetConfigurationSha256: canonicalSha256(
