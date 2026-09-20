@@ -3,7 +3,7 @@
 - **Gate:** deterministic policy/assignment binding and fail-closed update sequence
 - **Reviewer:** Codex reliability review
 - **Date:** 2026-09-20
-- **Verdict:** **PASS — reproducible correction only; failed live provisioning diagnosed, not retried**
+- **Verdict:** **PASS — reproducible correction only; second failed live provisioning diagnosed, not retried**
 
 ## Properties verified
 
@@ -24,10 +24,14 @@
   atomically with `AccessDenied` for `iam:GetRole` on the existing generated deployer role. It was not
   retried. The package now pins that exact account/path/name and cannot follow role recreation or suffix
   drift silently.
+- After that correction was provisioned, a fresh exact-role `GetRole` preflight passed and the one
+  separately authorized deployer reprovisioning retry failed atomically with `AccessDenied` for
+  `iam:ListAttachedRolePolicies` on the same generated role. It was not retried. The new package adds
+  only that observed read alongside `GetRole` on the already pinned ARN.
 - The corrected canonical administrator policy hash is
-  `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6`; the regression fixture pins
-  request-plan hash `13f85ccbeb1b89ec68611450ae57062b06097cad071cecb05966b9b6e9c0d93d` and package binding
-  `00b4752c247699f4585b39d2aa18e0ed2d416b392aef31e5d423e7c88cde7f14`.
+  `b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874`; the regression fixture pins
+  request-plan hash `992c0f68bce2b5ae965ec3877d6468e89eeb858629c7427cb01eb05c72924df9` and package binding
+  `19346afc59d2bfc4bf79df375f24b79fff9433e4223e51170ce1fe629abec370`.
 
 ## Residual gates
 
@@ -40,7 +44,9 @@
   set is provisioned.
 - The old live binding `724a8410121703cbac883adcb1e4d7830cdfed4ae25dd7e86789c968b90b871e`
   and the later binding `039b3e4696d65c7941bb7b9fdc1636c6400e1a631a42555448e26e89d0136324`
-  are invalid. A new live binding remains blocked on a fresh read-only render against the protected
-  current deployer policy after this correction is merged.
+  and post-PR-#119 binding `f99d18040a9b5cde23aa605cef8472a8ec1e94a61422e04a62d7d7f5d4e732bf`
+  are invalid. The protected transaction-free re-render produces candidate live binding
+  `c66c0f70f25fb9bc2607b6d476136f1b5886f8fa487e964f098c58503e3773a8`; it must be regenerated from a
+  fresh live policy read after merge before authorization.
 
 **Reliability approval:** merge the transaction-free package and runbook; pause before every AWS mutation.
