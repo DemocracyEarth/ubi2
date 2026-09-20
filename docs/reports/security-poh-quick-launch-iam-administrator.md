@@ -13,8 +13,12 @@
 - `iam:TagRole` is authorized only on that exact role and only when the request contains exactly the
   three fixed tags. Missing, altered and extra tags fail closed, while `iam:UntagRole` remains absent.
 - The corrected administrator policy is pinned to SHA-256
-  `0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513`; the earlier policy hash and
-  package binding are explicitly revoked in the runbook.
+  `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6`; the earlier policy hashes and
+  package bindings are explicitly revoked in the runbook.
+- The only new authority is `iam:GetRole` on the exact observed Identity Center-generated deployer-role
+  ARN. There is no wildcard suffix. Another account/path/suffix and the same name outside the reserved
+  Identity Center path fail closed, and no tagging, trust, inline-policy, managed-policy or lifecycle
+  mutation is granted on that role.
 - Identity Center authority targets only the exact instance, existing `PoHQuickLaunchDeployer` permission
   set and account `368426158592` in `us-east-1`. The principal cannot create/delete permission sets, create
   assignments, enumerate the identity store or mutate another permission set.
