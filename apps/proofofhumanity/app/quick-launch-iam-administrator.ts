@@ -237,7 +237,7 @@ export function buildQuickLaunchIamAdministratorPackage(
       {
         Sid: "InspectOnlyGeneratedQuickLaunchDeployerRoleForProvisioning",
         Effect: "Allow",
-        Action: "iam:GetRole",
+        Action: ["iam:GetRole", "iam:ListAttachedRolePolicies"],
         Resource: deployerGeneratedRoleArn,
       },
       {

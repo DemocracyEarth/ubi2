@@ -52,7 +52,7 @@ assert.equal(result.assignment.PrincipalId, administratorPrincipalId);
 assert.match(result.administratorPermissionsPolicySha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.administratorPermissionsPolicySha256,
-  "3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6",
+  "b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874",
 );
 assert.match(result.permissionSetConfigurationSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.assignmentSha256, /^[0-9a-f]{64}$/u);
@@ -60,11 +60,11 @@ assert.match(result.requestPlanSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.packageBindingSha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.requestPlanSha256,
-  "13f85ccbeb1b89ec68611450ae57062b06097cad071cecb05966b9b6e9c0d93d",
+  "992c0f68bce2b5ae965ec3877d6468e89eeb858629c7427cb01eb05c72924df9",
 );
 assert.equal(
   result.packageBindingSha256,
-  "00b4752c247699f4585b39d2aa18e0ed2d416b392aef31e5d423e7c88cde7f14",
+  "19346afc59d2bfc4bf79df375f24b79fff9433e4223e51170ce1fe629abec370",
 );
 assert.equal(result.deployerGeneratedRoleArn, deployerGeneratedRoleArn);
 
@@ -165,17 +165,38 @@ const allowsActionOnResource = (action: string, resource: string) =>
       values(statement.Resource).includes(resource),
   );
 
-assert.equal(allowsActionOnResource("iam:GetRole", deployerGeneratedRoleArn), true);
+const generatedRoleProvisioningReadActions = ["iam:GetRole", "iam:ListAttachedRolePolicies"];
+for (const action of generatedRoleProvisioningReadActions) {
+  assert.equal(
+    allowsActionOnResource(action, deployerGeneratedRoleArn),
+    true,
+    `generated deployer role must allow ${action}`,
+  );
+}
 for (const unrelatedRoleArn of [
   `arn:aws:iam::${accountId}:role/PoHQuickLaunchBootstrapRole`,
   `arn:aws:iam::${accountId}:role/${QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE}`,
   `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_other`,
   `arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/${QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE}`,
 ]) {
+  for (const action of generatedRoleProvisioningReadActions) {
+    assert.equal(
+      allowsActionOnResource(action, unrelatedRoleArn),
+      false,
+      `unrelated role must deny ${action}: ${unrelatedRoleArn}`,
+    );
+  }
+}
+for (const unobservedReadAction of [
+  "iam:GetRolePolicy",
+  "iam:ListInstanceProfilesForRole",
+  "iam:ListRolePolicies",
+  "iam:ListRoleTags",
+]) {
   assert.equal(
-    allowsActionOnResource("iam:GetRole", unrelatedRoleArn),
+    allowsActionOnResource(unobservedReadAction, deployerGeneratedRoleArn),
     false,
-    `unrelated role must fail closed: ${unrelatedRoleArn}`,
+    `generated deployer role must deny unobserved read ${unobservedReadAction}`,
   );
 }
 for (const mutatingAction of [

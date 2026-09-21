@@ -20,10 +20,12 @@
 - The rendered assignment is fixed to `PrincipalType=USER`, one principal ID and account `368426158592`.
 - Corrective coverage authorizes AWS's separate `iam:TagRole` evaluation only on the exact publisher
   role and only with the same exact three request tags required by `iam:CreateRole`.
-- Provisioning corrective coverage adds only `iam:GetRole` on the observed generated role
+- Provisioning corrective coverage retains `iam:GetRole` and adds only `iam:ListAttachedRolePolicies`
+  after AWS's second sanitized provisioning failure identified that additional metadata read. Both target
+  only the observed generated role
   `AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765`, under its exact account and reserved-role
   path. The canonical administrator policy hash is
-  `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6`.
+  `b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874`.
 
 ## Failure coverage
 
@@ -36,8 +38,9 @@
 - The output remains explicitly non-mutating and paused before apply.
 - Missing, altered and additional create-time tags fail closed; `iam:UntagRole` and unrelated role ARNs
   remain unavailable.
-- Generated deployer-role tests reject another account, path or suffix, the same name outside the
-  Identity Center reserved path, unrelated roles and every tested mutating IAM action.
+- Generated deployer-role tests require both approved reads on the exact ARN and reject another account,
+  path or suffix, the same name outside the Identity Center reserved path, unrelated roles, unobserved
+  read actions and every tested mutating IAM action.
 
 ## Repository validation
 
