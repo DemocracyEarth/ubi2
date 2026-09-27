@@ -52,7 +52,7 @@ assert.equal(result.assignment.PrincipalId, administratorPrincipalId);
 assert.match(result.administratorPermissionsPolicySha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.administratorPermissionsPolicySha256,
-  "b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874",
+  "ca8356db96cd07b9247e8c0b12090441c8cffc9549f349f4cb52b85150e98515",
 );
 assert.match(result.permissionSetConfigurationSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.assignmentSha256, /^[0-9a-f]{64}$/u);
@@ -60,11 +60,11 @@ assert.match(result.requestPlanSha256, /^[0-9a-f]{64}$/u);
 assert.match(result.packageBindingSha256, /^[0-9a-f]{64}$/u);
 assert.equal(
   result.requestPlanSha256,
-  "992c0f68bce2b5ae965ec3877d6468e89eeb858629c7427cb01eb05c72924df9",
+  "0d1f367455469434248775b1f5a796cb7851c6252d6bbe3d9a6c75aff3279f5c",
 );
 assert.equal(
   result.packageBindingSha256,
-  "19346afc59d2bfc4bf79df375f24b79fff9433e4223e51170ce1fe629abec370",
+  "3218b85d7acc103a36eea10beaeb20ff246ee40ba32d30a609f14632a3644578",
 );
 assert.equal(result.deployerGeneratedRoleArn, deployerGeneratedRoleArn);
 
@@ -86,7 +86,7 @@ assert.deepEqual(result.deployerPolicyUpdate.updatedPolicy.Statement[0], current
 assert.equal(result.deployerPolicyUpdate.updatedPolicy.Statement[1]?.Sid, "AssumeQuickLaunchImagePublisher");
 
 const policyJson = JSON.stringify(result.administratorPermissionsPolicy);
-for (const required of [
+const expectedAdministratorActions = [
   "iam:CreateRole",
   "iam:TagRole",
   "iam:GetRole",
@@ -100,13 +100,16 @@ for (const required of [
   "sso:PutInlinePolicyToPermissionSet",
   "sso:ProvisionPermissionSet",
   "sso:DescribePermissionSetProvisioningStatus",
-]) {
+] as const;
+for (const required of expectedAdministratorActions) {
   assert.ok(policyJson.includes(`\"${required}\"`), `missing exact action ${required}`);
 }
 for (const forbidden of [
   "iam:*",
   "iam:AttachRolePolicy",
   "iam:CreatePolicy",
+  "iam:DeleteRolePolicy",
+  "iam:DetachRolePolicy",
   "iam:DeleteRole",
   "iam:PassRole",
   "iam:UntagRole",
@@ -164,9 +167,18 @@ const allowsActionOnResource = (action: string, resource: string) =>
       values(statement.Action).includes(action) &&
       values(statement.Resource).includes(resource),
   );
+assert.deepEqual(
+  [...new Set(renderedPolicy.Statement.flatMap((statement) => values(statement.Action)))].sort(),
+  [...expectedAdministratorActions].sort(),
+  "administrator policy must expose no action beyond the reviewed exact allowlist",
+);
 
-const generatedRoleProvisioningReadActions = ["iam:GetRole", "iam:ListAttachedRolePolicies"];
-for (const action of generatedRoleProvisioningReadActions) {
+const generatedRoleProvisioningActions = [
+  "iam:GetRole",
+  "iam:ListAttachedRolePolicies",
+  "iam:PutRolePolicy",
+];
+for (const action of generatedRoleProvisioningActions) {
   assert.equal(
     allowsActionOnResource(action, deployerGeneratedRoleArn),
     true,
@@ -179,7 +191,7 @@ for (const unrelatedRoleArn of [
   `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_other`,
   `arn:aws:iam::000000000000:role/aws-reserved/sso.amazonaws.com/${QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE}`,
 ]) {
-  for (const action of generatedRoleProvisioningReadActions) {
+  for (const action of generatedRoleProvisioningActions) {
     assert.equal(
       allowsActionOnResource(action, unrelatedRoleArn),
       false,
@@ -201,9 +213,10 @@ for (const unobservedReadAction of [
 }
 for (const mutatingAction of [
   "iam:AttachRolePolicy",
+  "iam:DeleteRolePolicy",
+  "iam:DetachRolePolicy",
   "iam:DeleteRole",
   "iam:PutRolePermissionsBoundary",
-  "iam:PutRolePolicy",
   "iam:TagRole",
   "iam:UntagRole",
   "iam:UpdateAssumeRolePolicy",
@@ -215,6 +228,16 @@ for (const mutatingAction of [
     `generated deployer role must deny ${mutatingAction}`,
   );
 }
+assert.equal(
+  result.residualAuthorizationLimits.some(
+    (limit) =>
+      limit.includes("iam:PutRolePolicy") &&
+      limit.includes("policy-document bytes") &&
+      limit.includes("independent canonical read-back"),
+  ),
+  true,
+  "generated-role inline-policy payload limitation and compensating read-back must be explicit",
+);
 
 type RequestTags = Record<string, string>;
 const requestTagsSatisfyCreateAndTagContract = (requestTags: RequestTags) => {

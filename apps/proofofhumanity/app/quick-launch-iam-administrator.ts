@@ -191,7 +191,8 @@ export function buildQuickLaunchIamAdministratorPackage(
   const publisher = buildQuickLaunchImagePublisherRoleDocuments(accountId);
   const publisherRoleArn = `arn:aws:iam::${accountId}:role/${QUICK_LAUNCH_IMAGE_PUBLISHER_ROLE}`;
   // The IAM Identity Center instance is fixed to us-east-1, whose generated-role ARN path omits a
-  // region segment. Pin the observed role suffix so this read grant cannot follow a replacement role.
+  // region segment. Pin the observed role suffix so the provisioning grant cannot follow a replacement
+  // role.
   const deployerGeneratedRoleArn =
     `arn:aws:iam::${accountId}:role/aws-reserved/sso.amazonaws.com/` +
     QUICK_LAUNCH_DEPLOYER_GENERATED_ROLE;
@@ -238,6 +239,12 @@ export function buildQuickLaunchIamAdministratorPackage(
         Sid: "InspectOnlyGeneratedQuickLaunchDeployerRoleForProvisioning",
         Effect: "Allow",
         Action: ["iam:GetRole", "iam:ListAttachedRolePolicies"],
+        Resource: deployerGeneratedRoleArn,
+      },
+      {
+        Sid: "ReplaceOnlyGeneratedQuickLaunchDeployerInlinePolicyForProvisioning",
+        Effect: "Allow",
+        Action: "iam:PutRolePolicy",
         Resource: deployerGeneratedRoleArn,
       },
       {
@@ -417,7 +424,7 @@ export function buildQuickLaunchIamAdministratorPackage(
     pauseBeforeApply: true,
     residualAuthorizationLimits: [
       "IAM cannot authorize iam:CreateRole by trust-policy bytes.",
-      "IAM cannot authorize iam:PutRolePolicy by policy name or policy-document bytes.",
+      "IAM cannot authorize iam:PutRolePolicy by inline-policy name or policy-document bytes; action-time hash approval and independent canonical read-back are mandatory.",
       "IAM Identity Center cannot authorize sso:PutInlinePolicyToPermissionSet by replacement-policy bytes.",
     ],
     permissionSetConfiguration,
