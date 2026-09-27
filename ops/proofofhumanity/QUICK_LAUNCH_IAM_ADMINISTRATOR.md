@@ -5,8 +5,10 @@ This runbook prepares a one-hour IAM Identity Center permission set named
 inspecting only `PoHQuickLaunchImagePublisherRole`, and for merging the already frozen one-role
 `sts:AssumeRole` grant into only the existing `PoHQuickLaunchDeployer` permission set. It may also read
 and enumerate attached managed-policy metadata only on the exact IAM Identity Center-generated deployer
-role that AWS must inspect while provisioning that permission set. It cannot mutate that generated role
-or create its own permission set or assignment.
+role that AWS must inspect while provisioning that permission set, and replace an inline policy only on
+that byte-exact generated role as required by Identity Center provisioning. It cannot delete or attach a
+managed policy, change trust, tag, delete or otherwise mutate that generated role, or create its own
+permission set or assignment.
 
 The checked-in renderer is local and transaction-free. It never invokes AWS, retrieves a secret,
 obtains an ECR token, pushes an image, creates an application resource, funds an account or submits a
@@ -24,7 +26,7 @@ The reviewed package is bound to:
 | Permission-set name | `PoHQuickLaunchIamAdministrator` |
 | Session duration | `PT1H` (one hour) |
 | Target role | `arn:aws:iam::368426158592:role/PoHQuickLaunchImagePublisherRole` |
-| Provisioning read target | `arn:aws:iam::368426158592:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765` |
+| Provisioning role target | `arn:aws:iam::368426158592:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765` |
 | Target deployer permission set | existing `PoHQuickLaunchDeployer` only |
 | Assignment | one existing workforce `USER` already assigned to `PoHQuickLaunchDeployer` in account `368426158592` |
 
@@ -32,16 +34,24 @@ For the currently reviewed Identity Center instance and deployer permission-set 
 canonical administrator inline-policy SHA-256 is:
 
 ```text
-b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874
+ca8356db96cd07b9247e8c0b12090441c8cffc9549f349f4cb52b85150e98515
 ```
 
+The immediately preceding
+`b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874` policy and every package binding
+that includes it are superseded. After it was provisioned and its two exact-role inspection actions were
+verified, the single authorized deployer provisioning retry—whose opaque request identifier is recorded
+only as sanitized SHA-256
+`1511906cda3d75a6d46b34e17ede7a3e71e5d1f0b3662d3b961fb12e2b2b81e7`—failed atomically with
+`AccessDenied` for `iam:PutRolePolicy` on the same generated role. It was not retried. This replacement
+preserves only `iam:GetRole` and `iam:ListAttachedRolePolicies` for inspection and adds only
+`iam:PutRolePolicy` on the byte-exact ARN above. It grants no other generated-role read or mutation,
+wildcard suffix or alternate account/path.
+
 The earlier `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6`
-policy and every package binding that includes it are superseded. It added the exact generated-role
-`iam:GetRole` read required by the first failed live deployer provisioning attempt. After that correction
-was provisioned and verified, the single authorized retry failed atomically with a sanitized
-`AccessDenied`: AWS also evaluated `iam:ListAttachedRolePolicies` on the same generated role. The
-replacement retains `iam:GetRole` and adds only that one metadata-list action on the byte-exact ARN
-above. It adds no other generated-role read or mutation, wildcard suffix or alternate account/path.
+policy is also superseded. It added the exact generated-role `iam:GetRole` read required by the first
+failed live deployer provisioning attempt. The next authorized retry identified the separate
+`iam:ListAttachedRolePolicies` requirement.
 
 The still earlier `0fa2aa3bddfc22d7b4485888b7b5bb0550129e2ffe7d12c2f4e6e5fc84c70513`
 policy is also revoked. It successfully limited publisher-role creation and configuration, but did not
@@ -58,11 +68,14 @@ must not be reused either. The post-PR-#119 live package binding
 `f99d18040a9b5cde23aa605cef8472a8ec1e94a61422e04a62d7d7f5d4e732bf` is also revoked because it binds
 the incomplete `3765bd2e...f51bc6` administrator policy. The protected live re-render against unchanged
 deployer policy hash `fa3b2e3a165123bb396c37d86cd91c9f7e3e623c0c2b9a6ebb0c5afac75dc869`
-produces package binding `c66c0f70f25fb9bc2607b6d476136f1b5886f8fa487e964f098c58503e3773a8`.
+produced package binding `c66c0f70f25fb9bc2607b6d476136f1b5886f8fa487e964f098c58503e3773a8`,
+which is now revoked because it binds the incomplete `b64dd063...a60874` policy. A new protected live
+binding must be rendered after merge from the same hash-verified deployer policy; this PR does not read
+AWS or claim a live replacement binding.
 The renderer and regression fixture bind the corrected policy to request-plan SHA-256
-`992c0f68bce2b5ae965ec3877d6468e89eeb858629c7427cb01eb05c72924df9`
+`0d1f367455469434248775b1f5a796cb7851c6252d6bbe3d9a6c75aff3279f5c`
 and fixture package-binding SHA-256
-`19346afc59d2bfc4bf79df375f24b79fff9433e4223e51170ce1fe629abec370`.
+`3218b85d7acc103a36eea10beaeb20ff246ee40ba32d30a609f14632a3644578`.
 The latter is test-fixture evidence, not a live authorization value. Re-render the operational package
 against the hash-verified protected current deployer policy and separately approve its new
 `packageBindingSha256` before any AWS write.
@@ -82,17 +95,19 @@ contains exactly one inline policy rendered by
 | Create and tag the publisher role | `iam:CreateRole`, `iam:TagRole` | only the exact role ARN; both actions require exactly `network=base-sepolia`, `purpose=image-publisher`, and `release=poh-quick-launch-v1`; forbids a permissions boundary in the create request |
 | Inspect the publisher role | `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:ListRoleTags` | only the exact role ARN |
 | Inspect the generated deployer role during provisioning | `iam:GetRole`, `iam:ListAttachedRolePolicies` | only `arn:aws:iam::368426158592:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_PoHQuickLaunchDeployer_77f051e3d9faf765` |
+| Replace the generated deployer inline policy during provisioning | `iam:PutRolePolicy` | only the same byte-exact generated-role ARN; payload constraints are enforced by the action-time controls below because IAM exposes no policy-name/document condition key |
 | Install the publisher inline policy | `iam:PutRolePolicy` | only the exact role ARN and only while all three fixed resource tags match |
 | Inspect the deployer policy | `sso:DescribePermissionSet`, `sso:GetInlinePolicyForPermissionSet` | only the exact Identity Center instance and existing deployer permission-set ARNs, requested in `us-east-1` |
 | Replace and provision the reviewed deployer policy | `sso:PutInlinePolicyToPermissionSet`, `sso:ProvisionPermissionSet` | only the same instance/deployer permission set and account `368426158592`, requested in `us-east-1` |
 | Observe asynchronous provisioning | `sso:DescribePermissionSetProvisioningStatus` | only the exact Identity Center instance, requested in `us-east-1` |
 
 There is no wildcard resource. `iam:UntagRole` is not granted, and `iam:TagRole` cannot target another
-role or submit missing, altered or additional tags. The generated deployer role allows only `GetRole`
-and `ListAttachedRolePolicies`; `GetRolePolicy`, `ListRolePolicies`, `ListRoleTags` and every unobserved
-read remain absent. The same role name without its reserved path, a different suffix/account/path and
-every unrelated role fail closed. The permission set excludes `iam:PassRole`, trust-policy updates, role
-updates/deletion, tagging/untagging or inline/managed-policy mutation of the generated role, access-key
+role or submit missing, altered or additional tags. The generated deployer role allows only `GetRole`,
+`ListAttachedRolePolicies` and the required `PutRolePolicy`; `GetRolePolicy`, `ListRolePolicies`,
+`ListRoleTags` and every unobserved read remain absent. The same role name without its reserved path, a
+different suffix/account/path and every unrelated role fail closed. The permission set excludes
+`iam:DeleteRolePolicy`, `iam:AttachRolePolicy`, `iam:DetachRolePolicy`, `iam:PassRole`, trust-policy
+updates, role updates/deletion, tagging/untagging and every other generated-role mutation, access-key
 operations, Identity Center permission-set creation/deletion/assignment, Identity Store enumeration,
 ECR, Secrets Manager, KMS, CloudFormation, ECS and every non-IAM resource service.
 
@@ -203,17 +218,27 @@ this change is merged, the narrow recovery sequence is:
 1. use an existing authorized administrator, with separately authorized break-glass root only if none
    exists, to read the existing administrator permission-set metadata and inline policy;
 2. require its current canonical policy hash to be the superseded
-   `3765bd2e455abb91024dd74ee6ed7172203334f7215712683cbf91a000f51bc6` and re-render the protected live
+   `b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874` and re-render the protected live
    package against the unchanged current deployer policy;
 3. obtain action-time approval for one `PutInlinePolicyToPermissionSet` that installs only policy hash
-   `b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874`, then read it back canonically;
+   `ca8356db96cd07b9247e8c0b12090441c8cffc9549f349f4cb52b85150e98515`, then read it back canonically;
 4. obtain separate confirmation to provision only that administrator permission set to account
    `368426158592`, observe the single request read-only until terminal, and require `SUCCEEDED`;
 5. sign out the applying identity, start a fresh one-hour `PoHQuickLaunchIamAdministrator` session and
-   verify `iam:GetRole` and `iam:ListAttachedRolePolicies` succeed only for the exact generated deployer
-   role while unobserved reads, an unrelated role and mutating IAM actions remain denied;
-6. pause again. Retrying the failed `PoHQuickLaunchDeployer` provisioning request is a separate action and
-   requires fresh authorization after the corrected live administrator policy and session are proven.
+   verify the live policy canonically grants `iam:GetRole`, `iam:ListAttachedRolePolicies` and
+   `iam:PutRolePolicy` only on the exact generated deployer role. Exercise only the two reads; verify
+   unrelated-role and mutation denials from the live policy or an authorized simulator without invoking
+   a mutating API;
+6. pause again. Retrying the failed `PoHQuickLaunchDeployer` provisioning request is a separate action.
+   Immediately before that one call, re-read the Identity Center deployer inline policy and require
+   canonical SHA-256 `fa3b2e3a165123bb396c37d86cd91c9f7e3e623c0c2b9a6ebb0c5afac75dc869`,
+   re-render and approve the new live package binding, and record the action-time request-plan hash;
+7. call `ProvisionPermissionSet` exactly once, hash its returned opaque request ID, observe only that
+   request until terminal and require `SUCCEEDED`. Do not issue a direct `iam:PutRolePolicy` call;
+8. after success, have a separately authorized read-only verifier retrieve the generated role's inline
+   policy name/document, canonicalize it, and compare it with the approved Identity Center source policy.
+   This temporary permission set intentionally lacks `iam:GetRolePolicy` and `iam:ListRolePolicies`, so a
+   missing independent read-back is a blocker, not a reason to broaden it.
 
 Never reuse the failed request ID, hide a nonterminal status, broaden the generated-role resource, or
 interpret successful administrator reprovisioning as successful deployer reprovisioning.
@@ -221,16 +246,20 @@ interpret successful administrator reprovisioning as successful deployer reprovi
 ## Payload-level limitation and compensating gate
 
 This is the narrowest resource/action policy AWS exposes, but it is not a cryptographic transaction
-firewall. IAM cannot condition `CreateRole` on the trust-policy bytes, cannot condition `PutRolePolicy`
-on the inline policy name or bytes, and IAM Identity Center cannot condition
+firewall. IAM cannot condition `CreateRole` on the trust-policy bytes, cannot condition either exact-role
+`PutRolePolicy` grant on the inline policy name or document bytes, and IAM Identity Center cannot condition
 `PutInlinePolicyToPermissionSet` on the replacement document bytes. Consequently, an operator holding
-this one-hour permission set could technically write different policy bytes to the two exact targets.
+this one-hour permission set could technically write different policy bytes to either exact IAM role.
+The AWS [`PutRolePolicy` API](https://docs.aws.amazon.com/IAM/latest/APIReference/API_PutRolePolicy.html)
+accepts `RoleName`, `PolicyName`, and `PolicyDocument` as request parameters, but IAM supplies no
+authorization condition key that binds the latter two values for this action.
 
 The mandatory compensating controls are the non-editable request plan, independently reviewed hashes,
-action-time confirmation, one-hour session, immediate metadata readback, canonical byte comparison,
-CloudTrail evidence, and removal of the temporary administrator assignment by the existing administrator
-after the publisher role and deployer grant are verified. Any mismatch blocks the release; never broaden
-the permission set to work around it.
+action-time confirmation, one-hour session, no direct generated-role `PutRolePolicy` call, exactly one
+hash-bound `ProvisionPermissionSet` request, immediate Identity Center source-policy read-back, independent
+generated-role inline-policy read-back, canonical byte comparison, CloudTrail evidence, and removal of the
+temporary administrator assignment by the existing administrator after the publisher role and deployer
+grant are verified. Any mismatch blocks the release; never broaden the permission set to work around it.
 
 Run the failure-path test locally:
 
@@ -241,8 +270,10 @@ pnpm --filter @ubi2/proofofhumanity test:quick-launch-iam-administrator
 The test proves that omitting any mandatory tag, changing any mandatory value or adding another tag
 fails the rendered create/tag contract. It also proves that `iam:UntagRole`, unrelated role ARNs, secret
 access, ECR publication and application-deployment authority remain absent. For the generated deployer
-role specifically, only `iam:GetRole` and `iam:ListAttachedRolePolicies` succeed; alternate accounts,
-reserved-role paths or suffixes, unobserved reads and all mutating IAM actions fail closed.
+role specifically, only `iam:GetRole`, `iam:ListAttachedRolePolicies` and the required
+`iam:PutRolePolicy` target the exact ARN; alternate accounts, reserved-role paths or suffixes, unobserved
+reads, inline-policy deletion, managed-policy attachment/detachment, trust updates, tagging, deletion and
+all other tested mutations fail closed.
 
 No successful render or local test proves that the permission set, assignment, publisher role or deployer
 grant exists in AWS. It authorizes no image push, application deployment, funding, transaction, mainnet

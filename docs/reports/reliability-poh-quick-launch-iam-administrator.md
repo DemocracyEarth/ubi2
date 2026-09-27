@@ -2,8 +2,8 @@
 
 - **Gate:** deterministic policy/assignment binding and fail-closed update sequence
 - **Reviewer:** Codex reliability review
-- **Date:** 2026-09-20
-- **Verdict:** **PASS — reproducible correction only; second failed live provisioning diagnosed, not retried**
+- **Date:** 2026-09-27
+- **Verdict:** **PASS — reproducible correction only; latest failed live provisioning diagnosed, not retried**
 
 ## Properties verified
 
@@ -28,25 +28,35 @@
   separately authorized deployer reprovisioning retry failed atomically with `AccessDenied` for
   `iam:ListAttachedRolePolicies` on the same generated role. It was not retried. The new package adds
   only that observed read alongside `GetRole` on the already pinned ARN.
+- After the inspection correction was provisioned and verified, the next one authorized deployer
+  provisioning retry failed atomically with `AccessDenied` for `iam:PutRolePolicy` on that same generated
+  role. The opaque request is retained only as sanitized SHA-256
+  `1511906cda3d75a6d46b34e17ede7a3e71e5d1f0b3662d3b961fb12e2b2b81e7`; it was not retried. The
+  package adds only that observed action on the already pinned ARN.
 - The corrected canonical administrator policy hash is
-  `b64dd063ef1240ea4a9b080d64050b97fe0a95591053297c083eb0d6c4a60874`; the regression fixture pins
-  request-plan hash `992c0f68bce2b5ae965ec3877d6468e89eeb858629c7427cb01eb05c72924df9` and package binding
-  `19346afc59d2bfc4bf79df375f24b79fff9433e4223e51170ce1fe629abec370`.
+  `ca8356db96cd07b9247e8c0b12090441c8cffc9549f349f4cb52b85150e98515`; the regression fixture pins
+  request-plan hash `0d1f367455469434248775b1f5a796cb7851c6252d6bbe3d9a6c75aff3279f5c` and package binding
+  `3218b85d7acc103a36eea10beaeb20ff246ee40ba32d30a609f14632a3644578`.
 
 ## Residual gates
 
 - The failed provisioning status is diagnostic evidence only. No successful deployer reprovisioning or
   refreshed generated-role policy was observed, so a green local package is not operational readiness.
+- IAM cannot restrict `PutRolePolicy` by inline-policy name or document bytes. Before the one approved
+  provisioning retry, the operator must hash/read back the Identity Center source policy, approve the
+  freshly rendered live binding and call only `ProvisionPermissionSet`; a direct generated-role
+  `PutRolePolicy` call is forbidden. After success, a separate read-only verifier must retrieve and hash
+  the generated-role inline policy. Missing or mismatched read-back blocks release progress.
 - The apply operator must re-read and hash the deployer policy immediately before replacement, wait for
   assignment/provisioning `SUCCEEDED`, sign in afresh, read back every live document and capture redacted
   immutable evidence.
 - Publisher-role creation and deployer-policy replacement remain a second approval after this permission
   set is provisioned.
 - The old live binding `724a8410121703cbac883adcb1e4d7830cdfed4ae25dd7e86789c968b90b871e`
-  and the later binding `039b3e4696d65c7941bb7b9fdc1636c6400e1a631a42555448e26e89d0136324`
-  and post-PR-#119 binding `f99d18040a9b5cde23aa605cef8472a8ec1e94a61422e04a62d7d7f5d4e732bf`
-  are invalid. The protected transaction-free re-render produces candidate live binding
-  `c66c0f70f25fb9bc2607b6d476136f1b5886f8fa487e964f098c58503e3773a8`; it must be regenerated from a
-  fresh live policy read after merge before authorization.
+  and the later binding `039b3e4696d65c7941bb7b9fdc1636c6400e1a631a42555448e26e89d0136324`,
+  post-PR-#119 binding `f99d18040a9b5cde23aa605cef8472a8ec1e94a61422e04a62d7d7f5d4e732bf`,
+  and later binding `c66c0f70f25fb9bc2607b6d476136f1b5886f8fa487e964f098c58503e3773a8`
+  are invalid. A fresh protected live package must be rendered from a new live policy read after merge;
+  this PR makes no live-binding claim.
 
 **Reliability approval:** merge the transaction-free package and runbook; pause before every AWS mutation.
