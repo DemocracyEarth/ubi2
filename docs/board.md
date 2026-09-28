@@ -224,6 +224,17 @@ _(none)_
 
 ## 👀 Review (awaiting gates)
 
+- **POH-QL-V1-T2G · release/security/qa/reliability** — least-privilege infrastructure-prerequisite
+  administrator package. A deterministic one-hour Identity Center package binds one workforce USER to
+  metadata-only signer discovery, exact secret/subnet tagging, one hostname's ACM/DNS validation, creation
+  of only the pre-reviewed task execution role and inspection of only the scoped CloudFormation role.
+  CloudFormation stack/change-set APIs, secret values, application deployment, funding, transactions,
+  mainnet and Fobal resources remain excluded. This task prepares no live permission set and stops before
+  `CreatePermissionSet`.
+  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR.md),
+  [QA](reports/qa-poh-quick-launch-infrastructure-administrator.md),
+  [reliability](reports/reliability-poh-quick-launch-infrastructure-administrator.md),
+  [security](reports/security-poh-quick-launch-infrastructure-administrator.md).
 - **POH-QL-V1-T2F · release/security/qa/reliability** — reproducible image and publication boundary.
   A digest-pinned linux/amd64 base, exact Git-archive context, two no-cache builds, SPDX SBOM,
   zero-Critical/High local scan policy and redacted provenance bind one reviewed commit to one image
