@@ -146,6 +146,16 @@ and emits a redacted source-to-image provenance hash. A generated one-hour publi
 upload and inspect only `proof-of-humanity`; it cannot create/delete/tag repositories, mutate IAM, read
 secrets or deploy services. No role creation, image push or live-readiness claim is part of this slice.
 
+### Infrastructure-prerequisite administrator boundary — 2026-09-28
+
+The remaining signer-metadata, two-subnet, ACM/DNS, task-execution-role and scoped-deployment-role
+prerequisites now have one deterministic, one-hour IAM Identity Center package. It permits metadata-only
+secret and topology discovery, exact tag updates, one certificate and only its validation CNAME, creation
+of the frozen task execution role, and inspection of the exact CloudFormation deployment role. It contains
+no CloudFormation stack/change-set, ECS service, secret-value, image-publication, funding, transaction,
+mainnet or Fobal authority. The package is local-only and paused before `CreatePermissionSet`; it is not
+evidence that the prerequisites exist or that the API origin is ready.
+
 ## First-PR acceptance criteria
 
 - The executable release chain set contains exactly Base Sepolia and rejects network misclassification
