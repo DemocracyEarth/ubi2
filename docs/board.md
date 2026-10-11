@@ -224,37 +224,38 @@ _(none)_
 
 ## 👀 Review (awaiting gates)
 
-- **POH-QL-V1-T2G · release/security/qa/reliability** — least-privilege infrastructure-prerequisite
-  administrator package. A deterministic one-hour Identity Center package binds one workforce USER to
-  metadata-only signer discovery, exact secret/subnet tagging, one hostname's ACM/DNS validation, creation
-  of only the pre-reviewed task execution role and inspection of only the scoped CloudFormation role.
-  CloudFormation stack/change-set APIs, secret values, application deployment, funding, transactions,
-  mainnet and Fobal resources remain excluded. This task prepares no live permission set and stops before
-  `CreatePermissionSet`.
-  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR.md),
-  [QA](reports/qa-poh-quick-launch-infrastructure-administrator.md),
-  [reliability](reports/reliability-poh-quick-launch-infrastructure-administrator.md),
-  [security](reports/security-poh-quick-launch-infrastructure-administrator.md).
-- **POH-QL-V1-T2F · release/security/qa/reliability** — reproducible image and publication boundary.
-  A digest-pinned linux/amd64 base, exact Git-archive context, two no-cache builds, SPDX SBOM,
-  zero-Critical/High local scan policy and redacted provenance bind one reviewed commit to one image
-  digest. A generated one-hour publisher role may upload and inspect only `proof-of-humanity`; repository
-  administration, IAM, secrets and deployment remain excluded. No AWS mutation or image publication is
-  authorized by this task. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_IMAGE_RELEASE.md),
-  [QA](reports/qa-poh-quick-launch-image-release.md),
-  [reliability](reports/reliability-poh-quick-launch-image-release.md),
-  [security](reports/security-poh-quick-launch-image-release.md).
+- **POH-QL-V1-T2H · release/security/qa/reliability** — missing-prerequisite remediation package.
+  A deterministic one-hour Identity Center package creates no live resources but renders separately paused
+  requests for two distinct empty signer containers, approval tags on exactly two verified public subnets in
+  distinct AZs, and the fixed-name CloudFormation deployment role. The temporary administrator cannot read
+  or write secret values, assume/pass the deployment role, deploy applications, touch Fobal, fund accounts,
+  transact or use mainnet. Every policy/request and fixture hash is pinned; live input produces a separately
+  reviewed binding. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_PREREQUISITE_REMEDIATION.md),
+  [QA](reports/qa-poh-quick-launch-prerequisite-remediation.md),
+  [reliability](reports/reliability-poh-quick-launch-prerequisite-remediation.md),
+  [security](reports/security-poh-quick-launch-prerequisite-remediation.md).
 
 ## ⛔ Blocked
 - **POH-QL-V1-T2B · release/security + deployment owner** — configure and attest the actual automatic
   Quick Launch host. **Superseded by T2D:** Amplify is the frontend, not the signing origin.
 - **POH-QL-V1-T2D · release/security + deployment owner** — provision and attest the dedicated API
-  origin, then cut over the canonical paths. **Blocked:** the pre-created task execution role and its immutable
-  policy approvals, exact VPC/subnet/DNS/ACM/image/signer metadata, protected deployment session and immutable
-  attestations have not all been observed together. Direct/canonical preflights and a no-overlap restart drill
-  must pass while transactions remain disabled. Keep readiness false and do not transact.
+  origin, then cut over the canonical paths. **Blocked:** the two live empty signer containers, exact approved
+  two-AZ subnet pair, pre-created task execution role, CloudFormation deployment role, ACM certificate,
+  protected deployment session and immutable attestations have not all been observed together. Direct/canonical
+  preflights and a no-overlap restart drill must pass while transactions remain disabled. Keep readiness false
+  and do not transact.
 
 ## ✅ Done
+- **POH-QL-V1-T2G · infrastructure-prerequisite administrator package · SHIPPED in PR #122.**
+  A deterministic one-hour Identity Center package binds one workforce USER to metadata-only signer/network
+  discovery, exact secret/subnet tagging, one hostname's ACM/DNS validation, creation of only the pre-reviewed
+  task execution role and inspection of only the scoped CloudFormation role. No live permission set or AWS
+  mutation was part of the PR. [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR.md).
+- **POH-QL-V1-T2F · reproducible image and publication boundary · SHIPPED in PR #117.**
+  A digest-pinned linux/amd64 base, exact Git-archive context, two no-cache builds, SPDX SBOM,
+  zero-Critical/High local scan policy and redacted provenance bind one reviewed commit to one image digest.
+  The separately gated publisher role may upload and inspect only `proof-of-humanity`.
+  [Runbook](../ops/proofofhumanity/QUICK_LAUNCH_IMAGE_RELEASE.md).
 - **POH-QL-V1-T2E · pre-created ECS task execution role boundary · SHIPPED in PR #116.**
   The API-origin stack requires `TaskExecutionRoleArn`, creates no IAM role/policy and cannot mutate the
   supplied role. A transaction-free redacting checker binds the regionless role ARN, digest-pinned image,

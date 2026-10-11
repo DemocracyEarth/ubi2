@@ -156,6 +156,19 @@ no CloudFormation stack/change-set, ECS service, secret-value, image-publication
 mainnet or Fobal authority. The package is local-only and paused before `CreatePermissionSet`; it is not
 evidence that the prerequisites exist or that the API origin is ready.
 
+### Missing-prerequisite remediation boundary — 2026-10-11
+
+Live inspection found that the package above had nothing safe to bind for two required inputs: the two
+distinct Quick Launch signer containers and the fixed CloudFormation deployment role. A new code-only
+remediation package now renders two empty, fixed-name Secrets Manager creation requests, a redacted approval
+of exactly two existing public subnets in distinct AZs, and the deployment role's exact trust and inline
+policy. It accepts no secret values, gives the temporary administrator no secret read/write, deployment-role
+assumption or application authority, and pauses separately before all eight potential mutations.
+
+This does not advance the live 25% host acceptance milestone. The fixture policies and hashes are locally
+reproducible; a protected live render, one-call confirmations, manual secret entry, task role/certificate
+completion, transaction-disabled change-set review, deployment evidence and public preflights remain required.
+
 ## First-PR acceptance criteria
 
 - The executable release chain set contains exactly Base Sepolia and rejects network misclassification
