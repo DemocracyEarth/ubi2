@@ -1,7 +1,7 @@
 # Quick Launch infrastructure administrator package
 
 This runbook prepares, but does not apply, a one-hour IAM Identity Center permission set named
-`PoHQuickLaunchInfrastructureAdministrator`. Its only purpose is to fill the missing, transaction-free
+`PoHQuickLaunchInfraAdmin`. Its only purpose is to fill the missing, transaction-free
 Base Sepolia API-origin prerequisites in AWS account `368426158592`, `us-east-1`. It cannot create an
 application stack, create or execute a CloudFormation change set, run an ECS service, retrieve a secret
 value, publish an image, fund an account, submit a blockchain transaction or touch mainnet.
@@ -17,7 +17,7 @@ exists—must reverify the protected inputs and receive action-time confirmation
 | Account | `368426158592` |
 | Region | `us-east-1` |
 | Network | Base Sepolia only |
-| Permission set | `PoHQuickLaunchInfrastructureAdministrator` |
+| Permission set | `PoHQuickLaunchInfraAdmin` |
 | Session | `PT1H` |
 | API hostname | `quick-launch-api.proofofhumanity.org` |
 | Task execution role | `arn:aws:iam::368426158592:role/PoHQuickLaunchTaskExecutionRole` |
@@ -115,16 +115,29 @@ canonical hashes and the redacted attestations. The regression fixture—not liv
 
 | Object | Fixture SHA-256 |
 |---|---|
-| Permission-set configuration | `6557d54acded7a33ac58644564f72ef00b9e34e0842ceaa0bb02d5a007d5aaf2` |
+| Permission-set configuration | `98369586614dcd561f3c0779c920d6659ada93087741f0fd26d22334a6dad4e1` |
 | Administrator inline policy | `0fb0fdca37bda6df2896f40b094ba7184518f08df68e5ad529d032ea9495adb9` |
 | Assignment | `e312ced830226b58adf654c61a9beee81ba96f95c03dee94872542d72577f132` |
 | Task trust | `4ae85e6ac6805330260b864794cabdedf5061f5a2cc701b17444f4399c8f8bee` |
 | Task permissions | `cccd8806988f15b1b000e2e79ea963e319a4d863dc2018390982d8d6a3286adc` |
-| Request plan | `1a9c0306d33f65fd48b54e550b1ee836fe1ccd94e4571dea6a40a6b4902dee01` |
-| Package binding | `1dace18c0cd7e8539fe36ec14f1b646046abd06cb06a452f702902a04b7b7216` |
+| Request plan | `2a90ea51055959c81e850fac546297f9c6c5e8fad2d3395ef120f63362aa311f` |
+| Package binding | `f7e685efa4e579df96f797c53321186e13c72af9dcd0ec9ab5551f4e4a355aac` |
 
 The assignment, task-policy and package hashes necessarily change with the real protected identifiers.
 The values above prove deterministic rendering only; they are not operational approval values.
+
+### Revoked over-length package
+
+The former permission-set name `PoHQuickLaunchInfrastructureAdministrator` is 41 characters and exceeds
+AWS IAM Identity Center's 32-character maximum. The 2026-10-13 transaction-free review caught this before
+`CreatePermissionSet`; no AWS call was made and no live package using that name is authorized.
+
+The former fixture permission-set configuration hash
+`6557d54acded7a33ac58644564f72ef00b9e34e0842ceaa0bb02d5a007d5aaf2`, request-plan hash
+`1a9c0306d33f65fd48b54e550b1ee836fe1ccd94e4571dea6a40a6b4902dee01`, and package binding
+`1dace18c0cd7e8539fe36ec14f1b646046abd06cb06a452f702902a04b7b7216` are revoked. Never apply an
+artifact containing the former name. Re-render from a merged revision containing the 24-character
+`PoHQuickLaunchInfraAdmin` name and separately approve every new live hash before any AWS mutation.
 
 ## Administrator handoff — pause before apply
 
@@ -174,7 +187,8 @@ pnpm --filter @ubi2/proofofhumanity \
   test:quick-launch-infrastructure-administrator
 ```
 
-It pins the complete action allowlist and fixture hashes; proves missing, altered or extra tags fail;
+It pins the complete action allowlist and fixture hashes; rejects empty and over-32-character permission-set
+names; proves missing, altered or extra tags fail;
 rejects wrong accounts/regions/resources, same-AZ or duplicate subnets and Fobal-named secrets; and proves
 secret-value access, unrelated IAM, CloudFormation, ECS, application deployment and destructive actions
 remain absent. A passing local test is not evidence that any AWS prerequisite exists or is ready.

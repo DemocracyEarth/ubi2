@@ -2,7 +2,7 @@
 
 - **Gate:** deterministic bindings, dependency order, concurrency/read-back controls
 - **Reviewer:** Codex reliability review
-- **Date:** 2026-09-28
+- **Date:** 2026-10-13
 - **Verdict:** **PASS — reproducible package only; no prerequisite is claimed live**
 
 ## Properties verified
@@ -34,3 +34,8 @@
 
 **Reliability approval:** merge the local package and retain the explicit stop before
 `CreatePermissionSet`.
+
+The 2026-10-13 corrective re-gate adds the AWS 32-character permission-set-name invariant directly to
+the renderer. The former 41-character name now fails locally before a request plan is emitted; the
+replacement `PoHQuickLaunchInfraAdmin` is 24 characters. All bindings containing the former name are
+revoked, and every future live attempt requires a fresh protected render and independent hash approval.

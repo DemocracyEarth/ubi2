@@ -2,7 +2,7 @@
 
 - **Gate:** least authority, secret isolation, exact-resource mutation and compensating controls
 - **Reviewer:** Codex security review
-- **Date:** 2026-09-28
+- **Date:** 2026-10-13
 - **Verdict:** **PASS WITH EXPLICIT RESIDUAL — no AWS apply authorized**
 
 ## Controls verified
@@ -36,3 +36,7 @@ it is not grounds to broaden the permission set.
 
 **Security approval:** merge the transaction-free package; do not create, assign or use the permission
 set without the protected live review and a fresh authorization.
+
+The 2026-10-13 correction changes only the permission-set name, adds the executable AWS length guard and
+updates its dependent canonical hashes. The administrator and task-role policy documents remain
+byte-identical. No AWS call was made; the former name and every binding containing it are revoked.

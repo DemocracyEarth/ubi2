@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {
+  AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH,
   QUICK_LAUNCH_API_HOSTNAME,
   QUICK_LAUNCH_CLOUDFORMATION_DEPLOYMENT_ROLE,
   QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR_PERMISSION_SET,
   QUICK_LAUNCH_TASK_EXECUTION_ROLE,
+  assertAwsIdentityCenterPermissionSetNameLength,
   buildQuickLaunchInfrastructureAdministratorPackage,
 } from "../app/quick-launch-infrastructure-administrator";
 
@@ -53,6 +55,30 @@ assert.equal(
   result.permissionSetConfiguration.Name,
   QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR_PERMISSION_SET,
 );
+assert.equal(
+  QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR_PERMISSION_SET,
+  "PoHQuickLaunchInfraAdmin",
+);
+assert.ok(
+  QUICK_LAUNCH_INFRASTRUCTURE_ADMINISTRATOR_PERMISSION_SET.length <=
+    AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH,
+);
+assert.equal("PoHQuickLaunchInfrastructureAdministrator".length, 41);
+assert.throws(
+  () => assertAwsIdentityCenterPermissionSetNameLength(""),
+  /must contain 1-32 characters/u,
+);
+assert.doesNotThrow(() => assertAwsIdentityCenterPermissionSetNameLength("a".repeat(32)));
+assert.throws(
+  () => assertAwsIdentityCenterPermissionSetNameLength("a".repeat(33)),
+  /must contain 1-32 characters/u,
+  "a 33-character permission-set name must fail closed",
+);
+assert.throws(
+  () => assertAwsIdentityCenterPermissionSetNameLength("PoHQuickLaunchInfrastructureAdministrator"),
+  /must contain 1-32 characters/u,
+  "the rejected 41-character permission-set name must fail closed",
+);
 assert.equal(result.permissionSetConfiguration.SessionDuration, "PT1H");
 assert.equal(result.assignment.TargetId, accountId);
 assert.equal(result.assignment.PrincipalType, "USER");
@@ -87,7 +113,7 @@ assert.deepEqual(
   },
   {
     permissionSetConfigurationSha256:
-      "6557d54acded7a33ac58644564f72ef00b9e34e0842ceaa0bb02d5a007d5aaf2",
+      "98369586614dcd561f3c0779c920d6659ada93087741f0fd26d22334a6dad4e1",
     administratorPermissionsPolicySha256:
       "0fb0fdca37bda6df2896f40b094ba7184518f08df68e5ad529d032ea9495adb9",
     assignmentSha256: "e312ced830226b58adf654c61a9beee81ba96f95c03dee94872542d72577f132",
@@ -101,9 +127,9 @@ assert.deepEqual(
       "b6b44feee303467c8bb5f5819be1595f9bfbaa580459fd87d1518c4aca973b5c",
     topologyAttestationSha256:
       "6b7f14a41beed670c240baca607f7c7e5493150f004fc815a397a222ebd2d009",
-    requestPlanSha256: "1a9c0306d33f65fd48b54e550b1ee836fe1ccd94e4571dea6a40a6b4902dee01",
+    requestPlanSha256: "2a90ea51055959c81e850fac546297f9c6c5e8fad2d3395ef120f63362aa311f",
     packageBindingSha256:
-      "1dace18c0cd7e8539fe36ec14f1b646046abd06cb06a452f702902a04b7b7216",
+      "f7e685efa4e579df96f797c53321186e13c72af9dcd0ec9ab5551f4e4a355aac",
   },
   "fixture hashes changed without explicit review",
 );
