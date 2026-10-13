@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH,
   QUICK_LAUNCH_CLOUDFORMATION_DEPLOYMENT_POLICY,
   QUICK_LAUNCH_CLOUDFORMATION_DEPLOYMENT_ROLE,
   QUICK_LAUNCH_ISSUER_SECRET_NAME,
   QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET,
   QUICK_LAUNCH_SPONSOR_SECRET_NAME,
+  assertAwsIdentityCenterPermissionSetNameLength,
   buildQuickLaunchPrerequisiteRemediationPackage,
 } from "../app/quick-launch-prerequisite-remediation";
 
@@ -56,6 +58,21 @@ assert.equal(result.applyAuthorized, false);
 assert.equal(result.pauseBeforeEveryMutation, true);
 assert.equal(result.liveReadinessClaimed, false);
 assert.equal(result.permissionSetConfiguration.Name, QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET);
+assert.equal(QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET, "PoHQuickLaunchPrereqAdmin");
+assert.ok(
+  QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET.length <=
+    AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH,
+);
+assert.equal("PoHQuickLaunchPrerequisiteAdministrator".length, 39);
+assert.throws(
+  () => assertAwsIdentityCenterPermissionSetNameLength(""),
+  /must contain 1-32 characters/u,
+);
+assert.throws(
+  () => assertAwsIdentityCenterPermissionSetNameLength("PoHQuickLaunchPrerequisiteAdministrator"),
+  /must contain 1-32 characters/u,
+  "the rejected 39-character permission-set name must fail closed",
+);
 assert.equal(result.permissionSetConfiguration.SessionDuration, "PT1H");
 assert.equal(result.assignment.PrincipalType, "USER");
 assert.equal(result.assignment.PrincipalId, administratorPrincipalId);
@@ -79,7 +96,7 @@ assert.deepEqual(
   hashes,
   {
     permissionSetConfigurationSha256:
-      "5b321aff065afe25eb0ab969f19ba77aaa3955536ce68f0c634767b7fd1e68a2",
+      "3b8c17fb6de7e92ed5d98ec1fcafa3f040bc1ffa005ae21bb4f439c92c586719",
     administratorPermissionsPolicySha256:
       "78ae3d699a8c017ff3183bde937c903a1ee025c65bf4979ef54c7bf37e938eb5",
     assignmentSha256: "e312ced830226b58adf654c61a9beee81ba96f95c03dee94872542d72577f132",
@@ -96,9 +113,9 @@ assert.deepEqual(
     deploymentRolePermissionsPolicySha256:
       "f149216e5e8030a39c8619d30cdbfbef0efb82e670129b33eae30c604a999227",
     requestPlanSha256:
-      "165570ab4b291794f1008b90d7d7053b1e1b0a496985cd4e09a809955e17f325",
+      "9607331294115c3ff339c0f0ebc7b03b0f42fee4c8f97007df9de1e807952816",
     packageBindingSha256:
-      "eef9f0295ab679289849f46a43c23cb36753b6484cf22bccd6ca6888181e13f6",
+      "bbf4f9a3b422b2c35535e2cc5caeecf0ada7c2d7e44dd049c0a6f81b6e108aae",
   },
   "fixture hashes changed without explicit review",
 );

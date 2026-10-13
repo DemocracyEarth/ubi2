@@ -1,6 +1,6 @@
 # Reliability gate — Quick Launch prerequisite remediation
 
-- **Date:** 2026-10-11
+- **Date:** 2026-10-13
 - **Verdict:** **PASS for the local package; live prerequisites remain blocked**
 
 The package makes partial state visible and recoverable without pretending it is complete. Issuer and
@@ -19,3 +19,8 @@ recorded as residual limitations and must be controlled by a later hash-bound ch
 
 No restart, failover, external HTTPS, transaction or live AWS evidence was exercised. Those remain release
 gates after the prerequisites exist.
+
+The 2026-10-13 corrective re-gate adds the AWS 32-character permission-set-name invariant directly to the
+renderer. The rejected 39-character name now fails locally, before any request plan is emitted; the replacement
+`PoHQuickLaunchPrereqAdmin` is 25 characters. The rejected live package binding is revoked, and a future live
+attempt must use a freshly rendered and separately approved package. No automatic retry exists.

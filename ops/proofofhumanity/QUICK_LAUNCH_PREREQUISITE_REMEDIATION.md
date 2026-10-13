@@ -21,7 +21,7 @@ testing or merging this package does not authorize any AWS mutation and is not l
 | Account | `368426158592` |
 | Region | `us-east-1` |
 | Network | Base Sepolia only |
-| Temporary permission set | `PoHQuickLaunchPrerequisiteAdministrator` |
+| Temporary permission set | `PoHQuickLaunchPrereqAdmin` |
 | Session | `PT1H` |
 | Issuer container name | `/ubi2/poh-quick-launch-v1/issuer-private-key` |
 | Sponsor container name | `/ubi2/poh-quick-launch-v1/sponsor-private-key` |
@@ -194,7 +194,7 @@ subnet approval. The deterministic regression fixture pins:
 
 | Object | Fixture SHA-256 |
 |---|---|
-| Permission-set configuration | `5b321aff065afe25eb0ab969f19ba77aaa3955536ce68f0c634767b7fd1e68a2` |
+| Permission-set configuration | `3b8c17fb6de7e92ed5d98ec1fcafa3f040bc1ffa005ae21bb4f439c92c586719` |
 | Administrator permissions | `78ae3d699a8c017ff3183bde937c903a1ee025c65bf4979ef54c7bf37e938eb5` |
 | Assignment | `e312ced830226b58adf654c61a9beee81ba96f95c03dee94872542d72577f132` |
 | Issuer empty-container request | `e46df92a3df0809950af66e24404d41e086c4bb92922f3e3009a3abab188156f` |
@@ -203,11 +203,26 @@ subnet approval. The deterministic regression fixture pins:
 | Deployment-role creation request | `d58f240e02f4df858f9a8d5dda7c3277603ef57d18530de52a624b2101b398b5` |
 | Deployment-role trust | `1a5a246a03b411974f3ff8dd3ca795a60dede809b40313397f1955c949758f74` |
 | Deployment-role permissions | `f149216e5e8030a39c8619d30cdbfbef0efb82e670129b33eae30c604a999227` |
-| Paused request plan | `165570ab4b291794f1008b90d7d7053b1e1b0a496985cd4e09a809955e17f325` |
-| Package binding | `eef9f0295ab679289849f46a43c23cb36753b6484cf22bccd6ca6888181e13f6` |
+| Paused request plan | `9607331294115c3ff339c0f0ebc7b03b0f42fee4c8f97007df9de1e807952816` |
+| Package binding | `bbf4f9a3b422b2c35535e2cc5caeecf0ada7c2d7e44dd049c0a6f81b6e108aae` |
 
 These are fixture hashes, not live AWS approval. Protected live identifiers necessarily change the
 assignment, subnet approval, request plan and package binding.
+
+### Revoked over-length package
+
+On 2026-10-13, one confirmed `CreatePermissionSet` call using the former
+`PoHQuickLaunchPrerequisiteAdministrator` name failed closed with the sanitized AWS error
+`ValidationException: Value of input 'name' failed to satisfy constraint: Member must have length less
+than or equal to 32`. The former name was 39 characters. CloudTrail recorded the rejected call; no
+permission set was created and the call was not retried.
+
+The former fixture configuration hash
+`5b321aff065afe25eb0ab969f19ba77aaa3955536ce68f0c634767b7fd1e68a2`, fixture package binding
+`eef9f0295ab679289849f46a43c23cb36753b6484cf22bccd6ca6888181e13f6`, and rejected live package binding
+`d7e8192492a7e7e3d719343c23bfbca20a302309dff6460f670805eade9b4872` are revoked. Never retry from any
+artifact containing the former name. Re-render from a merged revision containing the 25-character
+`PoHQuickLaunchPrereqAdmin` name, approve its new live hashes, and retain the independent action-time pause.
 
 ## Administrator handoff and mutation pauses
 
@@ -242,6 +257,7 @@ pnpm --filter @ubi2/proofofhumanity \
 ```
 
 The test pins every fixture hash and administrator action, proves missing/extra/altered tags fail closed,
-rejects wrong accounts/regions, malformed metadata, duplicate/same-AZ/non-public/Fobal-tagged subnets, and
+rejects the former over-length permission-set name, wrong accounts/regions, malformed metadata,
+duplicate/same-AZ/non-public/Fobal-tagged subnets, and
 proves secret-value access, unrelated IAM, application deployment, image publication, mainnet and
 transactions remain absent. A passing test is not evidence that a live prerequisite exists.

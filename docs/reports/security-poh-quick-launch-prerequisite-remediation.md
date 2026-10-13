@@ -1,6 +1,6 @@
 # Security gate — Quick Launch prerequisite remediation
 
-- **Date:** 2026-10-11
+- **Date:** 2026-10-13
 - **Verdict:** **PASS — zero open Critical/High in the code-only package**
 
 ## Review
@@ -29,3 +29,9 @@ reads require `Resource=*`. Tests pin every such statement and prove forbidden a
 
 This approval covers source and deterministic fixture behavior only; it does not approve live AWS state,
 secret contents, a change set, deployment or transaction enablement.
+
+The 2026-10-13 correction changes only the permission-set name and its dependent canonical hashes. The
+administrator and deployment-role policy documents remain byte-identical. The former 39-character name and
+all package bindings containing it are revoked after AWS rejected the single live call with a sanitized
+`ValidationException`; the new executable length guard prevents recurrence. No permission set, policy, secret,
+role, application resource, funding action or blockchain transaction is created by this corrective source PR.

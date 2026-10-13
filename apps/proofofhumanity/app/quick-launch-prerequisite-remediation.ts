@@ -3,7 +3,8 @@ import { canonicalSha256 } from "./quick-launch-image-release";
 export const QUICK_LAUNCH_PREREQUISITE_REMEDIATION_SCHEMA =
   "org.proofofhumanity.quick-launch.prerequisite-remediation-package/1" as const;
 export const QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET =
-  "PoHQuickLaunchPrerequisiteAdministrator" as const;
+  "PoHQuickLaunchPrereqAdmin" as const;
+export const AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH = 32;
 export const QUICK_LAUNCH_PREREQUISITE_SESSION = "PT1H" as const;
 export const QUICK_LAUNCH_ACCOUNT_ID = "368426158592" as const;
 export const QUICK_LAUNCH_REGION = "us-east-1" as const;
@@ -81,6 +82,14 @@ function canonicalHash(value: unknown): string {
   return canonicalSha256(value as JsonValue);
 }
 
+export function assertAwsIdentityCenterPermissionSetNameLength(name: string): void {
+  if (name.length === 0 || name.length > AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH) {
+    throw new Error(
+      `IAM Identity Center permission-set name must contain 1-${AWS_IDENTITY_CENTER_PERMISSION_SET_NAME_MAX_LENGTH} characters.`,
+    );
+  }
+}
+
 function required(value: string | undefined, name: string): string {
   const normalized = value?.trim() ?? "";
   if (!normalized) throw new Error(`${name} is required.`);
@@ -118,6 +127,7 @@ function resourceTagCondition(tags: readonly { Key: string; Value: string }[]) {
 export function buildQuickLaunchPrerequisiteRemediationPackage(
   input: QuickLaunchPrerequisiteRemediationInput,
 ) {
+  assertAwsIdentityCenterPermissionSetNameLength(QUICK_LAUNCH_PREREQUISITE_PERMISSION_SET);
   if (input.accountId !== QUICK_LAUNCH_ACCOUNT_ID) {
     throw new Error(`Quick Launch account must be exactly ${QUICK_LAUNCH_ACCOUNT_ID}.`);
   }
